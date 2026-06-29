@@ -44,6 +44,10 @@ class GraphContext:
         S = torch.zeros(num_nodes, E)
         S[tgt.long(), torch.arange(E)] = 1.0
         self.scatter = _to_dev(S, device, wdtype)
+        # source one-hot S_src[N, E] (gather-backward operand for the analytic force VJP)
+        Ssrc = torch.zeros(num_nodes, E)
+        Ssrc[src.long(), torch.arange(E)] = 1.0
+        self.scatter_src = _to_dev(Ssrc, device, wdtype)
         self.wigner = _to_dev(wigner, device, wdtype)
         self.wigner_inv = _to_dev(wigner_inv, device, wdtype)
         self.x_edge = _to_dev(x_edge, device, wdtype)

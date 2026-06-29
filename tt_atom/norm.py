@@ -39,6 +39,7 @@ class RMSNormSH:
         """x: ttnn ``[N, nsph, C]`` -> ``[N, nsph, C]``."""
         ttnn = self.ttnn
         N = x.shape[0]
+        self._cache_x = x                                     # for the analytic-force VJP
         # center l=0 across channels
         l0 = ttnn.slice(x, [0, 0, 0], [N, 1, self.C])
         l0_mean = ttnn.mean(l0, dim=2, keepdim=True)          # [N,1,1]

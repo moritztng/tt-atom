@@ -47,13 +47,16 @@ class Edgewise:
         xs = ttnn.to_layout(xs, ttnn.TILE_LAYOUT)
         xt = ttnn.to_layout(xt, ttnn.TILE_LAYOUT)
 
-        m = ttnn.concat([xs, xt], dim=2)                  # [E, 9, 2C]
-        m = ttnn.matmul(graph.wigner, m, compute_kernel_config=self.kcfg)   # rotate to edge frame
+        m_cat = ttnn.concat([xs, xt], dim=2)              # [E, 9, 2C]
+        m = ttnn.matmul(graph.wigner, m_cat, compute_kernel_config=self.kcfg)  # rotate to edge frame
         m, gating = self.so2_1(m, graph.x_edge)
         m = self.gate(gating, m)
         m = self.so2_2(m, graph.x_edge)
+        m_so2 = m
         m = ttnn.multiply(m, graph.edge_envelope)         # [E,1,1] broadcast
+        m_env = m
         m = ttnn.matmul(graph.wigner_inv, m, compute_kernel_config=self.kcfg)  # rotate back
+        self._cache_mcat, self._cache_mso2, self._cache_menv = m_cat, m_so2, m_env
 
         # scatter-add to target nodes:  out[N,9,C] = S[N,E] @ m[E,9C]
         mf = ttnn.reshape(m, (graph.E, nsph * self.C))

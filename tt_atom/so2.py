@@ -79,7 +79,8 @@ class SO2Convolution:
             self.in_offsets.append(self.in_offsets[-1] + 2 * self.num_coef[m] * self.Cin)
 
         self.has_radial = f"{prefix}.rad_func.net.0.weight" in weights
-        self.rad = RadialMLP(weights, f"{prefix}.rad_func", device, wdtype) if self.has_radial else None
+        self.rad_prefix = f"{prefix}.rad_func"
+        self.rad = RadialMLP(weights, self.rad_prefix, device, wdtype) if self.has_radial else None
         # radial output is split per-m into widths num_coef[m]*Cin
         self.rad_sizes = [self.num_coef[m] * self.Cin for m in range(mmax + 1)]
 
@@ -102,13 +103,14 @@ class SO2Convolution:
 
         if self.has_radial:
             rad = self.rad(x_edge)                       # [E, sum(num_coef*Cin)]
-            parts, off = [], 0
+            off = 0
             rms = []
             for m in range(self.mmax + 1):
                 rms.append(ttnn.slice(rad, [0, off], [E, off + self.rad_sizes[m]]))
                 off += self.rad_sizes[m]
             mult = [rms[0]] + sum(([rms[m], rms[m]] for m in range(1, self.mmax + 1)), [])
             mult = ttnn.concat(mult, dim=1)
+            self._cache_xin, self._cache_mult = xf, mult     # for the analytic-force VJP
             xf = ttnn.multiply(xf, mult)
 
         out_blocks = []

@@ -36,6 +36,7 @@ class GateActivation:
         """gating_scalars: ttnn ``[N, lmax*H]``; x: ttnn ``[N, nsph, H]`` (m-primed)."""
         ttnn = self.ttnn
         N = x.shape[0]
+        self._cache_gating, self._cache_x = gating_scalars, x   # for the analytic-force VJP
         g = ttnn.sigmoid(gating_scalars)
         g = ttnn.reshape(g, (N, self.lmax, self.H))
         # gather gate rows per vector coefficient (lmax distinct rows -> slice+concat)
