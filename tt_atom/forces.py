@@ -147,17 +147,14 @@ def so2_bw(conv, g_out, g_extra=None):
     si = 1
     for m in range(1, mmax + 1):
         nc = conv.num_coef[m]
-        Hh = conv.w_m[m - 1].shape[1] // 2
-        g_real = seg[si]; g_imag = seg[si + 1]; si += 2
-        # real=a-d, imag=c+b  ->  g_a=g_real, g_d=-g_real, g_c=g_imag, g_b=g_imag
-        g_a = g_real
-        g_b = g_imag
-        g_c = g_imag
-        g_d = ttnn.multiply(g_real, -1.0)
-        g_blk4 = ttnn.concat([g_a, g_b, g_c, g_d], dim=1)   # [E,4Hh]
-        g_blk = ttnn.reshape(g_blk4, (E, 2, 2 * Hh))
-        g_in = _mm(ttnn, g_blk, conv.w_m[m - 1], kcfg)      # [E,2,nc*Cin]
-        g_blocks.append(ttnn.reshape(g_in, (E, 2 * nc * Cin)))
+        g_real = seg[si]; g_imag = seg[si + 1]; si += 2   # adjoints of out_real, out_imag
+        # fwd: out_real = r0 - i1, out_imag = i0 + r1, with [r0|r1]=real@W, [i0|i1]=imag@W.
+        # => g_fr = [g_real, g_imag], g_fi = [g_imag, -g_real]; g_{real,imag} = g_f @ W^T.
+        g_fr = ttnn.concat([g_real, g_imag], dim=1)        # [E,2Hh]
+        g_fi = ttnn.concat([g_imag, ttnn.multiply(g_real, -1.0)], dim=1)
+        g_in_real = _mm(ttnn, g_fr, conv.w_m[m - 1], kcfg)  # [E, nc*Cin]
+        g_in_imag = _mm(ttnn, g_fi, conv.w_m[m - 1], kcfg)
+        g_blocks.append(ttnn.concat([g_in_real, g_in_imag], dim=1))   # [E, 2*nc*Cin]
 
     g_xf = ttnn.concat(g_blocks, dim=1)                 # [E, nsph*Cin]
 
