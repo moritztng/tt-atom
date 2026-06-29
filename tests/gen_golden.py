@@ -168,6 +168,12 @@ def main():
     saved["host@x_edge"] = acts["block0.edgewise.in1"]          # x_edge fed to edgewise
     saved["host@edge_envelope"] = acts["block0.edgewise.in6"]   # edge_envelope arg
     saved["host@x_message_init"] = acts["edge_degree.out0"]     # node feats after edge-degree emb
+    # SO3 grid transform matrices (fixed) for GridAtomwise; and the per-node system embedding
+    sg = backbone.SO3_grid["lmax_lmax"]
+    saved["host@to_grid_mat"] = npy(sg.to_grid_mat)
+    saved["host@from_grid_mat"] = npy(sg.from_grid_mat)
+    csd = backbone.csd_embedding(data["charge"], data["spin"], data.get("dataset", default=None))
+    saved["host@sys_node_embedding"] = npy(csd[data["batch"]])
     # outputs
     saved["out@node_embedding"] = npy(node_emb)
     saved["out@energy"] = npy(energy)
