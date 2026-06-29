@@ -314,3 +314,50 @@ def backbone_bw(bb, graph, node_emb):
         g = block_bw(blk, graph, g, acc)
     acc["x_init"] = g
     return acc
+
+
+# --------------------------------------------------------------------------- full energy+force
+
+
+def energy_and_forces(bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding):
+    """Conservative energy + analytic forces ``F = -dE/dpos`` for one system.
+
+    Device-resident forward + reverse VJP gives ``dE/d{geometric inputs}``; ``torch.autograd``
+    through the host geometry supplies the cheap ``d(geometric)/dpos`` to finish the force.
+    Returns ``(energy: float, forces: torch.Tensor[N,3])``.
+    """
+    import ttnn
+
+    from .model import GraphContext
+
+    device = bb.device
+    N, C = atomic_numbers.shape[0], geo.C
+    pos = pos.detach().clone().requires_grad_(True)
+    t = geo(pos, atomic_numbers, edge_index, sys_node_embedding)
+
+    graph = GraphContext(device, edge_index=edge_index, wigner=t["wigner"].detach(),
+                         wigner_inv=t["wigner_inv"].detach(), x_edge=t["x_edge"].detach(),
+                         edge_envelope=t["edge_envelope"].detach(), num_nodes=N)
+    se3 = ttnn.from_torch(sys_node_embedding.reshape(N, 1, C), dtype=ttnn.bfloat16,
+                          layout=ttnn.TILE_LAYOUT, device=device)
+    x_init = ttnn.from_torch(t["x_init"].detach(), dtype=ttnn.bfloat16,
+                             layout=ttnn.TILE_LAYOUT, device=device)
+    node_emb, energy = bb(x_init, graph, se3)
+    E = float(ttnn.to_torch(energy).reshape(-1)[0])
+
+    acc = backbone_bw(bb, graph, node_emb)
+    g_xi = ttnn.to_torch(acc["x_init"]).float()
+    g_wig = ttnn.to_torch(acc["wigner"]).float()
+    g_winv = ttnn.to_torch(acc["wigner_inv"]).float()
+    g_env = ttnn.to_torch(acc["envelope"]).float()
+    # host radial finish: radial-output adjoints -> g_x_edge
+    from .geometry import radial_mlp
+    xe = t["x_edge"].detach().clone().requires_grad_(True)
+    for conv, grad in acc["g_rad"]:
+        radial_mlp(xe, geo.w, conv.rad_prefix).backward(ttnn.to_torch(grad).float())
+    g_xe = xe.grad
+
+    g_pos = torch.autograd.grad(
+        [t["x_init"], t["wigner"], t["wigner_inv"], t["x_edge"], t["edge_envelope"]],
+        pos, grad_outputs=[g_xi, g_wig, g_winv, g_xe, g_env])[0]
+    return E, -g_pos

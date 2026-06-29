@@ -140,6 +140,16 @@ def main():
 
     backbone._get_rotmat_and_wigner = wrap_wigner
 
+    orig_graph = backbone._generate_graph
+
+    def wrap_graph(dd):
+        gd = orig_graph(dd)
+        captured["edge_distance_vec"] = npy(gd["edge_distance_vec"])
+        captured["edge_distance"] = npy(gd["edge_distance"])
+        return gd
+
+    backbone._generate_graph = wrap_graph
+
     # ---- forward + autograd forces -------------------------------------------------
     out = backbone(data)
     node_emb = out["node_embedding"]
@@ -165,6 +175,12 @@ def main():
     # host geometric terms TT-Atom precomputes
     saved["host@wigner"] = captured["wigner"]
     saved["host@wigner_inv"] = captured["wigner_inv"]
+    saved["host@edge_distance_vec"] = captured["edge_distance_vec"]
+    saved["host@edge_distance"] = captured["edge_distance"]
+    # fixed geometry buffers needed to rebuild the host pos->geometric Jacobian (forces)
+    saved["host@to_m"] = npy(backbone.mappingReduced.to_m)
+    saved["host@gauss_offset"] = npy(backbone.distance_expansion.offset)
+    saved["host@gauss_coeff"] = np.array([backbone.distance_expansion.coeff], dtype=np.float32)
     saved["host@x_edge"] = acts["block0.edgewise.in1"]          # x_edge fed to edgewise
     saved["host@edge_envelope"] = acts["block0.edgewise.in6"]   # edge_envelope arg
     saved["host@x_message_init"] = acts["edge_degree.out0"]     # node feats after edge-degree emb
