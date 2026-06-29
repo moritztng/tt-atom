@@ -7,7 +7,7 @@ import ttnn lazily so that ``import tt_atom`` is cheap and never opens a device.
 
 __version__ = "0.1.0"
 
-__all__ = ["TTAtomCalculator", "WeightBundle", "Backbone", "HostGeometry"]
+__all__ = ["TTAtomCalculator", "WeightBundle", "Backbone", "HostGeometry", "MultiCard"]
 
 
 def __getattr__(name):
@@ -28,4 +28,8 @@ def __getattr__(name):
         from .geometry import HostGeometry
 
         return HostGeometry
+    if name == "MultiCard":
+        from .batch import MultiCard
+
+        return MultiCard
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
