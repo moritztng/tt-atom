@@ -1,0 +1,9 @@
+env/
+__pycache__/
+*.pyc
+*.pt
+*.ckpt
+*.safetensors
+checkpoints/
+assets/*.npz
+.DS_Store
