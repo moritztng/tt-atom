@@ -52,13 +52,14 @@ def main():
     ap.add_argument("--cells", type=int, nargs="+", default=[1, 2, 3])
     ap.add_argument("--iters", type=int, default=20)
     ap.add_argument("--device-id", type=int, default=0)
+    ap.add_argument("--fast", action="store_true", help="bf8 weights + rotation coefficients")
     args = ap.parse_args()
 
     b = WeightBundle.load(args.weights)
     cfg, w = b.config, b.weights
     C = cfg["sphere_channels"]
     dev = D.open_device(args.device_id)
-    bb = Backbone(w, dev, cfg, b.to_grid_mat, b.from_grid_mat)
+    bb = Backbone(w, dev, cfg, b.to_grid_mat, b.from_grid_mat, fast=args.fast)
     geo = HostGeometry(w, cfg, b.to_m, b.gauss_offset, b.gauss_coeff, gamma=0.0)
     import ttnn
 
@@ -79,7 +80,7 @@ def main():
         def upload(t):
             graph = GraphContext(dev, edge_index=ei, wigner=t["wigner"].detach(),
                                  wigner_inv=t["wigner_inv"].detach(), x_edge=t["x_edge"].detach(),
-                                 edge_envelope=t["edge_envelope"].detach(), num_nodes=N)
+                                 edge_envelope=t["edge_envelope"].detach(), num_nodes=N, fast=args.fast)
             se3 = ttnn.from_torch(se.reshape(N, 1, C), dtype=ttnn.bfloat16,
                                   layout=ttnn.TILE_LAYOUT, device=dev)
             xi = ttnn.from_torch(t["x_init"].detach(), dtype=ttnn.bfloat16,
@@ -113,16 +114,27 @@ def main():
         with torch.no_grad():
             cpu_ms = time_it(cpu_fwd, max(3, args.iters // 4)) * 1e3
 
+        # honest accuracy: TT energy vs the CPU reference (same fp32 mirror)
+        _, en_tt = bb(xi, graph, se3)
+        e_tt = float(ttnn.to_torch(en_tt).reshape(-1)[0])
+        with torch.no_grad():
+            e_cpu = float(mirror.energy(mirror.backbone(
+                w, cfg, t["x_init"], t["wigner"], t["wigner_inv"], t["x_edge"],
+                t["edge_envelope"], se, ei, b.to_grid_mat, b.from_grid_mat), w))
+        rel_err = abs(e_tt - e_cpu) / (abs(e_cpu) + 1e-6)
+
         medges = E / (dev_ms * 1e-3) / 1e6
         rows.append(dict(cells=nc, natoms=N, nedges=E, dev_ms=dev_ms, e2e_ms=e2e_ms,
-                         cpu_ms=cpu_ms, medges_per_s=medges, speedup_e2e=cpu_ms / e2e_ms))
-        print(f"N={N:4d} E={E:5d}  dev={dev_ms:7.2f}ms  e2e={e2e_ms:7.2f}ms  "
-              f"cpu={cpu_ms:7.2f}ms  {medges:5.2f} Medges/s  e2e speedup x{cpu_ms/e2e_ms:.2f}")
+                         cpu_ms=cpu_ms, medges_per_s=medges, speedup_dev=cpu_ms / dev_ms,
+                         speedup_e2e=cpu_ms / e2e_ms, energy_rel_err=rel_err))
+        print(f"N={N:4d} E={E:5d}  dev={dev_ms:7.2f}ms  e2e={e2e_ms:7.2f}ms  cpu={cpu_ms:7.2f}ms  "
+              f"{medges:5.3f} Medges/s  dev x{cpu_ms/dev_ms:.2f}  e2e x{cpu_ms/e2e_ms:.2f}  "
+              f"Erel={rel_err:.1e}")
 
     ttnn.close_device(dev)
     RESULTS.mkdir(exist_ok=True)
-    out = RESULTS / "throughput.json"
-    out.write_text(json.dumps(dict(config=cfg, rows=rows), indent=2))
+    out = RESULTS / ("throughput_fast.json" if args.fast else "throughput.json")
+    out.write_text(json.dumps(dict(config=cfg, fast=args.fast, rows=rows), indent=2))
     print(f"wrote {out}")
 
 
