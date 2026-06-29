@@ -48,8 +48,11 @@ class GraphContext:
         Ssrc = torch.zeros(num_nodes, E)
         Ssrc[src.long(), torch.arange(E)] = 1.0
         self.scatter_src = _to_dev(Ssrc, device, wdtype)
-        self.wigner = _to_dev(wigner, device, wdtype)
-        self.wigner_inv = _to_dev(wigner_inv, device, wdtype)
+        # the per-edge Wigner bmm is the single most expensive op; bf8 operands run ~3x faster
+        # in isolation (~14% end-to-end) and preserve PCC (0.99997 on full cfg) -> use in --fast.
+        wig_dtype = ttnn.bfloat8_b if fast else wdtype
+        self.wigner = _to_dev(wigner, device, wig_dtype)
+        self.wigner_inv = _to_dev(wigner_inv, device, wig_dtype)
         self.x_edge = _to_dev(x_edge, device, wdtype)
         self.edge_envelope = _to_dev(edge_envelope, device, wdtype)
 

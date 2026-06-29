@@ -335,6 +335,8 @@ def energy_and_forces(bb, geo, pos, atomic_numbers, edge_index, sys_node_embeddi
     pos = pos.detach().clone().requires_grad_(True)
     t = geo(pos, atomic_numbers, edge_index, sys_node_embedding)
 
+    # the analytic-force backward keeps bf16 geometric operands (bf8 wigner would mix dtypes in
+    # the transpose-matmul adjoints); ``fast`` (bf8) is for the energy-throughput path.
     graph = GraphContext(device, edge_index=edge_index, wigner=t["wigner"].detach(),
                          wigner_inv=t["wigner_inv"].detach(), x_edge=t["x_edge"].detach(),
                          edge_envelope=t["edge_envelope"].detach(), num_nodes=N)
