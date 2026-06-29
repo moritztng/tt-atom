@@ -20,3 +20,6 @@ generated/
 
 # packaging
 *.egg-info/
+
+# benchmark outputs (machine-specific, regenerated)
+benchmarks/results/
