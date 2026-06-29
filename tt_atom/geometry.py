@@ -20,6 +20,33 @@ import torch.nn.functional as F
 EPS = 1e-7
 
 
+def csd_embedding(w, charge, spin, sphere_channels):
+    """System (charge/spin/dataset) embedding -> [nsys, C]. Mirrors fairchem ``csd_embedding``
+    with the ``pos_emb`` charge/spin encoding and the ``omat`` dataset token."""
+    def _cs(x, W, is_spin):
+        xp = x[:, None] * W[None, :] * 2 * math.pi
+        emb = torch.cat([torch.sin(xp), torch.cos(xp)], dim=-1)
+        if is_spin:
+            emb = emb.clone()
+            emb[torch.where(x == 0)[0]] = 0
+        return emb
+
+    chg = _cs(charge, w["charge_embedding.W"], False)
+    sp = _cs(spin, w["spin_embedding.W"], True)
+    ds = w["dataset_embedding.dataset_emb_dict.omat.weight"][0].expand(charge.shape[0], -1)
+    return F.silu(F.linear(torch.cat([chg, sp, ds], dim=1), w["mix_csd.weight"], w["mix_csd.bias"]))
+
+
+def radius_graph(pos, cutoff, cell=None, pbc=False):
+    """Brute-force O(N^2) neighbour list -> edge_index[2, E] (no self-loops). Aperiodic by
+    default; the geometric graph is host-side and a negligible fraction of the compute."""
+    N = pos.shape[0]
+    d = torch.linalg.norm(pos[:, None, :] - pos[None, :, :], dim=-1)
+    mask = (d < cutoff) & (d > 0)
+    src, tgt = torch.where(mask)
+    return torch.stack([src, tgt], dim=0)
+
+
 # ----------------------------------------------------------- rotation (vendored, MIT/e3nn 0.4)
 
 

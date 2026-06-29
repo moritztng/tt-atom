@@ -17,3 +17,6 @@ benchmarks/results/
 
 # ttnn runtime artifacts
 generated/
+
+# packaging
+*.egg-info/
