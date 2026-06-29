@@ -94,8 +94,8 @@ class SO2Convolution:
         ]
 
     def __call__(self, x, x_edge=None):
-        """x: ttnn ``[E, (lmax+1)**2, Cin]`` or flat ``[E, (lmax+1)**2 * Cin]``; returns
-        ``[E, (lmax+1)**2, H]`` (+ extra_m0 gating features ``[E, extra]`` when configured)."""
+        """x: ttnn ``[E, (lmax+1)**2, Cin]`` or flat ``[E, (lmax+1)**2 * Cin]``; returns flat
+        ``[E, (lmax+1)**2 * H]`` (+ extra_m0 gating features ``[E, extra]`` when configured)."""
         ttnn = self.ttnn
         E = x.shape[0]
         nsph = (self.lmax + 1) ** 2
@@ -144,6 +144,5 @@ class SO2Convolution:
             out_blocks.append(ttnn.subtract(r0, i1))     # real coeffs
             out_blocks.append(ttnn.add(i0, r1))          # imag coeffs
 
-        out = ttnn.concat(out_blocks, dim=1)             # [E, H*(lmax+1)^2]
-        out = ttnn.reshape(out, (E, nsph, self.H))
+        out = ttnn.concat(out_blocks, dim=1)             # flat [E, (lmax+1)^2 * H], m-primed
         return (out, extra) if self.extra else out
