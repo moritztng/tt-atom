@@ -73,39 +73,32 @@ def rmsnorm_bw(norm, g_out):
 
 
 def gate_bw(gate, g_out):
-    """VJP of ``GateActivation``. Returns (g_gating[N,lmax*H], g_x[N,nsph,H])."""
+    """VJP of ``GateActivation`` (flat). Returns (g_gating[E,lmax*H], g_x flat[E,nsph*H])."""
     ttnn = gate.ttnn
-    gating = gate._cache_gating                         # pre-sigmoid [N, lmax*H]
-    x = gate._cache_x                                   # pre-gate input [N,nsph,H]
-    N, nsph, H = x.shape
-    lmax = gate.lmax
-    ei = gate.expand_index
+    gating = gate._cache_gating                         # pre-sigmoid [E, lmax*H]
+    x = gate._cache_x                                   # pre-gate input flat [E, nsph*H]
+    E, H, lmax, ei = x.shape[0], gate.H, gate.lmax, gate.expand_index
 
     sig = ttnn.sigmoid(gating)
-    sig_v = ttnn.reshape(sig, (N, lmax, H))
-    gate_rows = [ttnn.slice(sig_v, [0, l, 0], [N, l + 1, H]) for l in range(lmax)]
-    gate_exp = ttnn.concat([gate_rows[i] for i in ei], dim=1)   # [N, nsph-1, H]
+    gate_exp = ttnn.concat([ttnn.slice(sig, [0, i * H], [E, (i + 1) * H]) for i in ei], dim=1)
 
-    g_scalar = ttnn.slice(g_out, [0, 0, 0], [N, 1, H])
-    g_vec = ttnn.slice(g_out, [0, 1, 0], [N, nsph, H])
-    x_scalar = ttnn.slice(x, [0, 0, 0], [N, 1, H])
-    x_vec = ttnn.slice(x, [0, 1, 0], [N, nsph, H])
+    g_scalar = ttnn.slice(g_out, [0, 0], [E, H])
+    g_vec = ttnn.slice(g_out, [0, H], [E, x.shape[1]])
+    x_scalar = ttnn.slice(x, [0, 0], [E, H])
+    x_vec = ttnn.slice(x, [0, H], [E, x.shape[1]])
 
-    g_x_scalar = silu_bw(ttnn, g_scalar, x_scalar)
-    g_x_vec = ttnn.multiply(g_vec, gate_exp)
-    g_x = ttnn.concat([g_x_scalar, g_x_vec], dim=1)
+    g_x = ttnn.concat([silu_bw(ttnn, g_scalar, x_scalar), ttnn.multiply(g_vec, gate_exp)], dim=1)
 
-    g_gate_exp = ttnn.multiply(g_vec, x_vec)            # [N,nsph-1,H]
-    # segment-sum back to [N,lmax,H] over expand_index
+    g_gate_exp = ttnn.multiply(g_vec, x_vec)            # [E, (nsph-1)*H]
+    # segment-sum the H-blocks back to [E, lmax*H] over expand_index
     rows = []
     for l in range(lmax):
         pos = [k for k, e in enumerate(ei) if e == l]
-        acc = ttnn.slice(g_gate_exp, [0, pos[0], 0], [N, pos[0] + 1, H])
+        acc = ttnn.slice(g_gate_exp, [0, pos[0] * H], [E, (pos[0] + 1) * H])
         for k in pos[1:]:
-            acc = ttnn.add(acc, ttnn.slice(g_gate_exp, [0, k, 0], [N, k + 1, H]))
+            acc = ttnn.add(acc, ttnn.slice(g_gate_exp, [0, k * H], [E, (k + 1) * H]))
         rows.append(acc)
-    g_sig = ttnn.concat(rows, dim=1)                    # [N,lmax,H]
-    g_sig = ttnn.reshape(g_sig, (N, lmax * H))
+    g_sig = ttnn.concat(rows, dim=1)                    # [E, lmax*H]
     g_gating = ttnn.sigmoid_bw(g_sig, gating)[0]
     return g_gating, g_x
 
@@ -125,7 +118,7 @@ def so2_bw(conv, g_out, g_extra=None):
     nsph = (lmax + 1) ** 2
     E = g_out.shape[0]
 
-    gf = ttnn.reshape(g_out, (E, nsph * H))
+    gf = g_out if len(g_out.shape) == 2 else ttnn.reshape(g_out, (E, nsph * H))
     # split g into out-blocks: m0 (lmax+1 coeffs), then per m>0 (real Hh, imag Hh)
     coeff_w = []                                        # column width per out-block (in H units)
     coeff_w.append((lmax + 1) * H)
@@ -230,10 +223,9 @@ def edgewise_bw(ew, graph, g_out, acc):
     # envelope: m_env = m_so2 * envelope  (flat [E,9C] * [E,1])
     g_mso2 = ttnn.multiply(g_menv, graph.edge_envelope_f)
     g_env = ttnn.sum(ttnn.multiply(g_menv, ew._cache_mso2), dim=1, keepdim=True)   # [E,1]
-    # so2_2 -> gate -> so2_1 (so2_bw returns flat; gate works in 3D)
-    g_mso2_3d = ttnn.reshape(g_mso2, (E, nsph, C))
-    g_mgate, _ = so2_bw(ew.so2_2, g_mso2_3d)
-    g_gating, g_mso1 = gate_bw(ew.gate, ttnn.reshape(g_mgate, (E, nsph, ew.so2_2.Cin)))
+    # so2_2 -> gate -> so2_1 (all flat)
+    g_mgate, _ = so2_bw(ew.so2_2, g_mso2)
+    g_gating, g_mso1 = gate_bw(ew.gate, g_mgate)
     g_mrot, g_rad = so2_bw(ew.so2_1, g_mso1, g_gating)         # g_mrot flat [E, 9*2C]
     # forward rotation: m_rot = rotate_fwd(m_cat)
     g_mcat, g_rfwd = rotation.rotate_bw(ttnn, ew._cache_mcat, g_mrot,

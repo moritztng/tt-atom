@@ -33,17 +33,15 @@ class GateActivation:
         self.expand_index = _expand_index_m_prime(lmax, mmax)
 
     def __call__(self, gating_scalars, x):
-        """gating_scalars: ttnn ``[N, lmax*H]``; x: ttnn ``[N, nsph, H]`` (m-primed)."""
+        """gating_scalars: ttnn ``[E, lmax*H]``; x: flat ttnn ``[E, nsph*H]`` (m-primed).
+        Returns flat ``[E, nsph*H]``."""
         ttnn = self.ttnn
-        N = x.shape[0]
+        E, H = x.shape[0], self.H
         self._cache_gating, self._cache_x = gating_scalars, x   # for the analytic-force VJP
-        g = ttnn.sigmoid(gating_scalars)
-        g = ttnn.reshape(g, (N, self.lmax, self.H))
-        # gather gate rows per vector coefficient (lmax distinct rows -> slice+concat)
-        rows = [ttnn.slice(g, [0, l, 0], [N, l + 1, self.H]) for l in range(self.lmax)]
-        gate = ttnn.concat([rows[i] for i in self.expand_index], dim=1)   # [N, nsph-1, H]
-
-        scalar = ttnn.silu(ttnn.slice(x, [0, 0, 0], [N, 1, self.H]))
-        vector = ttnn.slice(x, [0, 1, 0], [N, x.shape[1], self.H])
-        vector = ttnn.multiply(vector, gate)
+        g = ttnn.sigmoid(gating_scalars)                         # [E, lmax*H], H-block per degree
+        # gather a gate row (H channels) per vector coefficient: lmax distinct rows -> slice+concat
+        gate = ttnn.concat([ttnn.slice(g, [0, i * H], [E, (i + 1) * H])
+                            for i in self.expand_index], dim=1)  # [E, (nsph-1)*H]
+        scalar = ttnn.silu(ttnn.slice(x, [0, 0], [E, H]))        # l=0 coeff
+        vector = ttnn.multiply(ttnn.slice(x, [0, H], [E, x.shape[1]]), gate)
         return ttnn.concat([scalar, vector], dim=1)

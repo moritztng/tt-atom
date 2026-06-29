@@ -53,10 +53,9 @@ class Edgewise:
         m_cat = ttnn.reshape(ttnn.concat([xs, xt], dim=2), (E, nsph * 2 * C))   # flat, [xs_i|xt_i] per coord
 
         m_rot = rotation.rotate(ttnn, m_cat, graph.rot_fwd_ij, graph.rot_fwd_coef, nsph, 2 * C, dev)
-        m, gating = self.so2_1(m_rot, graph.x_edge)       # so2 accepts flat input, returns [E,nsph,H]
+        m, gating = self.so2_1(m_rot, graph.x_edge)       # flat in/out throughout
         m = self.gate(gating, m)
-        m = self.so2_2(m, graph.x_edge)                   # [E, nsph, C]
-        m_so2 = ttnn.reshape(m, (E, nsph * C))
+        m_so2 = self.so2_2(m, graph.x_edge)               # flat [E, nsph*C]
         m_env = ttnn.multiply(m_so2, graph.edge_envelope_f)            # [E,1] broadcast
         m_back = rotation.rotate(ttnn, m_env, graph.rot_inv_ij, graph.rot_inv_coef, nsph, C, dev)
         self._cache_mcat, self._cache_mso2, self._cache_menv = m_cat, m_so2, m_env
