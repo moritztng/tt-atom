@@ -37,28 +37,29 @@ class Edgewise:
             lmax=lmax, mmax=mmax, extra_m0_output_channels=0, fast=fast)
 
     def __call__(self, x, graph):
-        """x: ttnn ``[N, nsph, C]``; ``graph`` carries the on-device geometric terms."""
-        ttnn = self.ttnn
-        N, nsph = x.shape[0], x.shape[1]
-        xf = ttnn.reshape(x, (N, nsph * self.C))          # [N, 9C] row-major gather operand
-        xf = ttnn.to_layout(xf, ttnn.ROW_MAJOR_LAYOUT)
-        xs = ttnn.reshape(ttnn.embedding(graph.src_idx, xf), (graph.E, nsph, self.C))
-        xt = ttnn.reshape(ttnn.embedding(graph.tgt_idx, xf), (graph.E, nsph, self.C))
-        xs = ttnn.to_layout(xs, ttnn.TILE_LAYOUT)
-        xt = ttnn.to_layout(xt, ttnn.TILE_LAYOUT)
+        """x: ttnn ``[N, nsph, C]``; ``graph`` carries the on-device geometric terms.
 
-        m_cat = ttnn.concat([xs, xt], dim=2)              # [E, 9, 2C]
-        m = ttnn.matmul(graph.wigner, m_cat, compute_kernel_config=self.kcfg)  # rotate to edge frame
-        m, gating = self.so2_1(m, graph.x_edge)
+        Runs flat ``[E, nsph*C]`` end to end: gather (row select) -> per-coordinate concat of
+        source|target -> rotate to edge frame (sparse MAC) -> SO(2) conv x2 + gate -> radial
+        envelope -> rotate back -> scatter-add to targets (one-hot matmul)."""
+        ttnn = self.ttnn
+        from . import rotation
+        N, nsph, C = x.shape[0], x.shape[1], self.C
+        E = graph.E
+        dev = self.device
+        xf = ttnn.to_layout(ttnn.reshape(x, (N, nsph * C)), ttnn.ROW_MAJOR_LAYOUT)  # gather operand
+        xs = ttnn.to_layout(ttnn.reshape(ttnn.embedding(graph.src_idx, xf), (E, nsph, C)), ttnn.TILE_LAYOUT)
+        xt = ttnn.to_layout(ttnn.reshape(ttnn.embedding(graph.tgt_idx, xf), (E, nsph, C)), ttnn.TILE_LAYOUT)
+        m_cat = ttnn.reshape(ttnn.concat([xs, xt], dim=2), (E, nsph * 2 * C))   # flat, [xs_i|xt_i] per coord
+
+        m_rot = rotation.rotate(ttnn, m_cat, graph.rot_fwd_ij, graph.rot_fwd_coef, nsph, 2 * C, dev)
+        m, gating = self.so2_1(m_rot, graph.x_edge)       # so2 accepts flat input, returns [E,nsph,H]
         m = self.gate(gating, m)
-        m = self.so2_2(m, graph.x_edge)
-        m_so2 = m
-        m = ttnn.multiply(m, graph.edge_envelope)         # [E,1,1] broadcast
-        m_env = m
-        m = ttnn.matmul(graph.wigner_inv, m, compute_kernel_config=self.kcfg)  # rotate back
+        m = self.so2_2(m, graph.x_edge)                   # [E, nsph, C]
+        m_so2 = ttnn.reshape(m, (E, nsph * C))
+        m_env = ttnn.multiply(m_so2, graph.edge_envelope_f)            # [E,1] broadcast
+        m_back = rotation.rotate(ttnn, m_env, graph.rot_inv_ij, graph.rot_inv_coef, nsph, C, dev)
         self._cache_mcat, self._cache_mso2, self._cache_menv = m_cat, m_so2, m_env
 
-        # scatter-add to target nodes:  out[N,9,C] = S[N,E] @ m[E,9C]
-        mf = ttnn.reshape(m, (graph.E, nsph * self.C))
-        out = ttnn.matmul(graph.scatter, mf, compute_kernel_config=self.kcfg)
-        return ttnn.reshape(out, (N, nsph, self.C))
+        out = ttnn.matmul(graph.scatter, m_back, compute_kernel_config=self.kcfg)   # [N, 9C]
+        return ttnn.reshape(out, (N, nsph, C))

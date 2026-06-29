@@ -114,7 +114,7 @@ def gate_bw(gate, g_out):
 
 
 def so2_bw(conv, g_out, g_extra=None):
-    """VJP of ``SO2Convolution``. Returns (g_x[E,nsph,Cin], g_rad or None).
+    """VJP of ``SO2Convolution``. Returns (g_x flat ``[E, nsph*Cin]``, g_rad or None).
 
     ``g_rad`` is the adjoint at the radial-MLP *output* (the per-m multiplier), to be finished
     on host. Matmul backward = transpose-matmul on device."""
@@ -178,8 +178,7 @@ def so2_bw(conv, g_out, g_extra=None):
             g_rad_parts.append(ttnn.add(segs[i], segs[i + 1])); i += 2
         g_rad = ttnn.concat(g_rad_parts, dim=1)         # [E, sum rad_sizes]
 
-    g_x = ttnn.reshape(g_xf, (E, nsph, Cin))
-    return g_x, g_rad
+    return g_xf, g_rad                                  # g_xf flat [E, nsph*Cin]
 
 
 # --------------------------------------------------------------------------- grid atomwise
@@ -207,57 +206,49 @@ def grid_bw(grid, g_out):
     return ttnn.transpose(g_xt, 1, 2)                   # [N,nsph,C]
 
 
-# --------------------------------------------------------------------------- bmm / scatter
-
-
-def bmm_bw(ttnn, W, x, g_out, kcfg):
-    """y = bmm(W, x). Returns (g_W, g_x)."""
-    g_W = ttnn.matmul(g_out, ttnn.transpose(x, 1, 2), compute_kernel_config=kcfg)
-    g_x = ttnn.matmul(ttnn.transpose(W, 1, 2), g_out, compute_kernel_config=kcfg)
-    return g_W, g_x
-
-
 # --------------------------------------------------------------------------- edgewise
 
 
 def edgewise_bw(ew, graph, g_out, acc):
-    """VJP of ``Edgewise``. Returns g wrt node features [N,nsph,C]; accumulates the geometric
-    adjoints (g_wigner, g_wigner_inv, g_envelope) and the radial adjoint g_rad into ``acc``."""
+    """VJP of ``Edgewise`` (flat MAC rotations). Returns g wrt node features [N,nsph,C];
+    accumulates the geometric coefficient adjoints (g rot_fwd / rot_inv, g_envelope) and the
+    radial adjoint g_rad into ``acc``."""
+    from . import rotation
     ttnn = ew.ttnn
     kcfg = ew.kcfg
     C = ew.C
     N, nsph = g_out.shape[0], g_out.shape[1]
     E = graph.E
+    dev = ew.device
 
-    # scatter backward: g_m[e] = g_out[tgt[e]]  (gather by target)
+    # scatter backward: g_m_back[e] = g_out[tgt[e]]  (gather by target), flat [E,9C]
     gof = ttnn.to_layout(ttnn.reshape(g_out, (N, nsph * C)), ttnn.ROW_MAJOR_LAYOUT)
-    g_m = ttnn.reshape(ttnn.embedding(graph.tgt_idx, gof), (E, nsph, C))
-    g_m = ttnn.to_layout(g_m, ttnn.TILE_LAYOUT)
-
-    # bmm(wigner_inv): m = bmm(winv, m_env)
-    g_winv, g_menv = bmm_bw(ttnn, graph.wigner_inv, ew._cache_menv, g_m, kcfg)
-    # envelope: m_env = m_so2 * envelope
-    g_mso2 = ttnn.multiply(g_menv, graph.edge_envelope)
-    g_env = ttnn.sum(ttnn.sum(ttnn.multiply(g_menv, ew._cache_mso2), dim=1, keepdim=True),
-                     dim=2, keepdim=True)               # [E,1,1]
-    # so2_2 -> gate -> so2_1
-    g_mgate, _ = so2_bw(ew.so2_2, g_mso2)
-    g_gating, g_mso1 = gate_bw(ew.gate, g_mgate)
-    g_mrot, g_rad = so2_bw(ew.so2_1, g_mso1, g_gating)
-    # bmm(wigner): m_rot = bmm(wigner, m_cat)
-    g_wigner, g_mcat = bmm_bw(ttnn, graph.wigner, ew._cache_mcat, g_mrot, kcfg)
-    # concat([xs,xt],dim2) backward
-    g_xs = ttnn.slice(g_mcat, [0, 0, 0], [E, nsph, C])
-    g_xt = ttnn.slice(g_mcat, [0, 0, C], [E, nsph, 2 * C])
+    g_mback = ttnn.to_layout(ttnn.embedding(graph.tgt_idx, gof), ttnn.TILE_LAYOUT)
+    # inverse rotation: m_back = rotate_inv(m_env)
+    g_menv, g_rinv = rotation.rotate_bw(ttnn, ew._cache_menv, g_mback,
+                                        graph.rot_inv_ij, graph.rot_inv_coef, nsph, C, dev)
+    # envelope: m_env = m_so2 * envelope  (flat [E,9C] * [E,1])
+    g_mso2 = ttnn.multiply(g_menv, graph.edge_envelope_f)
+    g_env = ttnn.sum(ttnn.multiply(g_menv, ew._cache_mso2), dim=1, keepdim=True)   # [E,1]
+    # so2_2 -> gate -> so2_1 (so2_bw returns flat; gate works in 3D)
+    g_mso2_3d = ttnn.reshape(g_mso2, (E, nsph, C))
+    g_mgate, _ = so2_bw(ew.so2_2, g_mso2_3d)
+    g_gating, g_mso1 = gate_bw(ew.gate, ttnn.reshape(g_mgate, (E, nsph, ew.so2_2.Cin)))
+    g_mrot, g_rad = so2_bw(ew.so2_1, g_mso1, g_gating)         # g_mrot flat [E, 9*2C]
+    # forward rotation: m_rot = rotate_fwd(m_cat)
+    g_mcat, g_rfwd = rotation.rotate_bw(ttnn, ew._cache_mcat, g_mrot,
+                                        graph.rot_fwd_ij, graph.rot_fwd_coef, nsph, 2 * C, dev)
+    # m_cat per coord = [xs_i | xt_i]; split channels back out
+    g_mcat3 = ttnn.reshape(g_mcat, (E, nsph, 2 * C))
+    g_xs_f = ttnn.reshape(ttnn.slice(g_mcat3, [0, 0, 0], [E, nsph, C]), (E, nsph * C))
+    g_xt_f = ttnn.reshape(ttnn.slice(g_mcat3, [0, 0, C], [E, nsph, 2 * C]), (E, nsph * C))
     # gather backward (embedding) as one-hot matmuls: g_nodes = S_src @ g_xs + S_tgt @ g_xt
-    g_xs_f = ttnn.reshape(g_xs, (E, nsph * C))
-    g_xt_f = ttnn.reshape(g_xt, (E, nsph * C))
     g_nodes = ttnn.add(ttnn.matmul(graph.scatter_src, g_xs_f, compute_kernel_config=kcfg),
                        ttnn.matmul(graph.scatter, g_xt_f, compute_kernel_config=kcfg))
     g_nodes = ttnn.reshape(g_nodes, (N, nsph, C))
 
-    acc["wigner"] = g_wigner if acc["wigner"] is None else ttnn.add(acc["wigner"], g_wigner)
-    acc["wigner_inv"] = g_winv if acc["wigner_inv"] is None else ttnn.add(acc["wigner_inv"], g_winv)
+    acc["rot_fwd"] = g_rfwd if acc["rot_fwd"] is None else ttnn.add(acc["rot_fwd"], g_rfwd)
+    acc["rot_inv"] = g_rinv if acc["rot_inv"] is None else ttnn.add(acc["rot_inv"], g_rinv)
     acc["envelope"] = g_env if acc["envelope"] is None else ttnn.add(acc["envelope"], g_env)
     acc["g_rad"].append((ew.so2_1, g_rad))
     return g_nodes
@@ -304,7 +295,7 @@ def backbone_bw(bb, graph, node_emb):
     (g_x_init, g_wigner, g_wigner_inv, g_envelope) plus per-conv radial adjoints g_rad
     (list of (conv, g_rad)) for the host radial finish that yields g_x_edge."""
     ttnn = bb.ttnn
-    acc = {"wigner": None, "wigner_inv": None, "envelope": None, "g_rad": []}
+    acc = {"rot_fwd": None, "rot_inv": None, "envelope": None, "g_rad": []}
     g = energy_bw(bb, node_emb)
     g = rmsnorm_bw(bb.final_norm, g)
     for blk in reversed(bb.blocks):
@@ -344,11 +335,14 @@ def energy_and_forces(bb, geo, pos, atomic_numbers, edge_index, sys_node_embeddi
     node_emb, energy = bb(x_init, graph, se3)
     E = float(ttnn.to_torch(energy).reshape(-1)[0])
 
+    from . import rotation
     acc = backbone_bw(bb, graph, node_emb)
+    nsph = graph.nsph
     g_xi = ttnn.to_torch(acc["x_init"]).float()
-    g_wig = ttnn.to_torch(acc["wigner"]).float()
-    g_winv = ttnn.to_torch(acc["wigner_inv"]).float()
-    g_env = ttnn.to_torch(acc["envelope"]).float()
+    # scatter packed rotation-coefficient adjoints back to dense [E,9,9] for the host dW/dpos
+    g_wig = rotation.scatter_coef(ttnn.to_torch(acc["rot_fwd"]).float(), graph.rot_fwd_ij, nsph)
+    g_winv = rotation.scatter_coef(ttnn.to_torch(acc["rot_inv"]).float(), graph.rot_inv_ij, nsph)
+    g_env = ttnn.to_torch(acc["envelope"]).float().reshape(-1, 1, 1)   # [E,1]->[E,1,1]
     # host radial finish: radial-output adjoints -> g_x_edge
     from .geometry import radial_mlp
     xe = t["x_edge"].detach().clone().requires_grad_(True)
