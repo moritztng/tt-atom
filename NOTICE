@@ -1,0 +1,21 @@
+TT-Atom
+Copyright 2026 Moritz Thüning
+
+This product is licensed under the Apache License, Version 2.0 (the "License");
+see the LICENSE file.
+
+----------------------------------------------------------------------
+
+TT-Atom is an independent implementation of the eSEN / eSCN-MD (UMA-family)
+equivariant machine-learning interatomic potential architecture for Tenstorrent
+hardware via ttnn. It does NOT include any model weights.
+
+The eSEN / eSCN-MD architecture and the reference implementation (fairchem-core)
+are developed by the FAIR Chemistry team at Meta. UMA and eSEN model checkpoints
+are distributed separately by Meta under their own licenses (e.g. the FAIR
+Chemistry License / OMat24 terms) and are NOT redistributed here. Users must
+obtain a checkpoint directly from the original source and comply with its license.
+
+fairchem-core (https://github.com/FAIR-Chem/fairchem) is licensed under the MIT
+License and is an optional dependency, used only for checkpoint loading and for
+generating golden reference tensors.
