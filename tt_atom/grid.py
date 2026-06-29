@@ -55,8 +55,11 @@ class GridAtomwise:
         g = ttnn.matmul(xt, self.tg_T, compute_kernel_config=self.kcfg)  # [N, C, npts]
         g = ttnn.transpose(g, 1, 2)                          # [N, npts, C]
         # pointwise MLP over channels (no bias, SiLU between)
-        g = ttnn.silu(ttnn.matmul(g, self.w0, compute_kernel_config=self.kcfg))
-        g = ttnn.silu(ttnn.matmul(g, self.w2, compute_kernel_config=self.kcfg))
+        a1 = ttnn.matmul(g, self.w0, compute_kernel_config=self.kcfg)
+        g = ttnn.silu(a1)
+        a2 = ttnn.matmul(g, self.w2, compute_kernel_config=self.kcfg)
+        g = ttnn.silu(a2)
+        self._cache_a1, self._cache_a2 = a1, a2              # for the analytic-force VJP
         g = ttnn.matmul(g, self.w4, compute_kernel_config=self.kcfg)     # [N, npts, C]
         # from_grid: x[z, i, c] = sum_p fg[p, i] x_grid[z, p, c]
         gt = ttnn.transpose(g, 1, 2)                         # [N, C, npts]
