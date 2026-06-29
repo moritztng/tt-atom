@@ -20,17 +20,19 @@ from .weights import WeightBundle
 class TTAtomCalculator(Calculator):
     implemented_properties = ["energy", "energies", "free_energy", "forces"]
 
-    def __init__(self, bundle, device=None, device_id=0, gamma=0.0, **kwargs):
+    def __init__(self, bundle, device=None, device_id=0, gamma=0.0, fast=False, **kwargs):
         super().__init__(**kwargs)
         if isinstance(bundle, str):
             bundle = WeightBundle.load(bundle)
         self.bundle = bundle
         self.cfg = bundle.config
         self.C = self.cfg["sphere_channels"]
+        self.fast = fast
         self._owns_device = device is None
         self.device = device if device is not None else D.open_device(device_id)
         w = bundle.weights
-        self.backbone = Backbone(w, self.device, self.cfg, bundle.to_grid_mat, bundle.from_grid_mat)
+        self.backbone = Backbone(w, self.device, self.cfg, bundle.to_grid_mat,
+                                 bundle.from_grid_mat, fast=fast)
         self.geo = HostGeometry(w, self.cfg, bundle.to_m, bundle.gauss_offset,
                                 bundle.gauss_coeff, gamma=gamma)
         self._w = w
