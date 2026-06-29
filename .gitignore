@@ -14,3 +14,6 @@ benchmarks/results/
 # Golden parity fixtures ARE committed (small, our own random weights, not gated). Allow them:
 !tests/data/
 !tests/data/*.npz
+
+# ttnn runtime artifacts
+generated/

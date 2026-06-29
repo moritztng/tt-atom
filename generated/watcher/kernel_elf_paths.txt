@@ -1,4 +1,0 @@
-0: blank
-3: /home/ttuser/.cache/tt-metal-cache/4770564428546028417/kernels/cq_dispatch_subordinate/9667041849812526487//ncrisc/ncrisc.elf
-2: /home/ttuser/.cache/tt-metal-cache/4770564428546028417/kernels/cq_dispatch/15996902390632013331//brisc/brisc.elf
-1: /home/ttuser/.cache/tt-metal-cache/4770564428546028417/kernels/cq_prefetch/1807877066121708630//brisc/brisc.elf
