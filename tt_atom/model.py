@@ -48,13 +48,19 @@ class GraphContext:
         Ssrc = torch.zeros(num_nodes, E)
         Ssrc[src.long(), torch.arange(E)] = 1.0
         self.scatter_src = _to_dev(Ssrc, device, wdtype)
-        # the per-edge Wigner bmm is the single most expensive op; bf8 operands run ~3x faster
-        # in isolation (~14% end-to-end) and preserve PCC (0.99997 on full cfg) -> use in --fast.
+        # Wigner rotation as a flat sparse multiply-accumulate (see rotation.py): pack the dense
+        # per-edge matrices to their structural nonzeros. bf8 coefficients run faster and stay
+        # PCC-safe (the rotation is an orthogonal basis change) -> use in --fast.
+        from . import rotation
+        self.nsph = wigner.shape[1]
         wig_dtype = ttnn.bfloat8_b if fast else wdtype
-        self.wigner = _to_dev(wigner, device, wig_dtype)
-        self.wigner_inv = _to_dev(wigner_inv, device, wig_dtype)
+        self.rot_fwd_ij, cf = rotation.pack(wigner)
+        self.rot_inv_ij, ci = rotation.pack(wigner_inv)
+        self.rot_fwd_coef = _to_dev(cf, device, wig_dtype)
+        self.rot_inv_coef = _to_dev(ci, device, wig_dtype)
         self.x_edge = _to_dev(x_edge, device, wdtype)
-        self.edge_envelope = _to_dev(edge_envelope, device, wdtype)
+        self.edge_envelope = _to_dev(edge_envelope, device, wdtype)            # [E,1,1]
+        self.edge_envelope_f = _to_dev(edge_envelope.reshape(E, 1), device, wdtype)  # flat bcast
 
 
 class _Block:

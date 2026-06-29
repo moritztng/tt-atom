@@ -5,11 +5,12 @@ This isolates the *device backward* (the hard, hand-written part). The remaining
 geometric Jacobian ``d(geometric)/dpos`` is exercised by the end-to-end force test once
 ``tt_atom/geometry.py`` lands.
 """
+import torch
 import ttnn
 
 import mirror
 from tt_atom.model import Backbone, GraphContext
-from tt_atom import forces
+from tt_atom import forces, rotation
 from util import pcc
 
 
@@ -43,10 +44,20 @@ def test_backbone_vjp(golden, device):
     node_emb = bb.node_embedding(xi, graph, se3)
     acc = forces.backbone_bw(bb, graph, node_emb)
 
+    # Rotation adjoints are now per-edge sparse coefficients (rotation.py). Compare only the
+    # structural-nonzero pattern: off-pattern dE/dW entries are nonzero but irrelevant to the
+    # force (W is structurally zero there for *all* directions, so dW/dpos == 0).
+    nsph = graph.nsph
+
+    def on_pattern(g_coef_key, ij, ref_grad):
+        g_coef = ttnn.to_torch(acc[g_coef_key]).float()
+        ref = torch.stack([ref_grad[:, i, j] for (i, j) in ij], dim=1)   # [E, nnz]
+        return pcc(g_coef, ref)
+
     assert pcc(ttnn.to_torch(acc["x_init"]).float(), lv["xi"].grad) >= 0.98
-    assert pcc(ttnn.to_torch(acc["wigner"]).float(), lv["wig"].grad) >= 0.98
-    assert pcc(ttnn.to_torch(acc["wigner_inv"]).float(), lv["winv"].grad) >= 0.98
-    assert pcc(ttnn.to_torch(acc["envelope"]).float(), lv["env"].grad) >= 0.98
+    assert on_pattern("rot_fwd", graph.rot_fwd_ij, lv["wig"].grad) >= 0.98
+    assert on_pattern("rot_inv", graph.rot_inv_ij, lv["winv"].grad) >= 0.98
+    assert pcc(ttnn.to_torch(acc["envelope"]).float().reshape(-1, 1, 1), lv["env"].grad) >= 0.98
 
     # host radial finish: g_rad (radial-MLP output adjoint) -> g_x_edge
     xel = _leaves(golden)["xe"].clone().requires_grad_()

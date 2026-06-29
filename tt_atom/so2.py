@@ -94,12 +94,12 @@ class SO2Convolution:
         ]
 
     def __call__(self, x, x_edge=None):
-        """x: ttnn ``[E, (lmax+1)**2, Cin]``; returns ``[E, (lmax+1)**2, H]`` (+ extra_m0
-        gating features ``[E, extra]`` when configured)."""
+        """x: ttnn ``[E, (lmax+1)**2, Cin]`` or flat ``[E, (lmax+1)**2 * Cin]``; returns
+        ``[E, (lmax+1)**2, H]`` (+ extra_m0 gating features ``[E, extra]`` when configured)."""
         ttnn = self.ttnn
         E = x.shape[0]
         nsph = (self.lmax + 1) ** 2
-        xf = ttnn.reshape(x, (E, nsph * self.Cin))
+        xf = ttnn.reshape(x, (E, nsph * self.Cin)) if len(x.shape) == 3 else x
 
         if self.has_radial:
             rad = self.rad(x_edge)                       # [E, sum(num_coef*Cin)]
