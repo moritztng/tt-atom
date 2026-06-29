@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tt-atom"
+version = "0.1.0"
+description = "High-performance Tenstorrent inference for eSEN / eSCN-MD (UMA-family) ML interatomic potentials"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Moritz Thüning" }]
+keywords = ["tenstorrent", "ttnn", "machine-learning-potential", "eSEN", "eSCN", "UMA", "equivariant", "MLIP"]
+
+# Core runtime deps. ttnn is the Tenstorrent runtime; torch/ase are host-side glue.
+# numpy is pinned <2 because the ttnn wheel is built against the numpy 1.x C ABI.
+dependencies = [
+    "numpy<2",
+    "torch",
+    "ase>=3.26",
+]
+
+[project.optional-dependencies]
+# fairchem is needed ONLY to (a) load a real UMA/eSEN checkpoint and (b) generate the
+# golden reference tensors used by the parity tests. It pulls numpy>=2 and therefore
+# must live in a SEPARATE environment from ttnn (see README "Reference environment").
+reference = ["fairchem-core>=2.10"]
+dev = ["pytest", "matplotlib"]
+
+[project.urls]
+Homepage = "https://github.com/moritztng/tt-atom"
+
+[tool.setuptools.packages.find]
+include = ["tt_atom*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

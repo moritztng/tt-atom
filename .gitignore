@@ -7,3 +7,10 @@ __pycache__/
 checkpoints/
 assets/*.npz
 .DS_Store
+
+# Generated benchmark artifacts (committed charts live in assets/; raw data does not)
+benchmarks/results/
+
+# Golden parity fixtures ARE committed (small, our own random weights, not gated). Allow them:
+!tests/data/
+!tests/data/*.npz
