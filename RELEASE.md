@@ -54,19 +54,34 @@ accumulation) is the recommended default.
 Validated with **random weights** against a bit-exact PyTorch reference: per-module PCC ≥ 0.99,
 end-to-end energy and analytic forces, an ASE FIRE relaxation that converges on device.
 
-**Not** claimed: accuracy against published UMA energies/forces — that needs the gated
-`facebook/UMA` checkpoint. TT-Atom is the implementation; real weights are drop-in via
-`tools/export_weights.py` + `weights.py` (key/shape coverage is checked). No weights are shipped
-or redistributed; they remain under the FAIR Chemistry License.
+Validated with **real `facebook/UMA` uma-s-1 weights** against the official fairchem reference
+(single p150, ethanol / `omol`; reproducible via `tests/test_realweight.py`):
+
+- MoLE experts host-merged to a plain `eSCNMDBackbone` (fairchem's own `merge_mole` path):
+  merged vs unmerged-MoE oracle **E rel 1.3e-12, force PCC 1.0**.
+- end-to-end device **energy rel error 1.8e-7** (−4218.471 eV vs oracle −4218.472),
+  **analytic-force PCC 0.99958** (cosine 0.99958, MAE 3.4e-3 eV/Å).
+- real-weight ASE FIRE relaxation of ethanol **converges on device**: fmax 9.16 → 0.049 eV/Å
+  in 58 steps. This closes the earlier "real-weight accuracy pending checkpoint access" caveat.
+
+This required: a host MoLE merge, the spectral feed-forward (`ff_type=spectral`) device-resident
+with its analytic-force VJP, the `rand_emb` charge/spin/dataset embedding, and the per-task energy
+normalizer (`E = rmsd·E_raw + Σ element_refs[Z]`). Perf and multi-card numbers above are unchanged
+and were measured separately; **real-weight validation here is single-p150 only**.
+
+No weights are shipped or redistributed; the `facebook/UMA` checkpoint is gated under the FAIR
+Chemistry License and the real-weight tests auto-skip when it is absent. Real weights are drop-in
+via `tools/export_weights.py` + `weights.py` (key/shape coverage is checked).
 
 ## Suggested social post (draft)
 
 > Got Meta's UMA-family equivariant interatomic potential (eSEN / eSCN-MD) running on
 > Tenstorrent — energy **and analytic forces**, device-resident, behind an ASE calculator.
+> Now matching the **real released uma-s-1 weights**: energy to 2e-7, analytic-force PCC
+> **0.9996** vs the fairchem reference, and a real-weight relaxation that converges on device.
 > The SO(2)-convolution trick makes it ~90 % dense GEMM, so it maps beautifully to the
 > hardware: **up to 5.3× faster than CPU** and the gap grows with system size, **~4× linear
-> scaling across 4 Blackhole cards**, analytic-force PCC 0.99996. Apache-2.0, bring your own
-> checkpoint. 🧪⚡
+> scaling across 4 Blackhole cards**. Apache-2.0, bring your own checkpoint. 🧪⚡
 
 ## Status
 

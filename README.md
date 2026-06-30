@@ -52,11 +52,30 @@ reference, with **random weights** (an unconstrained but valid eSCN-MD model):
 | analytic force PCC / cosine | **0.99996 / 0.99996** |
 | force MAE | 4.0e-4 (\|F\|max 0.206) |
 
-Real-weight accuracy against published UMA energies/forces is **not** claimed — it is pending
-checkpoint access. Loading real weights is drop-in: `tools/export_weights.py` reads a fairchem
-`eSCNMDBackbone` checkpoint into a `WeightBundle`, and `weights.py` verifies key/shape coverage
-so the device path is identical. (MoLE merges to plain `Linear` at inference, so a plain
-backbone *is* the MoLE inference path.)
+### Real-weight accuracy (uma-s-1)
+
+Validated against the **released `facebook/UMA` uma-s-1 checkpoint** via the official fairchem
+reference (single p150, ethanol / `omol` task; numbers measured on this card and reproducible with
+`tests/test_realweight.py`):
+
+| quantity | result (uma-s-1, vs fairchem oracle) |
+|---|---|
+| MoLE host-merge anchor (merged backbone vs unmerged-MoE oracle) | E rel **1.3e-12**, force **PCC 1.0** |
+| spectral atomwise, per-module PCC | **0.99999** |
+| end-to-end device energy, relative error | **1.8e-7** (−4218.471 eV vs −4218.472) |
+| analytic force PCC / cosine | **0.99958 / 0.99958** |
+| force MAE (\|F\|max 0.553, ref 0.560) | **3.4e-3** eV/Å |
+| real-weight ASE FIRE relaxation (ethanol) | converged, fmax 9.16 → **0.049** eV/Å in 58 steps |
+
+uma-s-1 uses a 32-expert MoLE backbone, a spectral feed-forward, and a `rand_emb` charge/spin/
+dataset embedding; the released energy is `rmsd·E_raw + Σ element_refs[Z]`. TT-Atom merges the
+experts to a plain `eSCNMDBackbone` **on host** (fairchem's own `merge_mole` path — a plain
+backbone *is* the MoLE inference path for a fixed composition), runs the spectral FF and the SO(2)
+chain device-resident, and applies the per-task normalizer on host. Loading is drop-in:
+`tools/export_weights.py` reads a fairchem checkpoint into a `WeightBundle` and `weights.py`
+verifies key/shape coverage. The UMA checkpoint is gated, so the real-weight tests auto-skip when
+the bundle is absent. *(Perf and multi-card numbers below are unchanged and were measured
+separately; real-weight validation here is single-p150 only.)*
 
 ## Performance (measured, p150 Blackhole, full config)
 
