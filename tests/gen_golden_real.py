@@ -194,7 +194,7 @@ def main():
         num_layers=len(bb.blocks), hidden_channels=bb.hidden_channels,
         num_distance_basis=int(bb.distance_expansion.offset.numel()),
         cutoff=float(bb.cutoff), ff_type="spectral", act_type="gate",
-        norm_type="rms_norm_sh", task=args.task,
+        norm_type="rms_norm_sh", chg_spin_emb_type=bb.chg_spin_emb_type, task=args.task,
     )
     saved["config"] = np.frombuffer(json.dumps(out_cfg).encode(), dtype=np.uint8)
 

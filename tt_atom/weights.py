@@ -37,6 +37,30 @@ class WeightBundle:
     def buffer(self, name):
         return self._t(f"host@{name}").float()
 
+    def has(self, key):
+        return key in self._d.files
+
+    # --------------------------------------------------------------- energy normalizer / task
+
+    @property
+    def task(self):
+        """Dataset token for the system embedding (omol/omat/oc20/...); omat for legacy bundles."""
+        return self.config.get("task", "omat")
+
+    @property
+    def scale_rmsd(self):
+        """Energy/force scale: real targets are ``rmsd * raw + mean`` (1.0 for legacy bundles)."""
+        return float(self._d["scale@rmsd"][0]) if self.has("scale@rmsd") else 1.0
+
+    @property
+    def scale_mean(self):
+        return float(self._d["scale@mean"][0]) if self.has("scale@mean") else 0.0
+
+    @property
+    def elem_refs(self):
+        """Per-element reference energies added back to the (denormed) energy, or None."""
+        return self._t("scale@elem_refs").double() if self.has("scale@elem_refs") else None
+
     # convenience accessors for the fixed geometry buffers
     @property
     def to_m(self):
@@ -67,7 +91,11 @@ class WeightBundle:
         keys = []
         # embeddings + mixing
         keys += ["sphere_embedding.weight", "source_embedding.weight", "target_embedding.weight",
-                 "charge_embedding.W", "spin_embedding.W", "mix_csd.weight", "mix_csd.bias"]
+                 "mix_csd.weight", "mix_csd.bias"]
+        if cfg.get("chg_spin_emb_type", "pos_emb") == "rand_emb":
+            keys += ["charge_embedding.rand_emb.weight", "spin_embedding.rand_emb.weight"]
+        else:
+            keys += ["charge_embedding.W", "spin_embedding.W"]
         keys += [f"Jd_{l}" for l in range(cfg["lmax"] + 1)]
         # edge-degree radial MLP
         for i in (0, 1, 3, 4, 6):
@@ -85,8 +113,13 @@ class WeightBundle:
                 keys.append(f"{p}.edge_wise.so2_conv_2.so2_m_conv.{m-1}.fc.weight")
             for i in (0, 1, 3, 4, 6):
                 keys.append(f"{p}.edge_wise.so2_conv_1.rad_func.net.{i}.weight")
-            for gi in (0, 2, 4):
-                keys.append(f"{p}.atom_wise.grid_mlp.{gi}.weight")
+            if cfg.get("ff_type", "grid") == "spectral":
+                keys += [f"{p}.atom_wise.scalar_mlp.0.weight", f"{p}.atom_wise.scalar_mlp.0.bias",
+                         f"{p}.atom_wise.so3_linear_1.weight", f"{p}.atom_wise.so3_linear_1.bias",
+                         f"{p}.atom_wise.so3_linear_2.weight", f"{p}.atom_wise.so3_linear_2.bias"]
+            else:
+                for gi in (0, 2, 4):
+                    keys.append(f"{p}.atom_wise.grid_mlp.{gi}.weight")
         keys += ["norm.affine_weight", "norm.affine_bias"]
         keys += [f"energy_block.{i}.weight" for i in (0, 2, 4)]
         keys += [f"energy_block.{i}.bias" for i in (0, 2, 4)]
