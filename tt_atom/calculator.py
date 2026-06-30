@@ -36,6 +36,12 @@ class TTAtomCalculator(Calculator):
         self.geo = HostGeometry(w, self.cfg, bundle.to_m, bundle.gauss_offset,
                                 bundle.gauss_coeff, gamma=gamma)
         self._w = w
+        # energy normalizer (real checkpoints: E = rmsd*E_raw + mean + sum_i refs[Z_i],
+        # F = rmsd*F_raw); identity for the random-weight bundles (rmsd=1, mean=0, refs=None)
+        self.scale_rmsd = bundle.scale_rmsd
+        self.scale_mean = bundle.scale_mean
+        self.elem_refs = bundle.elem_refs
+        self.task = bundle.task
 
     def close(self):
         if self._owns_device and self.device is not None:
@@ -54,9 +60,15 @@ class TTAtomCalculator(Calculator):
         edge_index = radius_graph(pos, self.cfg["cutoff"])
         if edge_index.shape[1] == 0:
             raise ValueError("no edges within cutoff — system too sparse for this model")
-        sys_emb = csd_embedding(self._w, charge, spin, self.C)[torch.zeros(Z.shape[0], dtype=torch.long)]
+        sys_emb = csd_embedding(self._w, charge, spin, self.C,
+                                dataset=self.task)[torch.zeros(Z.shape[0], dtype=torch.long)]
 
         E, F = Fmod.energy_and_forces(self.backbone, self.geo, pos, Z, edge_index, sys_emb)
+        # apply the per-task energy normalizer + element references (forces scale by rmsd)
+        E = self.scale_rmsd * E + self.scale_mean
+        if self.elem_refs is not None:
+            E += float(self.elem_refs[Z].sum())
+        F = self.scale_rmsd * F
         self.results["energy"] = E
         self.results["free_energy"] = E
         self.results["energies"] = np.full(len(atoms), E / len(atoms), dtype=np.float64)

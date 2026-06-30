@@ -20,20 +20,28 @@ import torch.nn.functional as F
 EPS = 1e-7
 
 
-def csd_embedding(w, charge, spin, sphere_channels):
-    """System (charge/spin/dataset) embedding -> [nsys, C]. Mirrors fairchem ``csd_embedding``
-    with the ``pos_emb`` charge/spin encoding and the ``omat`` dataset token."""
-    def _cs(x, W, is_spin):
-        xp = x[:, None] * W[None, :] * 2 * math.pi
-        emb = torch.cat([torch.sin(xp), torch.cos(xp)], dim=-1)
-        if is_spin:
-            emb = emb.clone()
-            emb[torch.where(x == 0)[0]] = 0
-        return emb
+def csd_embedding(w, charge, spin, sphere_channels, dataset="omat"):
+    """System (charge/spin/dataset) embedding -> [nsys, C]. Mirrors fairchem ``csd_embedding``.
 
-    chg = _cs(charge, w["charge_embedding.W"], False)
-    sp = _cs(spin, w["spin_embedding.W"], True)
-    ds = w["dataset_embedding.dataset_emb_dict.omat.weight"][0].expand(charge.shape[0], -1)
+    Supports both charge/spin encodings: ``pos_emb`` (sin/cos of a random projection, the
+    self-chosen random-weight config) and ``rand_emb`` (a learned lookup table indexed by
+    charge+100 / spin, which uma-s-1 uses). The dataset token is the per-dataset embedding for
+    the active task (``omol``/``omat``/``oc20``/...). Dispatch is by which keys the bundle carries."""
+    if "charge_embedding.rand_emb.weight" in w:                 # rand_emb (uma-s-1)
+        chg = F.embedding((charge.long() + 100), w["charge_embedding.rand_emb.weight"])
+        sp = F.embedding(spin.long(), w["spin_embedding.rand_emb.weight"])
+    else:                                                        # pos_emb (sin/cos)
+        def _cs(x, W, is_spin):
+            xp = x[:, None] * W[None, :] * 2 * math.pi
+            emb = torch.cat([torch.sin(xp), torch.cos(xp)], dim=-1)
+            if is_spin:
+                emb = emb.clone()
+                emb[torch.where(x == 0)[0]] = 0
+            return emb
+
+        chg = _cs(charge, w["charge_embedding.W"], False)
+        sp = _cs(spin, w["spin_embedding.W"], True)
+    ds = w[f"dataset_embedding.dataset_emb_dict.{dataset}.weight"][0].expand(charge.shape[0], -1)
     return F.silu(F.linear(torch.cat([chg, sp, ds], dim=1), w["mix_csd.weight"], w["mix_csd.bias"]))
 
 
