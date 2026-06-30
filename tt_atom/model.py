@@ -16,6 +16,7 @@ from .device import compute_kernel_config
 from .norm import RMSNormSH
 from .edgewise import Edgewise
 from .grid import GridAtomwise
+from .spectral import SpectralAtomwise
 
 
 def _to_dev(t, device, dtype, layout=None):
@@ -73,8 +74,15 @@ class _Block:
                                   lmax=cfg["lmax"], mmax=cfg["mmax"], fast=fast)
         self.norm_2 = RMSNormSH(weights, f"{prefix}.norm_2", device,
                                 lmax=cfg["lmax"], num_channels=cfg["sphere_channels"])
-        self.atom_wise = GridAtomwise(weights, f"{prefix}.atom_wise", device,
-                                      to_grid, from_grid, fast=fast)
+        self.ff_type = cfg.get("ff_type", "grid")
+        if self.ff_type == "spectral":
+            self.atom_wise = SpectralAtomwise(weights, f"{prefix}.atom_wise", device,
+                                              sphere_channels=cfg["sphere_channels"],
+                                              hidden_channels=cfg["hidden_channels"],
+                                              lmax=cfg["lmax"], mmax=cfg["mmax"], fast=fast)
+        else:
+            self.atom_wise = GridAtomwise(weights, f"{prefix}.atom_wise", device,
+                                          to_grid, from_grid, fast=fast)
 
     def __call__(self, x, graph, sys_node_embedding):
         import ttnn
