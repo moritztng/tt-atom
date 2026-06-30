@@ -199,6 +199,64 @@ def grid_bw(grid, g_out):
     return ttnn.transpose(g_xt, 1, 2)                   # [N,nsph,C]
 
 
+# --------------------------------------------------------------------------- spectral atomwise
+
+
+def _so3_linear_bw(sp, g_out, w_blocks):
+    """VJP of one ``SO3_Linear`` wrt its input. ``g_out`` [N,nsph,cout] -> g_x [N,nsph,cin].
+    Per degree the GEMM is shared, so the input adjoint is ``g_out_block @ W_block^T`` (bias on
+    l=0 is additive -> identity wrt the input)."""
+    ttnn = sp.ttnn
+    N = g_out.shape[0]
+    outs, start = [], 0
+    for l in range(sp.lmax + 1):
+        n = 2 * l + 1
+        gb = ttnn.slice(g_out, [0, start, 0], [N, start + n, g_out.shape[2]])
+        outs.append(_mm(ttnn, gb, w_blocks[l], sp.kcfg))
+        start += n
+    return ttnn.concat(outs, dim=1)
+
+
+def spectral_bw(sp, g_out):
+    """VJP of ``SpectralAtomwise``. ``g_out`` [N,nsph,C] -> g wrt input x [N,nsph,C]."""
+    ttnn = sp.ttnn
+    N, H, C = g_out.shape[0], sp.H, sp.C
+    x, a_scalar = sp._cache_x, sp._cache_a_scalar
+    gating, h = sp._cache_gating, sp._cache_h
+
+    # so3_linear_2 backward
+    g_g = _so3_linear_bw(sp, g_out, sp.l2_w)                  # [N, nsph, H]
+
+    # gate backward: l0 SiLU; l>=1 multiply by sigmoid(gating) per degree
+    sg = ttnn.sigmoid(gating)                                 # [N, lmax*H]
+    g_h_parts = [silu_bw(ttnn, ttnn.slice(g_g, [0, 0, 0], [N, 1, H]),
+                         ttnn.slice(h, [0, 0, 0], [N, 1, H]))]
+    g_sg_rows, start = [], 1
+    for l in range(1, sp.lmax + 1):
+        n = 2 * l + 1
+        g_gb = ttnn.slice(g_g, [0, start, 0], [N, start + n, H])
+        h_b = ttnn.slice(h, [0, start, 0], [N, start + n, H])
+        gl = ttnn.reshape(ttnn.slice(sg, [0, (l - 1) * H], [N, l * H]), (N, 1, H))
+        g_h_parts.append(ttnn.multiply(g_gb, gl))             # g wrt h block
+        # g wrt the (broadcast) gate = sum over the n coeffs of g_gb * h_block
+        g_sg_rows.append(ttnn.sum(ttnn.multiply(g_gb, h_b), dim=1))   # [N, H]
+        start += n
+    g_h = ttnn.concat(g_h_parts, dim=1)                       # [N, nsph, H]
+    g_sg = ttnn.concat(g_sg_rows, dim=1)                      # [N, lmax*H]
+    g_gating = ttnn.sigmoid_bw(g_sg, gating)[0]               # through sigmoid
+
+    # so3_linear_1 backward -> g wrt x (l>=... all degrees)
+    g_x = _so3_linear_bw(sp, g_h, sp.l1_w)                    # [N, nsph, C]
+
+    # scalar_mlp backward: gating = SiLU(scalar @ W + b); add g_scalar onto x's l=0 channel
+    g_a = silu_bw(ttnn, g_gating, a_scalar)                   # [N, lmax*H]
+    g_scalar = _mm(ttnn, g_a, sp.smlp_w, sp.kcfg)             # [N, C]
+    g_scalar = ttnn.reshape(g_scalar, (N, 1, C))
+    g_x_l0 = ttnn.add(ttnn.slice(g_x, [0, 0, 0], [N, 1, C]), g_scalar)
+    g_x_rest = ttnn.slice(g_x, [0, 1, 0], [N, sp.nsph, C])
+    return ttnn.concat([g_x_l0, g_x_rest], dim=1)
+
+
 # --------------------------------------------------------------------------- edgewise
 
 
@@ -253,7 +311,8 @@ def block_bw(blk, graph, g_out, acc):
     """VJP of ``_Block``. ``blk`` is the forward block module."""
     ttnn = blk.norm_1.ttnn
     # x = atom_wise(n2) + x_res2
-    g_n2 = grid_bw(blk.atom_wise, g_out)
+    g_n2 = (spectral_bw(blk.atom_wise, g_out) if getattr(blk, "ff_type", "grid") == "spectral"
+            else grid_bw(blk.atom_wise, g_out))
     g_after_edge = ttnn.add(rmsnorm_bw(blk.norm_2, g_n2), g_out)
     # x = edge_wise(s) + x_res
     g_s = edgewise_bw(blk.edge_wise, graph, g_after_edge, acc)
