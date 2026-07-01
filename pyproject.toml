@@ -13,12 +13,19 @@ authors = [{ name = "Moritz Thüning" }]
 keywords = ["tenstorrent", "ttnn", "machine-learning-potential", "eSEN", "eSCN", "UMA", "equivariant", "MLIP"]
 
 # Core runtime deps. ttnn is the Tenstorrent runtime; torch/ase are host-side glue.
-# numpy is pinned <2 because the ttnn wheel is built against the numpy 1.x C ABI.
+# numpy is pinned <2 because the ttnn wheel is built against the numpy 1.x C ABI; torch is
+# CPU-only here (the model runs on the Tenstorrent card). ttnn itself is intentionally NOT
+# listed: it is the Tenstorrent runtime, not on PyPI — install the ttnn / tt-metal wheel that
+# matches your card + tt-kmd driver (see README "Installing ttnn"). `import tt_atom` never
+# imports ttnn, so the package installs and imports fine without a card.
 dependencies = [
     "numpy<2",
-    "torch",
+    "torch>=2.0,<3",
     "ase>=3.26",
 ]
+
+[project.scripts]
+tt-atom = "tt_atom.cli:main"
 
 [project.optional-dependencies]
 # fairchem is needed ONLY to (a) load a real UMA/eSEN checkpoint and (b) generate the

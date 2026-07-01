@@ -61,6 +61,23 @@ class WeightBundle:
         """Per-element reference energies added back to the (denormed) energy, or None."""
         return self._t("scale@elem_refs").double() if self.has("scale@elem_refs") else None
 
+    @property
+    def reference(self):
+        """Embedded fairchem reference (E/F + input) for this bundle's merge composition, so a
+        device-side roundtrip check needs no fairchem env. ``None`` if the bundle carries none."""
+        if not self.has("ref@energy"):
+            return None
+        return dict(
+            energy=float(self._d["ref@energy"][0]),
+            forces=self._d["ref@forces"].copy(),
+            pos=self._d["ref@pos"].copy(),
+            atomic_numbers=self._d["ref@atomic_numbers"].copy(),
+            charge=float(self._d["ref@charge"][0]),
+            spin=float(self._d["ref@spin"][0]),
+            cell=self._d["ref@cell"].copy() if self.has("ref@cell") else None,
+            pbc=self._d["ref@pbc"].copy() if self.has("ref@pbc") else None,
+        )
+
     # convenience accessors for the fixed geometry buffers
     @property
     def to_m(self):
