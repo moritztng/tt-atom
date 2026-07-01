@@ -20,7 +20,13 @@ from .weights import WeightBundle
 class TTAtomCalculator(Calculator):
     implemented_properties = ["energy", "energies", "free_energy", "forces"]
 
-    def __init__(self, bundle, device=None, device_id=0, gamma=0.0, fast=False, **kwargs):
+    def __init__(self, bundle, task_name=None, device=None, device_id=0, gamma=0.0,
+                 fast=False, **kwargs):
+        """``bundle`` is a TT-Atom weight bundle (path or ``WeightBundle``) exported for a fixed
+        (composition, charge, spin, task): UMA's MoLE routing consumes the dataset token, so the
+        task is baked in at merge time and cannot be switched at runtime. ``task_name`` mirrors
+        ``fairchem.core.FAIRChemCalculator(task_name=...)``; when given it must match the bundle's
+        task (a mismatch raises, rather than silently using the wrong normalizer)."""
         super().__init__(**kwargs)
         if isinstance(bundle, str):
             bundle = WeightBundle.load(bundle)
@@ -28,6 +34,11 @@ class TTAtomCalculator(Calculator):
         self.cfg = bundle.config
         self.C = self.cfg["sphere_channels"]
         self.fast = fast
+        if task_name is not None and task_name != bundle.task:
+            raise ValueError(
+                f"task_name={task_name!r} does not match this bundle's task {bundle.task!r}. "
+                f"UMA's MoLE routing bakes the task into the merged bundle; export a bundle for "
+                f"{task_name!r} (tools/export_weights.py --task {task_name}) to use that task.")
         self._owns_device = device is None
         self.device = device if device is not None else D.open_device(device_id)
         w = bundle.weights
@@ -41,7 +52,7 @@ class TTAtomCalculator(Calculator):
         self.scale_rmsd = bundle.scale_rmsd
         self.scale_mean = bundle.scale_mean
         self.elem_refs = bundle.elem_refs
-        self.task = bundle.task
+        self.task = self.task_name = bundle.task
 
     def close(self):
         if self._owns_device and self.device is not None:
