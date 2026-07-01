@@ -55,12 +55,19 @@ def build_system(kind: str, task: str):
         atoms.rattle(stdev=0.1, seed=1)
         atoms.info.update(charge=0, spin=1)
         return atoms
+    if kind == "slab":
+        from ase.build import fcc100, add_adsorbate       # Cu(100) slab + H adsorbate (oc20)
+        atoms = fcc100("Cu", (2, 2, 2), vacuum=8.0)
+        add_adsorbate(atoms, "H", height=1.5, position="hollow")
+        atoms.rattle(stdev=0.05, seed=2)
+        atoms.info.update(charge=0, spin=1)               # pbc = [True, True, False] (mixed)
+        return atoms
     raise ValueError(kind)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--system", default="molecule", choices=["molecule", "bulk"])
+    ap.add_argument("--system", default="molecule", choices=["molecule", "bulk", "slab"])
     ap.add_argument("--task", default="omol")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
@@ -203,6 +210,7 @@ def main():
     saved["in@pos"] = npy(data.pos)
     saved["in@edge_index"] = captured["edge_index"]
     saved["in@cell"] = npy(di["cell"])
+    saved["in@pbc"] = np.asarray(atoms2.get_pbc(), dtype=bool)
     saved["in@batch"] = npy(di["batch"])
     saved["in@natoms"] = npy(di["natoms"])
     saved["in@charge"] = npy(di["charge"])
