@@ -113,6 +113,12 @@ class Backbone:
         self.C = cfg["sphere_channels"]
         self.kcfg = compute_kernel_config()
         wdtype = ttnn.bfloat16
+        if cfg["mmax"] < cfg["lmax"]:
+            raise NotImplementedError(
+                f"mmax ({cfg['mmax']}) < lmax ({cfg['lmax']}): this checkpoint uses spherical-"
+                f"harmonic coefficient subselection (e.g. uma-m-1p1 has lmax=4/mmax=2), a path "
+                f"TT-Atom does not implement. uma-s-1 (lmax==mmax==2) is the validated, supported "
+                f"model — keep it as the default.")
 
         self.blocks = [
             _Block(weights, f"blocks.{i}", device, cfg, to_grid_mat, from_grid_mat, fast=fast)

@@ -69,10 +69,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--system", default="molecule", choices=["molecule", "bulk", "slab"])
     ap.add_argument("--task", default="omol")
+    ap.add_argument("--ckpt", default="uma-s-1", help="UMA checkpoint name (e.g. uma-s-1, uma-m-1p1)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
-    ckpt = hf_hub_download("facebook/UMA", "checkpoints/uma-s-1.pt")
+    ckpt = hf_hub_download("facebook/UMA", f"checkpoints/{args.ckpt}.pt")
     atoms = build_system(args.system, args.task)
 
     # ---- ground-truth oracle: unmerged MoE (the released inference default) --------------
