@@ -17,7 +17,9 @@ def golden():
 def device():
     from tt_atom import device as D
 
-    dev = D.open_device(0)
+    # reserve a trace region so the trace-path test can capture on this shared device; harmless
+    # (only reserves DRAM) for the eager parity tests.
+    dev = D.open_device(0, trace_region_size=400_000_000)
     yield dev
     import ttnn
 

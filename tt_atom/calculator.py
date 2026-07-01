@@ -21,12 +21,18 @@ class TTAtomCalculator(Calculator):
     implemented_properties = ["energy", "energies", "free_energy", "forces"]
 
     def __init__(self, bundle, task_name=None, device=None, device_id=0, gamma=0.0,
-                 fast=False, **kwargs):
+                 fast=False, trace=False, trace_region_size=400_000_000, **kwargs):
         """``bundle`` is a TT-Atom weight bundle (path or ``WeightBundle``) exported for a fixed
         (composition, charge, spin, task): UMA's MoLE routing consumes the dataset token, so the
         task is baked in at merge time and cannot be switched at runtime. ``task_name`` mirrors
         ``fairchem.core.FAIRChemCalculator(task_name=...)``; when given it must match the bundle's
-        task (a mismatch raises, rather than silently using the wrong normalizer)."""
+        task (a mismatch raises, rather than silently using the wrong normalizer).
+
+        ``trace=True`` captures the device forward+backward once and replays it each step for a
+        fixed topology (MD / relaxation): ~2x fewer host dispatches, bit-for-bit the same forces.
+        The neighbour list is rechecked every step and the trace is re-captured automatically if
+        an atom crosses the cutoff, so results are always correct. When passing your own
+        ``device`` with ``trace=True``, open it with a non-zero ``trace_region_size``."""
         super().__init__(**kwargs)
         if isinstance(bundle, str):
             bundle = WeightBundle.load(bundle)
@@ -34,13 +40,17 @@ class TTAtomCalculator(Calculator):
         self.cfg = bundle.config
         self.C = self.cfg["sphere_channels"]
         self.fast = fast
+        self.trace = trace
         if task_name is not None and task_name != bundle.task:
             raise ValueError(
                 f"task_name={task_name!r} does not match this bundle's task {bundle.task!r}. "
                 f"UMA's MoLE routing bakes the task into the merged bundle; export a bundle for "
                 f"{task_name!r} (tools/export_weights.py --task {task_name}) to use that task.")
         self._owns_device = device is None
-        self.device = device if device is not None else D.open_device(device_id)
+        self.device = device if device is not None else D.open_device(
+            device_id, trace_region_size=trace_region_size if trace else 0)
+        self._engine = None
+        self._engine_edges = None
         w = bundle.weights
         self.backbone = Backbone(w, self.device, self.cfg, bundle.to_grid_mat,
                                  bundle.from_grid_mat, fast=fast)
@@ -55,6 +65,9 @@ class TTAtomCalculator(Calculator):
         self.task = self.task_name = bundle.task
 
     def close(self):
+        if self._engine is not None:
+            self._engine.close()
+            self._engine = None
         if self._owns_device and self.device is not None:
             import ttnn
 
@@ -76,8 +89,11 @@ class TTAtomCalculator(Calculator):
         sys_emb = csd_embedding(self._w, charge, spin, self.C,
                                 dataset=self.task)[torch.zeros(Z.shape[0], dtype=torch.long)]
 
-        E, F = Fmod.energy_and_forces(self.backbone, self.geo, pos, Z, edge_index, sys_emb,
-                                      edge_cell_shift=edge_cell_shift)
+        if self.trace:
+            E, F = self._traced(pos, Z, edge_index, edge_cell_shift, sys_emb)
+        else:
+            E, F = Fmod.energy_and_forces(self.backbone, self.geo, pos, Z, edge_index, sys_emb,
+                                          edge_cell_shift=edge_cell_shift)
         # apply the per-task energy normalizer + element references (forces scale by rmsd)
         E = self.scale_rmsd * E + self.scale_mean
         if self.elem_refs is not None:
@@ -87,3 +103,17 @@ class TTAtomCalculator(Calculator):
         self.results["free_energy"] = E
         self.results["energies"] = np.full(len(atoms), E / len(atoms), dtype=np.float64)
         self.results["forces"] = F.detach().numpy().astype(np.float64)
+
+    def _traced(self, pos, Z, edge_index, edge_cell_shift, sys_emb):
+        """Trace-replayed energy+forces; (re)captures when the neighbour list changes."""
+        from .trace import TracedEngine
+
+        changed = (self._engine_edges is None or self._engine_edges.shape != edge_index.shape
+                   or not torch.equal(self._engine_edges, edge_index))
+        if changed:
+            if self._engine is not None:
+                self._engine.close()
+            self._engine = TracedEngine(self.backbone, self.geo, Z, edge_index, sys_emb,
+                                        edge_cell_shift=edge_cell_shift)
+            self._engine_edges = edge_index.clone()
+        return self._engine(pos)

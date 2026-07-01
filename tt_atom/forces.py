@@ -322,23 +322,29 @@ def block_bw(blk, graph, g_out, acc):
 
 
 def energy_bw(bb, node_emb):
-    """VJP of the energy head; returns g wrt node_emb [N,nsph,C] (only l=0 nonzero)."""
+    """VJP of the energy head; returns g wrt node_emb [N,nsph,C] (only l=0 nonzero).
+
+    The two constants (the ``dE/dE = 1`` seed and the l>=1 zero padding) are created once and
+    cached on ``bb`` so that no device buffer is allocated inside a captured trace region — the
+    ttnn trace machinery forbids allocations during capture (it hangs)."""
     ttnn = bb.ttnn
     kcfg = bb.kcfg
     N, nsph, C = node_emb.shape
+    if getattr(bb, "_bw_seed", None) is None or tuple(bb._bw_seed.shape) != (N, 1):
+        bb._bw_seed = ttnn.ones((N, 1), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=bb.device)
+        bb._bw_zeros = ttnn.zeros((N, nsph - 1, C), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+                                  device=bb.device)
     h = ttnn.reshape(ttnn.slice(node_emb, [0, 0, 0], [N, 1, C]), (N, C))
     a1 = ttnn.linear(h, bb.eh_w[0], bias=bb.eh_b[0], compute_kernel_config=kcfg)
     s1 = ttnn.silu(a1)
     a2 = ttnn.linear(s1, bb.eh_w[1], bias=bb.eh_b[1], compute_kernel_config=kcfg)
-    g_a3 = ttnn.ones((N, 1), dtype=a1.dtype, layout=ttnn.TILE_LAYOUT, device=bb.device)
-    g_s2 = _mm(ttnn, g_a3, bb.eh_w[2], kcfg)
+    g_s2 = _mm(ttnn, bb._bw_seed, bb.eh_w[2], kcfg)
     g_a2 = silu_bw(ttnn, g_s2, a2)
     g_s1 = _mm(ttnn, g_a2, bb.eh_w[1], kcfg)
     g_a1 = silu_bw(ttnn, g_s1, a1)
     g_h = _mm(ttnn, g_a1, bb.eh_w[0], kcfg)             # [N,C]
     g_h = ttnn.reshape(g_h, (N, 1, C))
-    zeros = ttnn.zeros((N, nsph - 1, C), dtype=g_h.dtype, layout=ttnn.TILE_LAYOUT, device=bb.device)
-    return ttnn.concat([g_h, zeros], dim=1)
+    return ttnn.concat([g_h, bb._bw_zeros], dim=1)
 
 
 def backbone_bw(bb, graph, node_emb):
