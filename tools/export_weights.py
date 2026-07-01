@@ -64,7 +64,8 @@ def export_uma_s_1(args):
     atoms = molecule(args.molecule)
     atoms.info.update(charge=args.charge, spin=args.spin)
     atoms.calc = calc
-    atoms.get_potential_energy()                          # triggers the host MoLE merge
+    E_ref = float(atoms.get_potential_energy())           # triggers the host MoLE merge
+    F_ref = atoms.get_forces().astype(np.float32)
 
     bb = pu.model.module.backbone                         # plain eSCNMDBackbone after merge
     assert type(bb).__name__ == "eSCNMDBackbone", "merge did not produce a plain backbone"
@@ -91,6 +92,17 @@ def export_uma_s_1(args):
     saved["scale@rmsd"] = np.array([float(etask.normalizer.rmsd)], dtype=np.float64)
     saved["scale@mean"] = np.array([float(etask.normalizer.mean)], dtype=np.float64)
     saved["scale@elem_refs"] = etask.element_references.element_references.detach().cpu().numpy().astype(np.float64)
+
+    # embed the fairchem reference E/F for this composition so `tt-atom verify` can close the
+    # roundtrip on device (the two numpy worlds cannot share a process, so we carry the numbers).
+    saved["ref@energy"] = np.array([E_ref], dtype=np.float64)
+    saved["ref@forces"] = F_ref
+    saved["ref@pos"] = npy(torch.as_tensor(atoms.get_positions()))
+    saved["ref@atomic_numbers"] = np.asarray(atoms.get_atomic_numbers(), dtype=np.int64)
+    saved["ref@charge"] = np.array([float(args.charge)], dtype=np.float64)
+    saved["ref@spin"] = np.array([float(args.spin)], dtype=np.float64)
+    saved["ref@cell"] = npy(torch.as_tensor(atoms.get_cell().array))
+    saved["ref@pbc"] = np.asarray(atoms.get_pbc(), dtype=bool)
 
     np.savez(args.out, **saved)
     print(f"wrote {args.out}  ({sum(1 for k in saved if k.startswith('w@'))} weight tensors, "
