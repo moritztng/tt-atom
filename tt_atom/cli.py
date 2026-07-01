@@ -53,7 +53,6 @@ def cmd_info(args):
 
 def cmd_verify(args):
     """Device parity vs the fairchem reference embedded in the bundle at convert time."""
-    import torch
     from ase import Atoms
     from .weights import WeightBundle
     from .calculator import TTAtomCalculator

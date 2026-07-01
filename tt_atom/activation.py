@@ -9,8 +9,6 @@ Reference: ``fairchem ... nn/activation.py:GateActivation`` (``m_prime=True``).
 """
 from __future__ import annotations
 
-import torch
-
 
 def _expand_index_m_prime(lmax, mmax):
     """The per-vector-coefficient gate index in m-primed order (see reference)."""

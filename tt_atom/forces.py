@@ -19,8 +19,6 @@ from __future__ import annotations
 
 import torch
 
-from .device import compute_kernel_config
-
 
 def _mm(ttnn, g, W, kcfg):
     """grad wrt x of ``y = x @ W`` (W stored [in,out]): ``g @ W^T``."""
@@ -113,7 +111,7 @@ def so2_bw(conv, g_out, g_extra=None):
     on host. Matmul backward = transpose-matmul on device."""
     ttnn = conv.ttnn
     kcfg = conv.kcfg
-    Cin, H = conv.Cin, conv.H
+    H = conv.H
     lmax, mmax = conv.lmax, conv.mmax
     nsph = (lmax + 1) ** 2
     E = g_out.shape[0]
@@ -139,7 +137,6 @@ def so2_bw(conv, g_out, g_extra=None):
     # m > 0
     si = 1
     for m in range(1, mmax + 1):
-        nc = conv.num_coef[m]
         g_real = seg[si]; g_imag = seg[si + 1]; si += 2   # adjoints of out_real, out_imag
         # fwd: out_real = r0 - i1, out_imag = i0 + r1, with [r0|r1]=real@W, [i0|i1]=imag@W.
         # => g_fr = [g_real, g_imag], g_fi = [g_imag, -g_real]; g_{real,imag} = g_f @ W^T.
@@ -158,7 +155,7 @@ def so2_bw(conv, g_out, g_extra=None):
         g_mult = ttnn.multiply(g_xf, xin)
         g_xf = ttnn.multiply(g_xf, mult)
         # collapse duplicated real/imag halves back to per-m radial channels
-        parts, o = [], 0
+        o = 0
         widths = [conv.rad_sizes[0]]
         for m in range(1, mmax + 1):
             widths += [conv.rad_sizes[m], conv.rad_sizes[m]]
@@ -180,7 +177,6 @@ def so2_bw(conv, g_out, g_extra=None):
 def grid_bw(grid, g_out):
     ttnn = grid.ttnn
     kcfg = grid.kcfg
-    N = g_out.shape[0]
     a1, a2 = grid._cache_a1, grid._cache_a2             # pre-silu activations [N,npts,H]
     # from_grid backward: o = transpose(gt @ fg); gt = transpose(g_mlp_out)
     # forward: gt=transpose(mlp,1,2); o=gt@fg; out=transpose(o,1,2)
@@ -221,7 +217,7 @@ def spectral_bw(sp, g_out):
     """VJP of ``SpectralAtomwise``. ``g_out`` [N,nsph,C] -> g wrt input x [N,nsph,C]."""
     ttnn = sp.ttnn
     N, H, C = g_out.shape[0], sp.H, sp.C
-    x, a_scalar = sp._cache_x, sp._cache_a_scalar
+    a_scalar = sp._cache_a_scalar
     gating, h = sp._cache_gating, sp._cache_h
 
     # so3_linear_2 backward
@@ -351,7 +347,6 @@ def backbone_bw(bb, graph, node_emb):
     """Full reverse pass of the backbone+energy head. Returns a dict of device adjoints
     (g_x_init, g_wigner, g_wigner_inv, g_envelope) plus per-conv radial adjoints g_rad
     (list of (conv, g_rad)) for the host radial finish that yields g_x_edge."""
-    ttnn = bb.ttnn
     acc = {"rot_fwd": None, "rot_inv": None, "envelope": None, "g_rad": []}
     g = energy_bw(bb, node_emb)
     g = rmsnorm_bw(bb.final_norm, g)

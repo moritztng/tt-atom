@@ -13,8 +13,6 @@ Reference: ``fairchem ... escn_md_block.py:GridAtomwise`` + ``common/so3.py:SO3_
 """
 from __future__ import annotations
 
-import torch
-
 from .device import compute_kernel_config
 
 
