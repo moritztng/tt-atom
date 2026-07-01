@@ -10,7 +10,7 @@ import ttnn
 
 import mirror
 from tt_atom.model import Backbone, GraphContext
-from tt_atom import forces, rotation
+from tt_atom import forces
 from util import pcc
 
 

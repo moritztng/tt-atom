@@ -17,7 +17,6 @@ import pathlib
 import sys
 import time
 
-import numpy as np
 import torch
 from ase.build import bulk
 

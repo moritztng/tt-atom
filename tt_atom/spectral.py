@@ -18,8 +18,6 @@ reorder), so the gate's per-degree expansion is the plain ``[0]*3 + [1]*5`` map 
 """
 from __future__ import annotations
 
-import torch
-
 from .device import compute_kernel_config
 
 

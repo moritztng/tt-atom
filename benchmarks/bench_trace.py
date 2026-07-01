@@ -17,7 +17,6 @@ import pathlib
 import time
 
 import numpy as np
-import torch
 from ase.build import molecule
 
 HERE = pathlib.Path(__file__).parent

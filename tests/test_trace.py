@@ -7,7 +7,6 @@ from __future__ import annotations
 import pathlib
 
 import numpy as np
-import torch
 from ase.build import molecule
 
 from tt_atom.calculator import TTAtomCalculator
