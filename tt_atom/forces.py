@@ -358,11 +358,13 @@ def backbone_bw(bb, graph, node_emb):
 # --------------------------------------------------------------------------- full energy+force
 
 
-def energy_and_forces(bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding):
+def energy_and_forces(bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding,
+                      edge_cell_shift=None):
     """Conservative energy + analytic forces ``F = -dE/dpos`` for one system.
 
     Device-resident forward + reverse VJP gives ``dE/d{geometric inputs}``; ``torch.autograd``
     through the host geometry supplies the cheap ``d(geometric)/dpos`` to finish the force.
+    ``edge_cell_shift`` [E, 3] carries the periodic image offsets (None for aperiodic systems).
     Returns ``(energy: float, forces: torch.Tensor[N,3])``.
     """
     import ttnn
@@ -372,7 +374,7 @@ def energy_and_forces(bb, geo, pos, atomic_numbers, edge_index, sys_node_embeddi
     device = bb.device
     N, C = atomic_numbers.shape[0], geo.C
     pos = pos.detach().clone().requires_grad_(True)
-    t = geo(pos, atomic_numbers, edge_index, sys_node_embedding)
+    t = geo(pos, atomic_numbers, edge_index, sys_node_embedding, edge_cell_shift=edge_cell_shift)
 
     # the analytic-force backward keeps bf16 geometric operands (bf8 wigner would mix dtypes in
     # the transpose-matmul adjoints); ``fast`` (bf8) is for the energy-throughput path.

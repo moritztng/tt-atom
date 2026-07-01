@@ -45,7 +45,7 @@ def _worker(device_id, weights_path, fast, in_q, out_q):
         idx, pos_np, Z_np = job
         pos = torch.tensor(pos_np, dtype=torch.float32)
         Z = torch.tensor(Z_np)
-        ei = radius_graph(pos, cfg["cutoff"])
+        ei, _ = radius_graph(pos, cfg["cutoff"])
         N, E = Z.shape[0], ei.shape[1]
         se = csd_embedding(w, torch.tensor([0.0]), torch.tensor([0.0]), C)[torch.zeros(N, dtype=torch.long)]
         t = geo(pos, Z, ei, se)
