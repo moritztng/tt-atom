@@ -68,7 +68,7 @@ def main():
         atoms = make_system(nc)
         pos = torch.tensor(atoms.get_positions(), dtype=torch.float32)
         Z = torch.tensor(atoms.get_atomic_numbers())
-        ei = radius_graph(pos, cfg["cutoff"])
+        ei, _ = radius_graph(pos, cfg["cutoff"])
         N, E = Z.shape[0], ei.shape[1]
         se = csd_embedding(w, torch.tensor([0.0]), torch.tensor([0.0]), C)[torch.zeros(N, dtype=torch.long)]
 

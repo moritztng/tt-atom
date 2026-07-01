@@ -45,14 +45,40 @@ def csd_embedding(w, charge, spin, sphere_channels, dataset="omat"):
     return F.silu(F.linear(torch.cat([chg, sp, ds], dim=1), w["mix_csd.weight"], w["mix_csd.bias"]))
 
 
-def radius_graph(pos, cutoff, cell=None, pbc=False):
-    """Brute-force O(N^2) neighbour list -> edge_index[2, E] (no self-loops). Aperiodic by
-    default; the geometric graph is host-side and a negligible fraction of the compute."""
-    N = pos.shape[0]
-    d = torch.linalg.norm(pos[:, None, :] - pos[None, :, :], dim=-1)
-    mask = (d < cutoff) & (d > 0)
-    src, tgt = torch.where(mask)
-    return torch.stack([src, tgt], dim=0)
+def radius_graph(pos, cutoff, cell=None, pbc=None):
+    """Brute-force O(N^2) neighbour list -> ``(edge_index[2, E], cell_shift[E, 3])``.
+
+    ``cell_shift`` is the cartesian periodic image offset for each edge (zeros when aperiodic),
+    so the caller forms ``edge_vec = pos[src] - pos[tgt] + cell_shift``. Convention matches
+    fairchem ``radius_graph_pbc`` + ``get_pbc_distances`` exactly: an edge (src = imaged j,
+    tgt = i) has ``distance_vec = pos[j] - pos[i] + n·cell``. The graph is host-side and a
+    negligible fraction of the compute, so the O(N^2 · n_cells) brute force is fine for a cell.
+
+    ``cell`` rows are the lattice vectors (ASE convention). ``pbc`` is a bool or length-3 mask;
+    an aperiodic graph results when ``cell``/``pbc`` are absent or ``pbc`` is all-False."""
+    periodic = cell is not None and pbc is not None and bool(torch.as_tensor(pbc).any())
+    if not periodic:
+        d = torch.linalg.norm(pos[:, None, :] - pos[None, :, :], dim=-1)
+        mask = (d < cutoff) & (d > 0)
+        src, tgt = torch.where(mask)
+        return torch.stack([src, tgt], dim=0), pos.new_zeros(int(mask.sum()), 3)
+
+    cell = torch.as_tensor(cell, dtype=pos.dtype)                # rows = lattice vectors
+    pbc = torch.as_tensor(pbc, dtype=torch.bool).reshape(-1).expand(3)
+    # perpendicular plane spacing along a_k is 1/||b_k|| (b = reciprocal rows); the number of
+    # image cells needed each way is ceil(cutoff · ||b_k||) — matches fairchem's rep_a{1,2,3}.
+    recip = torch.linalg.inv(cell).transpose(0, 1)               # rows = reciprocal vectors
+    reps = [int(math.ceil(float(cutoff * torch.linalg.norm(recip[k])))) if bool(pbc[k]) else 0
+            for k in range(3)]
+    ranges = [torch.arange(-r, r + 1, dtype=pos.dtype) for r in reps]
+    cells = torch.cartesian_prod(*ranges).reshape(-1, 3)         # [n_cells, 3] integer offsets
+    shifts = cells @ cell                                        # [n_cells, 3] cartesian
+    # disp[i, j, c] = pos[i] - (pos[j] + shift[c]); mask magnitude, keep (i, j, c) within cutoff
+    disp = pos[:, None, None, :] - (pos[None, :, None, :] + shifts[None, None, :, :])
+    d2 = (disp ** 2).sum(-1)                                     # [N, N, n_cells]
+    mask = (d2 <= cutoff * cutoff) & (d2 > 1e-8)
+    i, j, c = torch.where(mask)                                  # i = receiver, j = imaged source
+    return torch.stack([j, i], dim=0), shifts[c]
 
 
 # ----------------------------------------------------------- rotation (vendored, MIT/e3nn 0.4)
@@ -165,12 +191,18 @@ class HostGeometry:
         wig_M_inv = torch.einsum("njk,mk->njm", wig_inv, self.to_m)
         return wig_M, wig_M_inv
 
-    def __call__(self, pos, atomic_numbers, edge_index, sys_node_embedding, edge_vec=None):
-        """Returns a dict of differentiable geometric device-inputs as functions of ``pos``."""
+    def __call__(self, pos, atomic_numbers, edge_index, sys_node_embedding, edge_vec=None,
+                 edge_cell_shift=None):
+        """Returns a dict of differentiable geometric device-inputs as functions of ``pos``.
+
+        ``edge_cell_shift`` [E, 3] is the cartesian periodic image offset per edge (from
+        ``radius_graph``); it is constant wrt ``pos`` so the analytic force is unaffected."""
         w, C, lmax = self.w, self.C, self.lmax
         src, tgt = edge_index[0], edge_index[1]
         if edge_vec is None:
             edge_vec = pos[src] - pos[tgt]          # fairchem edge_distance_vec convention
+            if edge_cell_shift is not None:
+                edge_vec = edge_vec + edge_cell_shift
         dist = torch.linalg.norm(edge_vec, dim=1)
 
         wig_M, wig_M_inv = self._wigner(edge_vec)

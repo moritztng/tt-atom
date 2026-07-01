@@ -57,13 +57,16 @@ class TTAtomCalculator(Calculator):
         charge = torch.tensor([float(atoms.info.get("charge", 0.0))])
         spin = torch.tensor([float(atoms.info.get("spin", 0.0))])
 
-        edge_index = radius_graph(pos, self.cfg["cutoff"])
+        pbc = np.asarray(atoms.get_pbc())
+        cell = torch.tensor(np.asarray(atoms.get_cell()), dtype=torch.float32) if pbc.any() else None
+        edge_index, edge_cell_shift = radius_graph(pos, self.cfg["cutoff"], cell=cell, pbc=pbc)
         if edge_index.shape[1] == 0:
             raise ValueError("no edges within cutoff — system too sparse for this model")
         sys_emb = csd_embedding(self._w, charge, spin, self.C,
                                 dataset=self.task)[torch.zeros(Z.shape[0], dtype=torch.long)]
 
-        E, F = Fmod.energy_and_forces(self.backbone, self.geo, pos, Z, edge_index, sys_emb)
+        E, F = Fmod.energy_and_forces(self.backbone, self.geo, pos, Z, edge_index, sys_emb,
+                                      edge_cell_shift=edge_cell_shift)
         # apply the per-task energy normalizer + element references (forces scale by rmsd)
         E = self.scale_rmsd * E + self.scale_mean
         if self.elem_refs is not None:
