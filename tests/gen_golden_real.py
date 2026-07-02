@@ -62,27 +62,58 @@ def build_system(kind: str, task: str):
         atoms.rattle(stdev=0.05, seed=2)
         atoms.info.update(charge=0, spin=1)               # pbc = [True, True, False] (mixed)
         return atoms
+    if kind == "mof":
+        # odac (DAC / MOFs): a metal-oxide framework fragment (MgO), fully periodic. A minimal
+        # inorganic stand-in that exercises the odac dataset token + normalizer on the periodic path.
+        atoms = bulk("MgO", "rocksalt", a=4.21) * (2, 1, 1)
+        atoms.rattle(stdev=0.08, seed=3)
+        atoms.info.update(charge=0, spin=1)
+        return atoms
+    if kind == "molcrystal":
+        # omc (molecular crystals): solid CO2 (dry ice) as a periodic cubic cell dense enough that
+        # periodic images fall within the 6 A cutoff (tests the cell-aware neighbour list).
+        co2 = molecule("CO2")
+        co2.set_cell([5.0, 5.0, 5.0])
+        co2.set_pbc(True)
+        co2.center()
+        co2.rattle(stdev=0.05, seed=4)
+        co2.info.update(charge=0, spin=1)
+        return co2
     raise ValueError(kind)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--system", default="molecule", choices=["molecule", "bulk", "slab"])
+    ap.add_argument("--system", default="molecule",
+                    choices=["molecule", "bulk", "slab", "mof", "molcrystal"])
     ap.add_argument("--task", default="omol")
     ap.add_argument("--ckpt", default="uma-s-1", help="UMA checkpoint name (e.g. uma-s-1, uma-m-1p1)")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--merged-only", action="store_true",
+                    help="skip the separate unmerged-MoE oracle unit and use the merged inference "
+                         "path as the oracle. Needed for big checkpoints (uma-m-1p1 is 11GB — two "
+                         "predict units OOM a 30GB host); the merge is already the released "
+                         "inference path and was validated against the unmerged MoE on uma-s-1.")
     args = ap.parse_args()
 
     ckpt = hf_hub_download("facebook/UMA", f"checkpoints/{args.ckpt}.pt")
     atoms = build_system(args.system, args.task)
 
     # ---- ground-truth oracle: unmerged MoE (the released inference default) --------------
-    pu_oracle = load_predict_unit(ckpt, inference_settings="default", device="cpu")
-    calc_oracle = FAIRChemCalculator(pu_oracle, task_name=args.task)
-    atoms.calc = calc_oracle
-    E_oracle = float(atoms.get_potential_energy())
-    F_oracle = atoms.get_forces().astype(np.float32)
-    print(f"oracle (unmerged MoE): E={E_oracle:.6f} eV  |F|max={np.abs(F_oracle).max():.4f}")
+    if args.merged_only:
+        E_oracle = F_oracle = S_oracle = None            # filled from the merged path below
+    else:
+        pu_oracle = load_predict_unit(ckpt, inference_settings="default", device="cpu")
+        calc_oracle = FAIRChemCalculator(pu_oracle, task_name=args.task)
+        atoms.calc = calc_oracle
+        E_oracle = float(atoms.get_potential_energy())
+        F_oracle = atoms.get_forces().astype(np.float32)
+        # stress (ASE Voigt-6) only for a fully-periodic cell; zeros as a sentinel otherwise
+        S_oracle = (atoms.get_stress().astype(np.float32)
+                    if bool(np.all(atoms.get_pbc())) else np.zeros(6, dtype=np.float32))
+        print(f"oracle (unmerged MoE): E={E_oracle:.6f} eV  |F|max={np.abs(F_oracle).max():.4f} "
+              f"stress={S_oracle}")
+        del pu_oracle, calc_oracle                       # free ~11GB before loading the merged unit
 
     # ---- merged plain backbone: host MoLE merge (the correctness anchor) ------------------
     settings = InferenceSettings(
@@ -96,6 +127,11 @@ def main():
     E_merged = float(atoms2.get_potential_energy())     # triggers the merge in _lazy_init
     F_merged = atoms2.get_forces().astype(np.float32)
     print(f"merged (host MoLE):    E={E_merged:.6f} eV  |F|max={np.abs(F_merged).max():.4f}")
+
+    if args.merged_only:                                 # merged path is the released inference oracle
+        E_oracle, F_oracle = E_merged, F_merged
+        S_oracle = (atoms2.get_stress().astype(np.float32)
+                    if bool(np.all(atoms2.get_pbc())) else np.zeros(6, dtype=np.float32))
 
     hydra = pu.model.module
     backbone = hydra.backbone                            # plain eSCNMDBackbone after merge
@@ -222,6 +258,10 @@ def main():
     saved["host@edge_distance_vec"] = captured["edge_distance_vec"]
     saved["host@edge_distance"] = captured["edge_distance"]
     saved["host@to_m"] = npy(backbone.mappingReduced.to_m)
+    # coefficient subselection for mmax<lmax checkpoints (uma-m: lmax=4/mmax=2 -> 25 SH coeffs
+    # reduced to 19 m-space); None/absent when mmax==lmax (uma-s)
+    if backbone.mmax != backbone.lmax:
+        saved["host@coefficient_index"] = npy(backbone.coefficient_index)
     saved["host@gauss_offset"] = npy(backbone.distance_expansion.offset)
     saved["host@gauss_coeff"] = np.array([backbone.distance_expansion.coeff], dtype=np.float32)
     saved["host@x_edge"] = acts["block0.edgewise.in1"]
@@ -245,6 +285,7 @@ def main():
     saved["out@forces"] = npy(F_final)
     saved["out@energy_oracle"] = np.array([E_oracle], dtype=np.float64)
     saved["out@forces_oracle"] = F_oracle
+    saved["out@stress_oracle"] = S_oracle
     saved["out@energy_merged_oracle"] = np.array([E_merged], dtype=np.float64)
     saved["out@forces_merged_oracle"] = F_merged
 

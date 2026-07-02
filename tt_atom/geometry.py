@@ -165,15 +165,23 @@ def radial_mlp(x, w, p):
 
 
 class HostGeometry:
-    def __init__(self, weights, cfg, to_m, gauss_offset, gauss_coeff, *, gamma=0.0):
+    def __init__(self, weights, cfg, to_m, gauss_offset, gauss_coeff, *, gamma=0.0,
+                 coefficient_index=None):
         self.w = weights
         self.cfg = cfg
         self.lmax = cfg["lmax"]
+        self.mmax = cfg.get("mmax", self.lmax)
         self.C = cfg["sphere_channels"]
         self.cutoff = cfg["cutoff"]
         self.gamma = gamma
         self.Jd = [weights[f"Jd_{l}"] for l in range(self.lmax + 1)]
         self.to_m = to_m
+        # coefficient subselection for mmax<lmax (uma-m): the full (lmax+1)^2 spherical-harmonic
+        # coefficients are reduced to the |m|<=mmax m-space. ``to_m`` maps that reduced space
+        # (nred = to_m.shape[0]) onto the m-primed layout. None/identity when mmax==lmax (uma-s).
+        self.coefficient_index = (coefficient_index.long() if coefficient_index is not None
+                                  else None)
+        self.nred = to_m.shape[0]                          # reduced m-space size (== nsph when mmax==lmax)
         self.offset = gauss_offset
         self.coeff = float(gauss_coeff.reshape(-1)[0])
         p = float(5)                                       # PolynomialEnvelope exponent
@@ -186,7 +194,11 @@ class HostGeometry:
     def _wigner(self, edge_vec):
         wig = _eulers_to_wigner(_euler_angles(edge_vec, self.gamma), self.lmax, self.Jd)
         wig_inv = torch.transpose(wig, 1, 2).contiguous()
-        # mmax == lmax for our config -> no coefficient subselection
+        # mmax<lmax: keep only the |m|<=mmax coefficient rows/cols before the m-mapping (exactly
+        # fairchem's prepare_wigner). wig_M: [E, nred, nsph]; wig_M_inv: [E, nsph, nred].
+        if self.coefficient_index is not None:
+            wig = wig.index_select(1, self.coefficient_index)      # [E, nred, nsph]
+            wig_inv = wig_inv.index_select(2, self.coefficient_index)  # [E, nsph, nred]
         wig_M = torch.einsum("mk,nkj->nmj", self.to_m, wig)
         wig_M_inv = torch.einsum("njk,mk->njm", wig_inv, self.to_m)
         return wig_M, wig_M_inv
@@ -223,8 +235,10 @@ class HostGeometry:
         nsph = (lmax + 1) ** 2
         m0 = self.cfg["mmax_m0_coeffs"] if "mmax_m0_coeffs" in self.cfg else (lmax + 1)
         edm = radial_mlp(x_edge, w, "edge_degree_embedding.rad_func").reshape(-1, m0, C)
-        edm = F.pad(edm, (0, 0, 0, nsph - m0))             # [E,9,C]
-        edm = torch.bmm(wig_M_inv, edm) * envelope
+        # the radial output is the m=0 block; place it at the front of the reduced m-space
+        # (nred = nsph when mmax==lmax) and rotate back to node SH via wig_M_inv [E, nsph, nred]
+        edm = F.pad(edm, (0, 0, 0, self.nred - m0))        # [E, nred, C]
+        edm = torch.bmm(wig_M_inv, edm) * envelope         # [E, nsph, C]
         node = torch.zeros(N, nsph, C, dtype=pos.dtype)
         node = node.index_add(0, tgt, edm / self.rescale)
         # pos-independent l=0 init

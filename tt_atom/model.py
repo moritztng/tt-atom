@@ -53,10 +53,12 @@ class GraphContext:
         # per-edge matrices to their structural nonzeros. bf8 coefficients run faster and stay
         # PCC-safe (the rotation is an orthogonal basis change) -> use in --fast.
         from . import rotation
-        self.nsph = wigner.shape[1]
+        # wigner (wig_M) is [E, nred, nsph], its inverse [E, nsph, nred]. nred is the reduced
+        # m-space (|m|<=mmax); nred == nsph when mmax==lmax (uma-s), nred < nsph for uma-m.
+        self.nred, self.nsph = wigner.shape[1], wigner.shape[2]
         wig_dtype = ttnn.bfloat8_b if fast else wdtype
-        self.rot_fwd_ij, cf = rotation.pack(wigner)
-        self.rot_inv_ij, ci = rotation.pack(wigner_inv)
+        self.rot_fwd_ij, cf = rotation.pack(wigner)        # node SH (nsph) -> reduced m-space (nred)
+        self.rot_inv_ij, ci = rotation.pack(wigner_inv)    # reduced m-space (nred) -> node SH (nsph)
         self.rot_fwd_coef = _to_dev(cf, device, wig_dtype)
         self.rot_inv_coef = _to_dev(ci, device, wig_dtype)
         self.x_edge = _to_dev(x_edge, device, wdtype)
@@ -113,13 +115,6 @@ class Backbone:
         self.C = cfg["sphere_channels"]
         self.kcfg = compute_kernel_config()
         wdtype = ttnn.bfloat16
-        if cfg["mmax"] < cfg["lmax"]:
-            raise NotImplementedError(
-                f"mmax ({cfg['mmax']}) < lmax ({cfg['lmax']}): this checkpoint uses spherical-"
-                f"harmonic coefficient subselection (e.g. uma-m-1p1 has lmax=4/mmax=2), a path "
-                f"TT-Atom does not implement. uma-s-1 (lmax==mmax==2) is the validated, supported "
-                f"model — keep it as the default.")
-
         self.blocks = [
             _Block(weights, f"blocks.{i}", device, cfg, to_grid_mat, from_grid_mat, fast=fast)
             for i in range(cfg["num_layers"])

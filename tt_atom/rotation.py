@@ -19,56 +19,65 @@ import torch
 
 
 def pack(wigner: torch.Tensor, tol: float = 1e-6):
-    """``[E,n,n]`` Wigner -> (``ij``: list of structural-nonzero (out,in) pairs, ``coef``:
+    """``[E, n_out, n_in]`` Wigner -> (``ij``: list of structural-nonzero (out,in) pairs, ``coef``:
     ``[E, nnz]`` the per-edge values). The pattern is taken from ``amax`` over edges, so it
     includes every entry nonzero for *any* edge in this topology (entries that are ~0 for all
-    edges contribute nothing, so dropping them is exact for this topology)."""
-    n = wigner.shape[1]
+    edges contribute nothing, so dropping them is exact for this topology).
+
+    The matrix is rectangular for mmax<lmax checkpoints (uma-m: forward maps the 25-coeff node
+    representation to the 19-coeff reduced m-space, ``[E,19,25]``; the inverse maps back)."""
+    n_out, n_in = wigner.shape[1], wigner.shape[2]
     patt = wigner.abs().amax(dim=0) > tol
-    ij = [(int(i), int(j)) for i in range(n) for j in range(n) if patt[i, j]]
+    ij = [(int(i), int(j)) for i in range(n_out) for j in range(n_in) if patt[i, j]]
     coef = torch.stack([wigner[:, i, j] for (i, j) in ij], dim=1).contiguous()   # [E, nnz]
     return ij, coef
 
 
-def rotate(ttnn, x_flat, ij, coef, nsph, W, device):
-    """``x_flat`` ``[E, nsph*W]`` (W channels per coordinate) -> rotated ``[E, nsph*W]``."""
+def rotate(ttnn, x_flat, ij, coef, n_in, W, device, n_out=None):
+    """``x_flat`` ``[E, n_in*W]`` (W channels per coordinate) -> rotated ``[E, n_out*W]``.
+    ``n_out`` defaults to ``n_in`` (square rotation, uma-s); pass it for the rectangular
+    reduced-m-space rotation (uma-m)."""
+    n_out = n_in if n_out is None else n_out
     E = x_flat.shape[0]
-    cols = [ttnn.slice(x_flat, [0, j * W], [E, (j + 1) * W]) for j in range(nsph)]
-    out = [None] * nsph
+    cols = [ttnn.slice(x_flat, [0, j * W], [E, (j + 1) * W]) for j in range(n_in)]
+    out = [None] * n_out
     for k, (i, j) in enumerate(ij):
         c = ttnn.slice(coef, [0, k], [E, k + 1])              # [E,1] broadcast
         term = ttnn.multiply(cols[j], c)
         out[i] = term if out[i] is None else ttnn.add(out[i], term)
-    for i in range(nsph):
+    for i in range(n_out):
         if out[i] is None:
             out[i] = ttnn.zeros((E, W), dtype=x_flat.dtype, layout=ttnn.TILE_LAYOUT, device=device)
     return ttnn.concat(out, dim=1)
 
 
-def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, nsph, W, device):
-    """VJP of :func:`rotate`. Returns (g wrt ``x_in`` flat ``[E,nsph*W]``, g wrt the packed
-    coefficients ``[E, nnz]``). The coefficient adjoint is scattered back to a dense ``[E,n,n]``
-    on host (:func:`scatter_coef`) to drive the geometric ``dW/dpos`` autograd for the force."""
+def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None):
+    """VJP of :func:`rotate`. Returns (g wrt ``x_in`` flat ``[E,n_in*W]``, g wrt the packed
+    coefficients ``[E, nnz]``). The coefficient adjoint is scattered back to a dense
+    ``[E, n_out, n_in]`` on host (:func:`scatter_coef`) to drive the geometric ``dW/dpos``
+    autograd for the force."""
+    n_out = n_in if n_out is None else n_out
     E = x_in_flat.shape[0]
-    in_cols = [ttnn.slice(x_in_flat, [0, j * W], [E, (j + 1) * W]) for j in range(nsph)]
-    gout_cols = [ttnn.slice(g_out_flat, [0, i * W], [E, (i + 1) * W]) for i in range(nsph)]
-    g_in = [None] * nsph
+    in_cols = [ttnn.slice(x_in_flat, [0, j * W], [E, (j + 1) * W]) for j in range(n_in)]
+    gout_cols = [ttnn.slice(g_out_flat, [0, i * W], [E, (i + 1) * W]) for i in range(n_out)]
+    g_in = [None] * n_in
     gc = [None] * len(ij)
     for k, (i, j) in enumerate(ij):
         c = ttnn.slice(coef, [0, k], [E, k + 1])
         term = ttnn.multiply(gout_cols[i], c)
         g_in[j] = term if g_in[j] is None else ttnn.add(g_in[j], term)
         gc[k] = ttnn.sum(ttnn.multiply(gout_cols[i], in_cols[j]), dim=1, keepdim=True)   # [E,1]
-    for j in range(nsph):
+    for j in range(n_in):
         if g_in[j] is None:
             g_in[j] = ttnn.zeros((E, W), dtype=x_in_flat.dtype, layout=ttnn.TILE_LAYOUT, device=device)
     return ttnn.concat(g_in, dim=1), ttnn.concat(gc, dim=1)
 
 
-def scatter_coef(g_coef: torch.Tensor, ij, n: int) -> torch.Tensor:
-    """``[E, nnz]`` coefficient adjoints -> dense ``[E, n, n]`` (zeros off-pattern)."""
+def scatter_coef(g_coef: torch.Tensor, ij, n_out: int, n_in: int = None) -> torch.Tensor:
+    """``[E, nnz]`` coefficient adjoints -> dense ``[E, n_out, n_in]`` (zeros off-pattern)."""
+    n_in = n_out if n_in is None else n_in
     E = g_coef.shape[0]
-    g = torch.zeros(E, n, n, dtype=g_coef.dtype)
+    g = torch.zeros(E, n_out, n_in, dtype=g_coef.dtype)
     for k, (i, j) in enumerate(ij):
         g[:, i, j] = g_coef[:, k]
     return g
