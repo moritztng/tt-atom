@@ -139,16 +139,27 @@ class Backbone:
             x = blk(x, graph, sys_node_embedding)
         return self.final_norm(x)
 
-    def energy(self, node_emb):
-        """Sum of per-node energy MLP on the l=0 channel (single system)."""
+    def node_energy(self, node_emb):
+        """Per-node energy MLP (Linear-SiLU-Linear-SiLU-Linear) on the l=0 channel -> ``[N, 1]``."""
         ttnn = self.ttnn
         N = node_emb.shape[0]
         h = ttnn.slice(node_emb, [0, 0, 0], [N, 1, self.C])
         h = ttnn.reshape(h, (N, self.C))
         h = ttnn.silu(ttnn.linear(h, self.eh_w[0], bias=self.eh_b[0], compute_kernel_config=self.kcfg))
         h = ttnn.silu(ttnn.linear(h, self.eh_w[1], bias=self.eh_b[1], compute_kernel_config=self.kcfg))
-        h = ttnn.linear(h, self.eh_w[2], bias=self.eh_b[2], compute_kernel_config=self.kcfg)  # [N,1]
-        return ttnn.sum(h, dim=0)
+        return ttnn.linear(h, self.eh_w[2], bias=self.eh_b[2], compute_kernel_config=self.kcfg)  # [N,1]
+
+    def energy(self, node_emb):
+        """Total energy of a single system: sum of the per-node energy."""
+        return self.ttnn.sum(self.node_energy(node_emb), dim=0)
+
+    def energy_batch(self, node_emb, seg):
+        """Per-system energies of a disjoint-union batch: segment-sum of the per-node energy by
+        the one-hot segment matrix ``seg`` [K, N] (``seg[k, n] = 1`` iff atom n is in system k),
+        expressed as the tile-friendly matmul ``seg @ node_energy`` -> ``[K, 1]``. Block-diagonal
+        batching leaves every backbone op within-system, so this reduction is the only change."""
+        return self.ttnn.matmul(seg, self.node_energy(node_emb),
+                                compute_kernel_config=self.kcfg)
 
     def __call__(self, x_init, graph, sys_node_embedding):
         node_emb = self.node_embedding(x_init, graph, sys_node_embedding)
