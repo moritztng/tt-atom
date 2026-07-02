@@ -19,8 +19,6 @@ import json
 import pathlib
 import time
 
-import numpy as np
-import torch
 from ase.build import molecule
 
 from tt_atom import device as D

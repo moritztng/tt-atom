@@ -23,13 +23,11 @@ import os
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import numpy as np
-import torch
 
 from ase.build import molecule
 from huggingface_hub import hf_hub_download
 from fairchem.core import FAIRChemCalculator
 from fairchem.core.datasets import data_list_collater
-from fairchem.core.datasets.atomic_data import AtomicData
 from fairchem.core.units.mlip_unit import load_predict_unit
 from fairchem.core.units.mlip_unit.api.inference import InferenceSettings
 

@@ -127,6 +127,8 @@ construction, the radius graph) is <1% of the work and stays on host.
 - **`model.py` / `device.py`** — full residency, program cache, `bf16` weights with `HiFi4` + `fp32`
   dest accumulation (`packer_l1_acc`), matmul PCC ≈ 1.0 vs torch.
 - **`batch.py`** — one-process-per-card fan-out for multi-card throughput.
+- **`disjoint.py`** — disjoint-union (block-diagonal) graph batching: concatenate K systems into
+  one graph and evaluate them in a *single* device forward (the fairchem/PyG way).
 
 ## Performance (measured, p150 Blackhole)
 
@@ -155,28 +157,79 @@ host dispatch. `tt-atom relax --trace` / `md --trace` use it.
 **Multi-card throughput** scales near-linearly — **3.95× on 4 cards** (validated on a 4-card
 QuietBox, `qb1`; the fan-out path runs on any card count, single-card here).
 
+**Single-card batched throughput (many small systems).** For a small molecule the device forward
+is *dispatch*-bound: one ethanol (9 atoms) costs ~31 ms end-to-end almost all of which is host
+overhead (build geometry, upload, launch, read back), so one-at-a-time is flat at ~32 systems/s no
+matter how you slice it. Disjoint-union batching (below) pays that overhead once for K systems:
+
+| K (ethanol) | one-at-a-time | batched | speedup |
+|---:|---:|---:|---:|
+| 2 | 32 sys/s | 56 sys/s | 1.7× |
+| 8 | 33 sys/s | 181 sys/s | 5.6× |
+| 32 | 32 sys/s | 413 sys/s | **12.8×** |
+| 64 | 32 sys/s | 439 sys/s | **13.5×** |
+
+Crossover is K = 2 (K = 1 is parity), and throughput peaks around K = 32–64 then declines
+(366/283/207 sys/s at K = 128/256/512): the scatter-add is a dense matmul `S[N, E]` and the
+block-diagonal batch makes it `[ΣN, ΣE]`, which grows **O(K²)** (both nodes and edges scale with
+K), so the wasted zeros eventually dominate. No OOM through K = 512 on one p150 (ΣN = 4608,
+ΣE = 36864, ~680 MB of scatter matrices); the useful batch is ≲ 64 for tiny molecules (and
+correspondingly fewer for larger ones). All numbers measured on one p150, real uma-s-1, energy-only.
+
 Honest notes: a `--fast` (`bfloat8_b`) mode exists but gives no speedup (the forward is
 data-movement bound, not flop bound) and slightly worse accuracy — `bf16` is the default. Rotation
 is the device hotspot (~60% of a block) and already flat-layout; its cost is dispatch, recovered by
 trace, not compute headroom.
 
+## Batched inference (disjoint-union, many small systems)
+
+To evaluate many independent small systems on one card, concatenate them into a single
+block-diagonal graph and run one device forward — exactly how fairchem/PyG batch (`Batch.from_data_list`):
+no leading batch dimension, one big graph, per-system energies recovered by a segment-sum. Every
+eSCN-MD op is per-node or per-edge, so the whole backbone is batch-transparent once each system's
+edges carry a node offset; only the energy readout changes (sum → segment-sum) and the analytic
+forces need no change at all (block-diagonal ⇒ each atom's force is `−dE_(its system)/dx`).
+
+```python
+from tt_atom import TTAtomCalculator
+from ase.build import molecule
+
+calc = TTAtomCalculator("uma_s_ethanol.npz")        # single-system API is unchanged
+batch = [molecule("CH3CH2OH") for _ in range(32)]   # e.g. an MD ensemble / conformer set
+for a in batch:
+    a.rattle(stdev=0.05); a.info.update(charge=0, spin=1)
+
+out = calc.evaluate_batch(batch)                    # ONE device forward
+out["energy"]      # np.ndarray [K]  — per-system energies (eV)
+out["forces"]      # list[np.ndarray [N_k, 3]] — per-system forces
+```
+
+Validated bit-close against fairchem's own batched merged inference (`data_list_collater` +
+`predict`) on the real uma-s-1 checkpoint: **energy rel err 3.5e-6, force PCC 0.99999** (K = 8
+ethanol conformers). One caveat, inherited from UMA: a merged bundle bakes the MoLE expert routing
+for **one reduced composition** (fairchem's `merge_MOLE_model` asserts the same), so a batch shares
+that composition — conformers, an MD ensemble, an active-learning set of one molecule. A genuinely
+mixed-composition batch needs the unmerged model, which TT-Atom does not run. See
+[`examples/evaluate_batch.py`](examples/evaluate_batch.py).
+
 ## Reproduce
 
 ```bash
-python -m pytest tests/ -q                          # 22 tests (parity, forces, periodic, trace)
+python -m pytest tests/ -q                          # 26 tests (parity, forces, periodic, trace, batch)
 tt-atom verify  uma_s_ethanol.npz                   # device vs embedded fairchem reference
 python benchmarks/bench_trace.py --weights uma_s_ethanol.npz     # eager vs traced e2e
 python benchmarks/bench_throughput.py --weights model.npz --cells 2 3 4 5
+python benchmarks/bench_batch.py --weights uma_s_ethanol.npz --ks 1 2 4 8 16 32 64  # batched vs one-at-a-time
 ```
 
 ## Layout
 
 ```
 tt_atom/   model · so2 · rotation · forces · geometry(PBC) · grid · spectral · norm · activation
-           · weights · calculator · trace · batch · device · cli
-tests/     per-module + end-to-end parity · analytic-force VJP · periodic · trace · real-weight
-benchmarks/throughput (CPU-vs-TT) · multi-card · trace (eager-vs-traced) · chart generator
-examples/  relax · md · periodic (crystal) · batch (multi-card)
+           · weights · calculator · trace · batch(multi-card) · disjoint(batching) · device · cli
+tests/     per-module + end-to-end parity · analytic-force VJP · periodic · trace · real-weight · batch
+benchmarks/throughput (CPU-vs-TT) · multi-card · trace (eager-vs-traced) · batching · chart generator
+examples/  relax · md · periodic (crystal) · batch (multi-card) · evaluate_batch (disjoint-union)
 tools/     fairchem checkpoint -> WeightBundle exporter (embeds a reference for `tt-atom verify`)
 ```
 
