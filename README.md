@@ -3,11 +3,11 @@
 **Run Meta's [UMA](https://huggingface.co/facebook/UMA) machine-learning interatomic potential on
 [Tenstorrent](https://tenstorrent.com) — a drop-in replacement for the fairchem ASE calculator.**
 
-TT-Atom runs the UMA / eSCN-MD backbone — energy **and conservative analytic forces** — fully
-device-resident on Tenstorrent via [`ttnn`](https://github.com/tenstorrent/tt-metal), behind a
-clean [ASE](https://wiki.fysik.dtu.dk/ase/) `Calculator` that mirrors fairchem's. Molecules **and**
-periodic materials, validated against the released `uma-s-1` checkpoint. Moving off fairchem is a
-one-line change.
+TT-Atom runs the UMA / eSCN-MD backbone — energy, **conservative analytic forces, and the stress
+tensor** — fully device-resident on Tenstorrent via [`ttnn`](https://github.com/tenstorrent/tt-metal),
+behind a clean [ASE](https://wiki.fysik.dtu.dk/ase/) `Calculator` that mirrors fairchem's. Molecules
+**and** periodic materials, all five UMA tasks (omol/omat/oc20/odac/omc), `uma-s-1` **and** `uma-m-1p1`,
+validated edge-for-edge against the released checkpoints. Moving off fairchem is a one-line change.
 
 ## Migrating from fairchem — one line
 
@@ -80,8 +80,9 @@ FIRE(atoms).run(fmax=0.05)                                       # analytic forc
 print(atoms.get_potential_energy())
 ```
 
-Examples: [`relax.py`](examples/relax.py), [`md.py`](examples/md.py),
-[`periodic.py`](examples/periodic.py) (a bulk crystal), [`batch.py`](examples/batch.py) (multi-card).
+Examples: [`relax.py`](examples/relax.py), [`relax_cell.py`](examples/relax_cell.py) (variable-cell,
+stress-driven), [`md.py`](examples/md.py), [`periodic.py`](examples/periodic.py) (a bulk crystal),
+[`batch.py`](examples/batch.py) (multi-card).
 
 ## Accuracy — validated against fairchem uma-s-1
 
@@ -96,18 +97,62 @@ Blackhole **p150**, reproducible with `tests/test_realweight.py` (molecules) and
 | **omol** | ethanol | aperiodic | **1.8e-7** | **0.99958** | 3.4e-3 |
 | **omat** | bulk Si (diamond) | periodic `[T,T,T]` | **3.0e-4** | **0.99999** | 6.5e-3 |
 | **oc20** | Cu(100)+H slab | mixed `[T,T,F]` | **8.6e-5** | **1.00000** | 9.7e-4 |
+| **odac** | MgO framework | periodic `[T,T,T]` | **2.2e-4** | **0.99999** | — |
+| **omc** | solid CO₂ (dry ice) | periodic `[T,T,T]` | **8.0e-5** | **1.00000** | — |
 
-All meet the drop-in bar (energy rel < 1e-3, force PCC > 0.99). The periodic neighbour list
-reproduces fairchem's `radius_graph_pbc` **edge-for-edge** (same edges, same image offsets).
-`odac` and `omc` use the identical data-driven path (a per-dataset token + per-task energy
-normalizer read from the checkpoint) — enable them by exporting with `--task odac` / `--task omc`.
+All five UMA tasks meet the drop-in bar (energy rel < 1e-3, force PCC > 0.99); `odac`/`omc` use the
+identical data-driven path (a per-dataset token + per-task energy normalizer read from the
+checkpoint) — export with `--task odac` / `--task omc`. The periodic neighbour list reproduces
+fairchem's `radius_graph_pbc` **edge-for-edge** (same edges, same image offsets).
+
+**Stress / virial.** The calculator also exposes the ASE **stress tensor** (Voigt-6) — the virial
+`σ = (1/V)·sym(dE/dstrain)`, assembled by the same analytic reverse pass (a symmetric strain applied
+to the edge vectors captures both the position and cell contributions in one host autograd, matching
+fairchem's `compute_forces_and_stress`). Validated vs the uma-s-1 oracle on bulk Si: **stress PCC
+0.99999**, max component rel-err 0.010. This enables **variable-cell relaxation / NPT** — an ASE
+`FrechetCellFilter` + FIRE run converges on the card (see [`examples/relax_cell.py`](examples/relax_cell.py)).
+
+**Model coverage.** Both released conserving checkpoints are validated and run on one p150:
+
+| checkpoint | config | validation (ethanol, omol) | status |
+|---|---|---|---|
+| **`uma-s-1`** | lmax=mmax=2, 4 layers | energy rel 1.8e-7, force PCC 0.99958 | validated **default** |
+| **`uma-m-1p1`** | lmax=4/mmax=2, 10 layers | energy rel 2.4e-8, force PCC 0.99986 | validated |
+
+`uma-m` uses spherical-harmonic coefficient subselection (25 SH coeffs → a 19-dim `|m|≤mmax`
+m-space inside the SO(2) block, so the Wigner rotation is rectangular); TT-Atom now implements this
+reduced-m-space path. `uma-s-1` stays the default.
 
 **MoLE merge anchor:** the host expert-merge reproduces the unmerged 32-expert MoE oracle to
 energy rel 1.3e-12 / force PCC 1.0 — the merge is exact, not an approximation.
 
-**Model coverage.** `uma-s-1` (lmax=mmax=2) is the validated default. `uma-m-1p1` exports cleanly
-but is **not supported**: it uses `lmax=4/mmax=2` spherical-harmonic coefficient subselection, a
-code path TT-Atom does not implement; the calculator raises a clear error rather than mis-running.
+### fairchem inference equivalence
+
+Everything fairchem's UMA does for **inference** is covered:
+
+| capability | fairchem | TT-Atom | anchor |
+|---|:-:|:-:|---|
+| energy | ✅ | ✅ | all 5 tasks, rel < 1e-3 |
+| conservative forces | ✅ | ✅ | analytic VJP, PCC > 0.999 |
+| **stress / virial** | ✅ | ✅ | bulk Si, PCC 0.99999 |
+| variable-cell relax / NPT | ✅ | ✅ | FrechetCellFilter+FIRE converges |
+| omol / omat / oc20 | ✅ | ✅ | validated |
+| **odac / omc** | ✅ | ✅ | validated |
+| molecules + PBC (full/mixed) | ✅ | ✅ | edge-for-edge graph |
+| `uma-s-1` / **`uma-m-1p1`** | ✅ | ✅ | validated |
+| MD (trace-accelerated) | ✅ | ✅ | bit-for-bit, 2.3× |
+| batched inference | ✅ | ✅ | disjoint-union, PCC 0.99999 |
+
+**Non-goals** (deliberately out of scope, with the reason):
+
+- **Training / fine-tuning** — TT-Atom is inference-only by design; no optimizer, no backward-through-time.
+- **Mixed-composition batching** — a merged bundle bakes MoLE routing for *one* reduced composition
+  (fairchem's `merge_MOLE_model` asserts the same); a mixed batch needs the unmerged MoE, which is a
+  different architectural path. Same-composition batches (conformers, MD ensembles) are supported.
+- **LAMMPS interface** — a large separate integration; the ASE calculator is sufficient for
+  inference, relaxation, and MD.
+- **`uma-l`** — expected too large for a single p150; not attempted. `uma-s-1`/`uma-m-1p1` are the
+  supported checkpoints.
 
 ## How it maps cleanly to Tenstorrent
 
@@ -121,8 +166,9 @@ construction, the radius graph) is <1% of the work and stays on host.
 - **`rotation.py`** — per-edge Wigner rotation as a **sparse multiply-accumulate** over its fixed
   nonzero pattern, one launch over all edges (replacing a launch-bound batched matmul).
 - **`geometry.py`** — host radius graph, aperiodic **and** cell-aware minimum-image (PBC).
-- **`forces.py`** — **analytic** `F = −dE/dx` by a hand-written reverse pass through the device
-  graph; the cheap geometric `d(Wigner)/dx` is finished by `torch.autograd` on host. Not finite differences.
+- **`forces.py`** — **analytic** `F = −dE/dx` and the **stress virial** by a hand-written reverse
+  pass through the device graph; the cheap geometric `d(Wigner)/dx` and `dE/dstrain` are finished by
+  `torch.autograd` on host. Not finite differences.
 - **`trace.py`** — trace-captured, device-resident forward+backward for the MD/relaxation loop.
 - **`model.py` / `device.py`** — full residency, program cache, `bf16` weights with `HiFi4` + `fp32`
   dest accumulation (`packer_l1_acc`), matmul PCC ≈ 1.0 vs torch.
@@ -215,7 +261,7 @@ mixed-composition batch needs the unmerged model, which TT-Atom does not run. Se
 ## Reproduce
 
 ```bash
-python -m pytest tests/ -q                          # 26 tests (parity, forces, periodic, trace, batch)
+python -m pytest tests/ -q                          # 35 tests (parity, forces, stress, periodic, uma-m, trace, batch)
 tt-atom verify  uma_s_ethanol.npz                   # device vs embedded fairchem reference
 python benchmarks/bench_trace.py --weights uma_s_ethanol.npz     # eager vs traced e2e
 python benchmarks/bench_throughput.py --weights model.npz --cells 2 3 4 5
@@ -229,7 +275,7 @@ tt_atom/   model · so2 · rotation · forces · geometry(PBC) · grid · spectr
            · weights · calculator · trace · batch(multi-card) · disjoint(batching) · device · cli
 tests/     per-module + end-to-end parity · analytic-force VJP · periodic · trace · real-weight · batch
 benchmarks/throughput (CPU-vs-TT) · multi-card · trace (eager-vs-traced) · batching · chart generator
-examples/  relax · md · periodic (crystal) · batch (multi-card) · evaluate_batch (disjoint-union)
+examples/  relax · relax_cell (variable-cell/stress) · md · periodic (crystal) · batch (multi-card) · evaluate_batch
 tools/     fairchem checkpoint -> WeightBundle exporter (embeds a reference for `tt-atom verify`)
 ```
 
