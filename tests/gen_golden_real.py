@@ -82,7 +82,11 @@ def main():
     atoms.calc = calc_oracle
     E_oracle = float(atoms.get_potential_energy())
     F_oracle = atoms.get_forces().astype(np.float32)
-    print(f"oracle (unmerged MoE): E={E_oracle:.6f} eV  |F|max={np.abs(F_oracle).max():.4f}")
+    # stress (ASE Voigt-6) only for a fully-periodic cell; zeros as a sentinel otherwise
+    S_oracle = (atoms.get_stress().astype(np.float32)
+                if bool(np.all(atoms.get_pbc())) else np.zeros(6, dtype=np.float32))
+    print(f"oracle (unmerged MoE): E={E_oracle:.6f} eV  |F|max={np.abs(F_oracle).max():.4f} "
+          f"stress={S_oracle}")
 
     # ---- merged plain backbone: host MoLE merge (the correctness anchor) ------------------
     settings = InferenceSettings(
@@ -245,6 +249,7 @@ def main():
     saved["out@forces"] = npy(F_final)
     saved["out@energy_oracle"] = np.array([E_oracle], dtype=np.float64)
     saved["out@forces_oracle"] = F_oracle
+    saved["out@stress_oracle"] = S_oracle
     saved["out@energy_merged_oracle"] = np.array([E_merged], dtype=np.float64)
     saved["out@forces_merged_oracle"] = F_merged
 

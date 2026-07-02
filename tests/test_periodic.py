@@ -115,3 +115,39 @@ def test_end_to_end_periodic_energy_forces(task, fname, device):
     fpcc = _pcc(F, F_oracle)
     assert rel < 1e-3, f"[{task}] energy rel err {rel} (E={E}, oracle={E_oracle})"
     assert fpcc > 0.99, f"[{task}] force PCC {fpcc}"
+
+
+@pytest.mark.parametrize("task,fname", PERIODIC_CASES)
+def test_stress_matches_fairchem(task, fname, device):
+    """Stress (virial = symmetrized dE/dstrain, / volume) vs the fairchem oracle on a fully
+    periodic cell — the anchor for variable-cell relaxation / NPT. Runs through the ASE
+    ``TTAtomCalculator`` so the Voigt output + normalizer scaling + volume are all exercised.
+    Skips a mixed-pbc case (stress ill-defined; oracle stored zeros)."""
+    from ase import Atoms
+
+    from tt_atom.calculator import TTAtomCalculator
+    from tt_atom.weights import WeightBundle
+
+    rg, path = _load(fname)
+    if "out@stress_oracle" not in rg.files or not np.any(rg["out@stress_oracle"]):
+        pytest.skip(f"[{task}] no oracle stress (mixed-pbc or pre-stress golden)")
+    pbc = _pbc(rg)
+    if not all(pbc):
+        pytest.skip(f"[{task}] stress only validated for a fully periodic cell")
+
+    atoms = Atoms(
+        numbers=rg["in@atomic_numbers"].copy(),
+        positions=rg["in@pos"].copy(),
+        cell=rg["in@cell"].reshape(3, 3).copy(),
+        pbc=pbc,
+    )
+    atoms.info.update(charge=int(rg["in@charge"][0]), spin=int(rg["in@spin"][0]))
+    calc = TTAtomCalculator(WeightBundle.load(path), device=device)
+    atoms.calc = calc
+    stress = atoms.get_stress()                              # ASE Voigt-6
+    S_oracle = rg["out@stress_oracle"]
+    spcc = _pcc(stress, S_oracle)
+    maxrel = float(np.max(np.abs(stress - S_oracle) / (np.abs(S_oracle) + 1e-9)))
+    # stress is noisier than forces (bf16 device); accept fairchem parity by PCC or rel err
+    assert spcc > 0.99 or maxrel < 1e-2, (
+        f"[{task}] stress PCC {spcc}, maxrel {maxrel}\n mine={stress}\n oracle={S_oracle}")
