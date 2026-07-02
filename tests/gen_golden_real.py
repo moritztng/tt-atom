@@ -62,12 +62,30 @@ def build_system(kind: str, task: str):
         atoms.rattle(stdev=0.05, seed=2)
         atoms.info.update(charge=0, spin=1)               # pbc = [True, True, False] (mixed)
         return atoms
+    if kind == "mof":
+        # odac (DAC / MOFs): a metal-oxide framework fragment (MgO), fully periodic. A minimal
+        # inorganic stand-in that exercises the odac dataset token + normalizer on the periodic path.
+        atoms = bulk("MgO", "rocksalt", a=4.21) * (2, 1, 1)
+        atoms.rattle(stdev=0.08, seed=3)
+        atoms.info.update(charge=0, spin=1)
+        return atoms
+    if kind == "molcrystal":
+        # omc (molecular crystals): solid CO2 (dry ice) as a periodic cubic cell dense enough that
+        # periodic images fall within the 6 A cutoff (tests the cell-aware neighbour list).
+        co2 = molecule("CO2")
+        co2.set_cell([5.0, 5.0, 5.0])
+        co2.set_pbc(True)
+        co2.center()
+        co2.rattle(stdev=0.05, seed=4)
+        co2.info.update(charge=0, spin=1)
+        return co2
     raise ValueError(kind)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--system", default="molecule", choices=["molecule", "bulk", "slab"])
+    ap.add_argument("--system", default="molecule",
+                    choices=["molecule", "bulk", "slab", "mof", "molcrystal"])
     ap.add_argument("--task", default="omol")
     ap.add_argument("--ckpt", default="uma-s-1", help="UMA checkpoint name (e.g. uma-s-1, uma-m-1p1)")
     ap.add_argument("--out", required=True)

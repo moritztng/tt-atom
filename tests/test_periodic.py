@@ -6,12 +6,18 @@ device backbone must reproduce the fairchem oracle. Two periodic tasks are cover
 (gated, uncommitted) golden bundles are present, else each auto-skips:
 
   * omat  — bulk Si diamond, fully periodic pbc=[T,T,T];
-  * oc20  — Cu(100) slab + H adsorbate, mixed pbc=[T,T,F] (catalysis).
+  * oc20  — Cu(100) slab + H adsorbate, mixed pbc=[T,T,F] (catalysis);
+  * odac  — MgO framework fragment, fully periodic (DAC / MOFs);
+  * omc   — solid CO2 (dry ice) molecular crystal, fully periodic.
 
     HF_HUB_OFFLINE=1 ~/.ttatom_run/refenv/bin/python tests/gen_golden_real.py \
         --system bulk --task omat --out ~/.ttatom_run/goldens_real/si_omat.npz
     HF_HUB_OFFLINE=1 ~/.ttatom_run/refenv/bin/python tests/gen_golden_real.py \
         --system slab --task oc20 --out ~/.ttatom_run/goldens_real/cuh_oc20.npz
+    HF_HUB_OFFLINE=1 ~/.ttatom_run/refenv/bin/python tests/gen_golden_real.py \
+        --system mof --task odac --out ~/.ttatom_run/goldens_real/mgo_odac.npz
+    HF_HUB_OFFLINE=1 ~/.ttatom_run/refenv/bin/python tests/gen_golden_real.py \
+        --system molcrystal --task omc --out ~/.ttatom_run/goldens_real/co2_omc.npz
     PYTHONPATH=~/TT-Atom ~/.ttatom_run/env/bin/python -m pytest tests/test_periodic.py -q
 
 What is checked per task:
@@ -34,7 +40,9 @@ GOLDEN_DIR = pathlib.Path(os.environ.get(
     "TTATOM_GOLDEN_DIR", str(pathlib.Path.home() / ".ttatom_run/goldens_real")))
 
 # (task label, bundle filename) — parametrized; each case skips if its bundle is absent.
-PERIODIC_CASES = [("omat", "si_omat.npz"), ("oc20", "cuh_oc20.npz")]
+# omat/omc/odac are fully periodic (stress validated too); oc20 is mixed-pbc (stress skips).
+PERIODIC_CASES = [("omat", "si_omat.npz"), ("oc20", "cuh_oc20.npz"),
+                  ("odac", "mgo_odac.npz"), ("omc", "co2_omc.npz")]
 
 
 def _pcc(a, b):
