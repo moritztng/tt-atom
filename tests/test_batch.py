@@ -3,16 +3,27 @@
 The whole correctness claim of batching is: evaluating K systems as one concatenated
 block-diagonal graph gives the *same* per-system energies and forces as evaluating each system
 separately. Block-diagonality means every backbone op stays within-system, so the only new piece
-is the segment-sum energy readout (and forces need no change). These tests pin that on the tiny
-random-weight golden (device, no fairchem needed); real-weight vs-fairchem batched parity lives
-in test_realweight.py.
+is the segment-sum energy readout (and forces need no change). The mechanism is pinned on the
+tiny random-weight golden (device, no fairchem needed); ``test_batched_vs_fairchem`` closes the
+loop against fairchem's OWN batched merged inference on the real uma-s-1 checkpoint.
 """
+import os
+import pathlib
+
+import numpy as np
+import pytest
 import torch
 
 from tt_atom.model import Backbone
 from tt_atom.geometry import HostGeometry, radius_graph
 from tt_atom import forces, disjoint
 from util import pcc
+
+# real-weight batched parity (skipped unless the merged bundle + fairchem batched golden exist)
+BUNDLE = os.environ.get("TTATOM_BUNDLE", str(pathlib.Path.home() / ".ttatom_run/uma_s_ethanol.npz"))
+BATCH_GOLDEN = os.environ.get(
+    "TTATOM_BATCH_GOLDEN",
+    str(pathlib.Path.home() / ".ttatom_run/goldens_real/batch_ethanol_omol.npz"))
 
 
 def _build(golden, device):
@@ -100,3 +111,35 @@ def test_batched_identical_copies(golden, device):
                            task=cfg.get("task", "omat"))
     E_batch, _ = forces.energy_and_forces_batch(bb, geo, bg, compute_forces=False)
     assert (E_batch - E_batch[0]).abs().max() < 1e-3, f"copies disagree: {E_batch}"
+
+
+@pytest.mark.skipif(not (pathlib.Path(BUNDLE).exists() and pathlib.Path(BATCH_GOLDEN).exists()),
+                    reason="real merged bundle or fairchem batched golden not present")
+def test_batched_vs_fairchem(device):
+    """Real uma-s-1: TT-Atom disjoint-union batched E+F vs fairchem's OWN batched merged inference
+    (Batch.from_data_list) on a same-composition conformer batch — E rel<1e-3, F PCC>0.99."""
+    from ase import Atoms
+    from tt_atom import TTAtomCalculator
+
+    d = np.load(BATCH_GOLDEN)
+    charge, spin = float(d["charge"][0]), float(d["spin"][0])
+    natoms = d["natoms"].tolist()
+    Z, pos = d["Z"], d["pos"]
+    E_ref, F_ref = d["energy"].astype(np.float64), d["forces"].astype(np.float64)
+
+    systems, off = [], 0
+    for n in natoms:
+        a = Atoms(numbers=Z[off:off + n], positions=pos[off:off + n])
+        a.info.update(charge=charge, spin=spin)
+        systems.append(a)
+        off += n
+
+    calc = TTAtomCalculator(BUNDLE, device=device)
+    res = calc.evaluate_batch(systems)
+    E = res["energy"]
+    F = np.concatenate(res["forces"], axis=0)
+
+    e_rel = np.abs(E - E_ref).max() / (np.abs(E_ref).max() + 1e-6)
+    fp = pcc(F, F_ref)
+    assert e_rel < 1e-3, f"batched energy rel err {e_rel:.2e} (E={E[:3]} vs {E_ref[:3]})"
+    assert fp > 0.99, f"batched force PCC {fp:.4f}"
