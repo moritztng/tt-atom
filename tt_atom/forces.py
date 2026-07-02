@@ -268,12 +268,12 @@ def edgewise_bw(ew, graph, g_out, acc):
     E = graph.E
     dev = ew.device
 
-    # scatter backward: g_m_back[e] = g_out[tgt[e]]  (gather by target), flat [E,9C]
+    # scatter backward: g_m_back[e] = g_out[tgt[e]]  (gather by target), flat [E, nsph*C]
     gof = ttnn.to_layout(ttnn.reshape(g_out, (N, nsph * C)), ttnn.ROW_MAJOR_LAYOUT)
     g_mback = ttnn.to_layout(ttnn.embedding(graph.tgt_idx, gof), ttnn.TILE_LAYOUT)
-    # inverse rotation: m_back = rotate_inv(m_env)
-    g_menv, g_rinv = rotation.rotate_bw(ttnn, ew._cache_menv, g_mback,
-                                        graph.rot_inv_ij, graph.rot_inv_coef, nsph, C, dev)
+    # inverse rotation backward: forward mapped reduced m-space (nred) -> node SH (nsph)
+    g_menv, g_rinv = rotation.rotate_bw(ttnn, ew._cache_menv, g_mback, graph.rot_inv_ij,
+                                        graph.rot_inv_coef, graph.nred, C, dev, n_out=nsph)
     # envelope: m_env = m_so2 * envelope  (flat [E,9C] * [E,1])
     g_mso2 = ttnn.multiply(g_menv, graph.edge_envelope_f)
     g_env = ttnn.sum(ttnn.multiply(g_menv, ew._cache_mso2), dim=1, keepdim=True)   # [E,1]
@@ -281,9 +281,9 @@ def edgewise_bw(ew, graph, g_out, acc):
     g_mgate, _ = so2_bw(ew.so2_2, g_mso2)
     g_gating, g_mso1 = gate_bw(ew.gate, g_mgate)
     g_mrot, g_rad = so2_bw(ew.so2_1, g_mso1, g_gating)         # g_mrot flat [E, 9*2C]
-    # forward rotation: m_rot = rotate_fwd(m_cat)
-    g_mcat, g_rfwd = rotation.rotate_bw(ttnn, ew._cache_mcat, g_mrot,
-                                        graph.rot_fwd_ij, graph.rot_fwd_coef, nsph, 2 * C, dev)
+    # forward rotation backward: forward mapped node SH (nsph) -> reduced m-space (nred)
+    g_mcat, g_rfwd = rotation.rotate_bw(ttnn, ew._cache_mcat, g_mrot, graph.rot_fwd_ij,
+                                        graph.rot_fwd_coef, nsph, 2 * C, dev, n_out=graph.nred)
     # m_cat per coord = [xs_i | xt_i]; split channels back out
     g_mcat3 = ttnn.reshape(g_mcat, (E, nsph, 2 * C))
     g_xs_f = ttnn.reshape(ttnn.slice(g_mcat3, [0, 0, 0], [E, nsph, C]), (E, nsph * C))
@@ -360,9 +360,13 @@ def backbone_bw(bb, graph, node_emb):
 
 
 def _forward(bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding, edge_cell_shift,
-             requires_grad):
+             requires_grad, compute_stress=False):
     """Shared forward: host geometry -> device-resident GraphContext + backbone node embedding.
-    Returns ``(node_emb, graph, t, pos_leaf)``; ``pos_leaf`` tracks grad when ``requires_grad``."""
+    Returns ``(node_emb, graph, t, pos_leaf, strain_leaf)``; ``pos_leaf`` tracks grad when
+    ``requires_grad``. ``strain_leaf`` is a zero symmetric 3x3 leaf (else None) that is applied to
+    the edge vectors as ``r' = r(I + sym(strain))`` — since ALL pos/cell dependence of the energy
+    flows through the edge vectors, ``dE/dstrain`` is exactly fairchem's symmetrized virial (the
+    combined position + cell contribution), so stress = dE/dstrain / volume."""
     import ttnn
 
     from .model import GraphContext
@@ -370,7 +374,17 @@ def _forward(bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding, edge_
     device = bb.device
     N, C = atomic_numbers.shape[0], geo.C
     pos = pos.detach().clone().requires_grad_(requires_grad)
-    t = geo(pos, atomic_numbers, edge_index, sys_node_embedding, edge_cell_shift=edge_cell_shift)
+    strain, edge_vec = None, None
+    if compute_stress:
+        src, tgt = edge_index[0], edge_index[1]
+        strain = torch.zeros(3, 3, dtype=pos.dtype, requires_grad=True)
+        ev = pos[src] - pos[tgt]
+        if edge_cell_shift is not None:
+            ev = ev + edge_cell_shift
+        sym = 0.5 * (strain + strain.transpose(0, 1))
+        edge_vec = ev + ev @ sym                        # r' = r (I + sym(strain))
+    t = geo(pos, atomic_numbers, edge_index, sys_node_embedding, edge_vec=edge_vec,
+            edge_cell_shift=edge_cell_shift)
 
     # the analytic-force backward keeps bf16 geometric operands (bf8 wigner would mix dtypes in
     # the transpose-matmul adjoints); ``fast`` (bf8) is for the energy-throughput path.
@@ -382,26 +396,31 @@ def _forward(bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding, edge_
     x_init = ttnn.from_torch(t["x_init"].detach(), dtype=ttnn.bfloat16,
                              layout=ttnn.TILE_LAYOUT, device=device)
     node_emb = bb.node_embedding(x_init, graph, se3)
-    return node_emb, graph, t, pos
+    return node_emb, graph, t, pos, strain
 
 
-def _forces(bb, geo, graph, node_emb, t, pos):
+def _forces(bb, geo, graph, node_emb, t, pos, strain=None):
     """Reverse pass: device VJP ``dE/d{geometric inputs}`` finished by host autograd to ``-dE/dpos``.
 
     The energy seed is ``dE/dh = 1`` per node — the gradient of the *summed* energy. For a
     disjoint-union batch that sum is ``sum_k E_k`` and block-diagonality makes each atom's
-    gradient ``-dE_(its system)/dx``, so the batched forces are the concatenation (no change)."""
+    gradient ``-dE_(its system)/dx``, so the batched forces are the concatenation (no change).
+
+    When ``strain`` is given (a zero symmetric 3x3 leaf that scaled the edge vectors in the
+    forward), the same host autograd also yields the virial ``dE/dstrain`` and this returns
+    ``(forces, virial)``; the caller divides the virial by the volume for the stress tensor."""
     import ttnn
 
     from . import rotation
     from .geometry import radial_mlp
 
     acc = backbone_bw(bb, graph, node_emb)
-    nsph = graph.nsph
+    nsph, nred = graph.nsph, graph.nred
     g_xi = ttnn.to_torch(acc["x_init"]).float()
-    # scatter packed rotation-coefficient adjoints back to dense [E,9,9] for the host dW/dpos
-    g_wig = rotation.scatter_coef(ttnn.to_torch(acc["rot_fwd"]).float(), graph.rot_fwd_ij, nsph)
-    g_winv = rotation.scatter_coef(ttnn.to_torch(acc["rot_inv"]).float(), graph.rot_inv_ij, nsph)
+    # scatter packed rotation-coefficient adjoints back to dense for the host dW/dpos autograd.
+    # wig_M is [E, nred, nsph] (fwd), wig_M_inv is [E, nsph, nred] (inv) — rectangular for uma-m.
+    g_wig = rotation.scatter_coef(ttnn.to_torch(acc["rot_fwd"]).float(), graph.rot_fwd_ij, nred, nsph)
+    g_winv = rotation.scatter_coef(ttnn.to_torch(acc["rot_inv"]).float(), graph.rot_inv_ij, nsph, nred)
     g_env = ttnn.to_torch(acc["envelope"]).float().reshape(-1, 1, 1)   # [E,1]->[E,1,1]
     # host radial finish: radial-output adjoints -> g_x_edge
     xe = t["x_edge"].detach().clone().requires_grad_(True)
@@ -409,26 +428,35 @@ def _forces(bb, geo, graph, node_emb, t, pos):
         radial_mlp(xe, geo.w, conv.rad_prefix).backward(ttnn.to_torch(grad).float())
     g_xe = xe.grad
 
-    g_pos = torch.autograd.grad(
-        [t["x_init"], t["wigner"], t["wigner_inv"], t["x_edge"], t["edge_envelope"]],
-        pos, grad_outputs=[g_xi, g_wig, g_winv, g_xe, g_env])[0]
-    return -g_pos
+    outs = [t["x_init"], t["wigner"], t["wigner_inv"], t["x_edge"], t["edge_envelope"]]
+    gouts = [g_xi, g_wig, g_winv, g_xe, g_env]
+    inputs = [pos] if strain is None else [pos, strain]
+    grads = torch.autograd.grad(outs, inputs, grad_outputs=gouts)
+    if strain is None:
+        return -grads[0]
+    return -grads[0], grads[1]                          # (forces, virial = dE/dstrain)
 
 
 def energy_and_forces(bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding,
-                      edge_cell_shift=None):
+                      edge_cell_shift=None, compute_stress=False):
     """Conservative energy + analytic forces ``F = -dE/dpos`` for one system.
 
     Device-resident forward + reverse VJP gives ``dE/d{geometric inputs}``; ``torch.autograd``
     through the host geometry supplies the cheap ``d(geometric)/dpos`` to finish the force.
     ``edge_cell_shift`` [E, 3] carries the periodic image offsets (None for aperiodic systems).
-    Returns ``(energy: float, forces: torch.Tensor[N,3])``.
+    Returns ``(energy: float, forces: torch.Tensor[N,3])``, or when ``compute_stress`` is set
+    ``(energy, forces, virial[3,3])`` where ``virial = dE/dstrain`` (the caller divides by the
+    cell volume for the stress tensor).
     """
     import ttnn
 
-    node_emb, graph, t, pos = _forward(bb, geo, pos, atomic_numbers, edge_index,
-                                       sys_node_embedding, edge_cell_shift, requires_grad=True)
+    node_emb, graph, t, pos, strain = _forward(
+        bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding, edge_cell_shift,
+        requires_grad=True, compute_stress=compute_stress)
     E = float(ttnn.to_torch(bb.energy(node_emb)).reshape(-1)[0])
+    if compute_stress:
+        F, virial = _forces(bb, geo, graph, node_emb, t, pos, strain=strain)
+        return E, F, virial
     F = _forces(bb, geo, graph, node_emb, t, pos)
     return E, F
 
@@ -443,8 +471,8 @@ def energy_and_forces_batch(bb, geo, bg, *, compute_forces=True):
     applies the per-system energy normalizer)."""
     import ttnn
 
-    node_emb, graph, t, pos = _forward(bb, geo, bg.pos, bg.Z, bg.edge_index, bg.sys_emb,
-                                       bg.cell_shift, requires_grad=compute_forces)
+    node_emb, graph, t, pos, _ = _forward(bb, geo, bg.pos, bg.Z, bg.edge_index, bg.sys_emb,
+                                          bg.cell_shift, requires_grad=compute_forces)
     seg = ttnn.from_torch(bg.segment_matrix(), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
                           device=bb.device)
     E = ttnn.to_torch(bb.energy_batch(node_emb, seg)).float().reshape(-1)[:bg.K]

@@ -52,12 +52,16 @@ class Edgewise:
         xt = ttnn.to_layout(ttnn.reshape(ttnn.embedding(graph.tgt_idx, xf), (E, nsph, C)), ttnn.TILE_LAYOUT)
         m_cat = ttnn.reshape(ttnn.concat([xs, xt], dim=2), (E, nsph * 2 * C))   # flat, [xs_i|xt_i] per coord
 
-        m_rot = rotation.rotate(ttnn, m_cat, graph.rot_fwd_ij, graph.rot_fwd_coef, nsph, 2 * C, dev)
-        m, gating = self.so2_1(m_rot, graph.x_edge)       # flat in/out throughout
+        # rotate node SH (nsph) into the reduced m-space (nred); the SO(2) pipeline runs there
+        m_rot = rotation.rotate(ttnn, m_cat, graph.rot_fwd_ij, graph.rot_fwd_coef, nsph, 2 * C,
+                                dev, n_out=graph.nred)
+        m, gating = self.so2_1(m_rot, graph.x_edge)       # flat in/out throughout (reduced m-space)
         m = self.gate(gating, m)
-        m_so2 = self.so2_2(m, graph.x_edge)               # flat [E, nsph*C]
+        m_so2 = self.so2_2(m, graph.x_edge)               # flat [E, nred*C]
         m_env = ttnn.multiply(m_so2, graph.edge_envelope_f)            # [E,1] broadcast
-        m_back = rotation.rotate(ttnn, m_env, graph.rot_inv_ij, graph.rot_inv_coef, nsph, C, dev)
+        # rotate the reduced m-space message back to node SH (nsph)
+        m_back = rotation.rotate(ttnn, m_env, graph.rot_inv_ij, graph.rot_inv_coef, graph.nred, C,
+                                 dev, n_out=nsph)
         self._cache_mcat, self._cache_mso2, self._cache_menv = m_cat, m_so2, m_env
 
         out = ttnn.matmul(graph.scatter, m_back, compute_kernel_config=self.kcfg)   # [N, 9C]

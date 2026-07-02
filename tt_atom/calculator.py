@@ -18,7 +18,7 @@ from .weights import WeightBundle
 
 
 class TTAtomCalculator(Calculator):
-    implemented_properties = ["energy", "energies", "free_energy", "forces"]
+    implemented_properties = ["energy", "energies", "free_energy", "forces", "stress"]
 
     def __init__(self, bundle, task_name=None, device=None, device_id=0, gamma=0.0,
                  fast=False, trace=False, trace_region_size=400_000_000, **kwargs):
@@ -55,7 +55,8 @@ class TTAtomCalculator(Calculator):
         self.backbone = Backbone(w, self.device, self.cfg, bundle.to_grid_mat,
                                  bundle.from_grid_mat, fast=fast)
         self.geo = HostGeometry(w, self.cfg, bundle.to_m, bundle.gauss_offset,
-                                bundle.gauss_coeff, gamma=gamma)
+                                bundle.gauss_coeff, gamma=gamma,
+                                coefficient_index=bundle.coefficient_index)
         self._w = w
         # energy normalizer (real checkpoints: E = rmsd*E_raw + mean + sum_i refs[Z_i],
         # F = rmsd*F_raw); identity for the random-weight bundles (rmsd=1, mean=0, refs=None)
@@ -89,12 +90,20 @@ class TTAtomCalculator(Calculator):
         sys_emb = csd_embedding(self._w, charge, spin, self.C,
                                 dataset=self.task)[torch.zeros(Z.shape[0], dtype=torch.long)]
 
+        # stress is autograd of energy wrt a symmetric strain — only meaningful for a periodic
+        # cell (variable-cell relaxation / NPT); request it when ASE asks or a cell is present.
+        want_stress = cell is not None and ("stress" in properties or pbc.all())
+        virial = None
         if self.trace:
             E, F = self._traced(pos, Z, edge_index, edge_cell_shift, sys_emb)
+        elif want_stress:
+            E, F, virial = Fmod.energy_and_forces(self.backbone, self.geo, pos, Z, edge_index,
+                                                  sys_emb, edge_cell_shift=edge_cell_shift,
+                                                  compute_stress=True)
         else:
             E, F = Fmod.energy_and_forces(self.backbone, self.geo, pos, Z, edge_index, sys_emb,
                                           edge_cell_shift=edge_cell_shift)
-        # apply the per-task energy normalizer + element references (forces scale by rmsd)
+        # apply the per-task energy normalizer + element references (forces/virial scale by rmsd)
         E = self.scale_rmsd * E + self.scale_mean
         if self.elem_refs is not None:
             E += float(self.elem_refs[Z].sum())
@@ -103,6 +112,12 @@ class TTAtomCalculator(Calculator):
         self.results["free_energy"] = E
         self.results["energies"] = np.full(len(atoms), E / len(atoms), dtype=np.float64)
         self.results["forces"] = F.detach().numpy().astype(np.float64)
+        if virial is not None:
+            from ase.stress import full_3x3_to_voigt_6_stress
+
+            # stress = (rmsd * dE_raw/dstrain) / V; fairchem's convention (uma/outputs.py)
+            stress = self.scale_rmsd * virial.detach().numpy().astype(np.float64) / atoms.get_volume()
+            self.results["stress"] = full_3x3_to_voigt_6_stress(stress)
 
     def evaluate_batch(self, systems, properties=("energy", "forces")):
         """Disjoint-union batched evaluation — K systems in ONE device forward (fairchem/PyG style).

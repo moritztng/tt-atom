@@ -84,6 +84,12 @@ class WeightBundle:
         return self.buffer("to_m")
 
     @property
+    def coefficient_index(self):
+        """Spherical-harmonic coefficient subselection for mmax<lmax checkpoints (uma-m), else
+        None. Selects the |m|<=mmax coefficients before the m-mapping (fairchem prepare_wigner)."""
+        return self._t("host@coefficient_index").long() if self.has("host@coefficient_index") else None
+
+    @property
     def gauss_offset(self):
         return self.buffer("gauss_offset")
 
