@@ -359,22 +359,17 @@ def backbone_bw(bb, graph, node_emb):
 # --------------------------------------------------------------------------- full energy+force
 
 
-def energy_and_forces(bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding,
-                      edge_cell_shift=None):
-    """Conservative energy + analytic forces ``F = -dE/dpos`` for one system.
-
-    Device-resident forward + reverse VJP gives ``dE/d{geometric inputs}``; ``torch.autograd``
-    through the host geometry supplies the cheap ``d(geometric)/dpos`` to finish the force.
-    ``edge_cell_shift`` [E, 3] carries the periodic image offsets (None for aperiodic systems).
-    Returns ``(energy: float, forces: torch.Tensor[N,3])``.
-    """
+def _forward(bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding, edge_cell_shift,
+             requires_grad):
+    """Shared forward: host geometry -> device-resident GraphContext + backbone node embedding.
+    Returns ``(node_emb, graph, t, pos_leaf)``; ``pos_leaf`` tracks grad when ``requires_grad``."""
     import ttnn
 
     from .model import GraphContext
 
     device = bb.device
     N, C = atomic_numbers.shape[0], geo.C
-    pos = pos.detach().clone().requires_grad_(True)
+    pos = pos.detach().clone().requires_grad_(requires_grad)
     t = geo(pos, atomic_numbers, edge_index, sys_node_embedding, edge_cell_shift=edge_cell_shift)
 
     # the analytic-force backward keeps bf16 geometric operands (bf8 wigner would mix dtypes in
@@ -386,10 +381,21 @@ def energy_and_forces(bb, geo, pos, atomic_numbers, edge_index, sys_node_embeddi
                           layout=ttnn.TILE_LAYOUT, device=device)
     x_init = ttnn.from_torch(t["x_init"].detach(), dtype=ttnn.bfloat16,
                              layout=ttnn.TILE_LAYOUT, device=device)
-    node_emb, energy = bb(x_init, graph, se3)
-    E = float(ttnn.to_torch(energy).reshape(-1)[0])
+    node_emb = bb.node_embedding(x_init, graph, se3)
+    return node_emb, graph, t, pos
+
+
+def _forces(bb, geo, graph, node_emb, t, pos):
+    """Reverse pass: device VJP ``dE/d{geometric inputs}`` finished by host autograd to ``-dE/dpos``.
+
+    The energy seed is ``dE/dh = 1`` per node — the gradient of the *summed* energy. For a
+    disjoint-union batch that sum is ``sum_k E_k`` and block-diagonality makes each atom's
+    gradient ``-dE_(its system)/dx``, so the batched forces are the concatenation (no change)."""
+    import ttnn
 
     from . import rotation
+    from .geometry import radial_mlp
+
     acc = backbone_bw(bb, graph, node_emb)
     nsph = graph.nsph
     g_xi = ttnn.to_torch(acc["x_init"]).float()
@@ -398,7 +404,6 @@ def energy_and_forces(bb, geo, pos, atomic_numbers, edge_index, sys_node_embeddi
     g_winv = rotation.scatter_coef(ttnn.to_torch(acc["rot_inv"]).float(), graph.rot_inv_ij, nsph)
     g_env = ttnn.to_torch(acc["envelope"]).float().reshape(-1, 1, 1)   # [E,1]->[E,1,1]
     # host radial finish: radial-output adjoints -> g_x_edge
-    from .geometry import radial_mlp
     xe = t["x_edge"].detach().clone().requires_grad_(True)
     for conv, grad in acc["g_rad"]:
         radial_mlp(xe, geo.w, conv.rad_prefix).backward(ttnn.to_torch(grad).float())
@@ -407,4 +412,41 @@ def energy_and_forces(bb, geo, pos, atomic_numbers, edge_index, sys_node_embeddi
     g_pos = torch.autograd.grad(
         [t["x_init"], t["wigner"], t["wigner_inv"], t["x_edge"], t["edge_envelope"]],
         pos, grad_outputs=[g_xi, g_wig, g_winv, g_xe, g_env])[0]
-    return E, -g_pos
+    return -g_pos
+
+
+def energy_and_forces(bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding,
+                      edge_cell_shift=None):
+    """Conservative energy + analytic forces ``F = -dE/dpos`` for one system.
+
+    Device-resident forward + reverse VJP gives ``dE/d{geometric inputs}``; ``torch.autograd``
+    through the host geometry supplies the cheap ``d(geometric)/dpos`` to finish the force.
+    ``edge_cell_shift`` [E, 3] carries the periodic image offsets (None for aperiodic systems).
+    Returns ``(energy: float, forces: torch.Tensor[N,3])``.
+    """
+    import ttnn
+
+    node_emb, graph, t, pos = _forward(bb, geo, pos, atomic_numbers, edge_index,
+                                       sys_node_embedding, edge_cell_shift, requires_grad=True)
+    E = float(ttnn.to_torch(bb.energy(node_emb)).reshape(-1)[0])
+    F = _forces(bb, geo, graph, node_emb, t, pos)
+    return E, F
+
+
+def energy_and_forces_batch(bb, geo, bg, *, compute_forces=True):
+    """Disjoint-union batched energy (+ optional forces) for a ``disjoint.BatchedGraph`` ``bg``.
+
+    One device forward over the concatenated block-diagonal graph; per-system energies come from
+    the segment-sum readout (``Backbone.energy_batch``) and forces — when requested — from the
+    single shared reverse pass (block-diagonal => per-system correct). Returns
+    ``(E_raw: torch[K], F: torch[Ntot, 3] or None)`` where ``E_raw`` is unnormalized (the caller
+    applies the per-system energy normalizer)."""
+    import ttnn
+
+    node_emb, graph, t, pos = _forward(bb, geo, bg.pos, bg.Z, bg.edge_index, bg.sys_emb,
+                                       bg.cell_shift, requires_grad=compute_forces)
+    seg = ttnn.from_torch(bg.segment_matrix(), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+                          device=bb.device)
+    E = ttnn.to_torch(bb.energy_batch(node_emb, seg)).float().reshape(-1)[:bg.K]
+    F = _forces(bb, geo, graph, node_emb, t, pos) if compute_forces else None
+    return E, F

@@ -104,6 +104,39 @@ class TTAtomCalculator(Calculator):
         self.results["energies"] = np.full(len(atoms), E / len(atoms), dtype=np.float64)
         self.results["forces"] = F.detach().numpy().astype(np.float64)
 
+    def evaluate_batch(self, systems, properties=("energy", "forces")):
+        """Disjoint-union batched evaluation — K systems in ONE device forward (fairchem/PyG style).
+
+        ``systems`` is a list of ASE ``Atoms`` (or ``(positions, atomic_numbers)`` / dicts). The
+        systems are concatenated into one block-diagonal graph, evaluated in a single device call,
+        and the per-system energies recovered by segment-sum; forces (when requested) come from the
+        one shared analytic backward (block-diagonal => each atom's own-system force). This is the
+        throughput path for the dispatch-bound regime of *many small systems*.
+
+        Returns ``dict(energy=np.ndarray[K], forces=list[np.ndarray[N_k, 3]] | None)`` with the
+        per-system energy normalizer applied, mirroring the single-system ``calculate`` results.
+
+        All systems must share this bundle's reduced composition: a merged uma-s-1 bundle bakes the
+        MoLE expert routing for one composition (fairchem's merged batched inference requires the
+        same), so the batch is e.g. conformers / an MD ensemble of one molecule."""
+        from . import disjoint
+
+        bg = disjoint.assemble(systems, self.cfg["cutoff"], self._w, self.C, task=self.task)
+        want_forces = "forces" in properties
+        E_raw, F = Fmod.energy_and_forces_batch(self.backbone, self.geo, bg,
+                                                 compute_forces=want_forces)
+        energies, forces_out, off = [], [], 0
+        for k, n in enumerate(bg.natoms):
+            Ek = self.scale_rmsd * float(E_raw[k]) + self.scale_mean
+            if self.elem_refs is not None:
+                Ek += float(self.elem_refs[bg.Z[off:off + n]].sum())
+            energies.append(Ek)
+            if want_forces:
+                Fk = (self.scale_rmsd * F[off:off + n]).detach().numpy().astype(np.float64)
+                forces_out.append(Fk)
+            off += n
+        return dict(energy=np.array(energies), forces=forces_out if want_forces else None)
+
     def _traced(self, pos, Z, edge_index, edge_cell_shift, sys_emb):
         """Trace-replayed energy+forces; (re)captures when the neighbour list changes."""
         from .trace import TracedEngine
