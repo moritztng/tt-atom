@@ -268,12 +268,12 @@ def edgewise_bw(ew, graph, g_out, acc):
     E = graph.E
     dev = ew.device
 
-    # scatter backward: g_m_back[e] = g_out[tgt[e]]  (gather by target), flat [E,9C]
+    # scatter backward: g_m_back[e] = g_out[tgt[e]]  (gather by target), flat [E, nsph*C]
     gof = ttnn.to_layout(ttnn.reshape(g_out, (N, nsph * C)), ttnn.ROW_MAJOR_LAYOUT)
     g_mback = ttnn.to_layout(ttnn.embedding(graph.tgt_idx, gof), ttnn.TILE_LAYOUT)
-    # inverse rotation: m_back = rotate_inv(m_env)
-    g_menv, g_rinv = rotation.rotate_bw(ttnn, ew._cache_menv, g_mback,
-                                        graph.rot_inv_ij, graph.rot_inv_coef, nsph, C, dev)
+    # inverse rotation backward: forward mapped reduced m-space (nred) -> node SH (nsph)
+    g_menv, g_rinv = rotation.rotate_bw(ttnn, ew._cache_menv, g_mback, graph.rot_inv_ij,
+                                        graph.rot_inv_coef, graph.nred, C, dev, n_out=nsph)
     # envelope: m_env = m_so2 * envelope  (flat [E,9C] * [E,1])
     g_mso2 = ttnn.multiply(g_menv, graph.edge_envelope_f)
     g_env = ttnn.sum(ttnn.multiply(g_menv, ew._cache_mso2), dim=1, keepdim=True)   # [E,1]
@@ -281,9 +281,9 @@ def edgewise_bw(ew, graph, g_out, acc):
     g_mgate, _ = so2_bw(ew.so2_2, g_mso2)
     g_gating, g_mso1 = gate_bw(ew.gate, g_mgate)
     g_mrot, g_rad = so2_bw(ew.so2_1, g_mso1, g_gating)         # g_mrot flat [E, 9*2C]
-    # forward rotation: m_rot = rotate_fwd(m_cat)
-    g_mcat, g_rfwd = rotation.rotate_bw(ttnn, ew._cache_mcat, g_mrot,
-                                        graph.rot_fwd_ij, graph.rot_fwd_coef, nsph, 2 * C, dev)
+    # forward rotation backward: forward mapped node SH (nsph) -> reduced m-space (nred)
+    g_mcat, g_rfwd = rotation.rotate_bw(ttnn, ew._cache_mcat, g_mrot, graph.rot_fwd_ij,
+                                        graph.rot_fwd_coef, nsph, 2 * C, dev, n_out=graph.nred)
     # m_cat per coord = [xs_i | xt_i]; split channels back out
     g_mcat3 = ttnn.reshape(g_mcat, (E, nsph, 2 * C))
     g_xs_f = ttnn.reshape(ttnn.slice(g_mcat3, [0, 0, 0], [E, nsph, C]), (E, nsph * C))
@@ -415,11 +415,12 @@ def _forces(bb, geo, graph, node_emb, t, pos, strain=None):
     from .geometry import radial_mlp
 
     acc = backbone_bw(bb, graph, node_emb)
-    nsph = graph.nsph
+    nsph, nred = graph.nsph, graph.nred
     g_xi = ttnn.to_torch(acc["x_init"]).float()
-    # scatter packed rotation-coefficient adjoints back to dense [E,9,9] for the host dW/dpos
-    g_wig = rotation.scatter_coef(ttnn.to_torch(acc["rot_fwd"]).float(), graph.rot_fwd_ij, nsph)
-    g_winv = rotation.scatter_coef(ttnn.to_torch(acc["rot_inv"]).float(), graph.rot_inv_ij, nsph)
+    # scatter packed rotation-coefficient adjoints back to dense for the host dW/dpos autograd.
+    # wig_M is [E, nred, nsph] (fwd), wig_M_inv is [E, nsph, nred] (inv) — rectangular for uma-m.
+    g_wig = rotation.scatter_coef(ttnn.to_torch(acc["rot_fwd"]).float(), graph.rot_fwd_ij, nred, nsph)
+    g_winv = rotation.scatter_coef(ttnn.to_torch(acc["rot_inv"]).float(), graph.rot_inv_ij, nsph, nred)
     g_env = ttnn.to_torch(acc["envelope"]).float().reshape(-1, 1, 1)   # [E,1]->[E,1,1]
     # host radial finish: radial-output adjoints -> g_x_edge
     xe = t["x_edge"].detach().clone().requires_grad_(True)

@@ -55,7 +55,8 @@ class TTAtomCalculator(Calculator):
         self.backbone = Backbone(w, self.device, self.cfg, bundle.to_grid_mat,
                                  bundle.from_grid_mat, fast=fast)
         self.geo = HostGeometry(w, self.cfg, bundle.to_m, bundle.gauss_offset,
-                                bundle.gauss_coeff, gamma=gamma)
+                                bundle.gauss_coeff, gamma=gamma,
+                                coefficient_index=bundle.coefficient_index)
         self._w = w
         # energy normalizer (real checkpoints: E = rmsd*E_raw + mean + sum_i refs[Z_i],
         # F = rmsd*F_raw); identity for the random-weight bundles (rmsd=1, mean=0, refs=None)
