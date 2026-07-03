@@ -9,119 +9,122 @@ behind a clean [ASE](https://wiki.fysik.dtu.dk/ase/) `Calculator` that mirrors f
 **and** periodic materials, all five UMA tasks (omol/omat/oc20/odac/omc), `uma-s-1` **and** `uma-m-1p1`,
 validated edge-for-edge against the released checkpoints. Moving off fairchem is a one-line change.
 
-## Migrating from fairchem — one line
+## Quickstart — it just works
 
-fairchem — hand it a structure + task, get a calculator:
-
-```python
-from fairchem.core import FAIRChemCalculator
-from fairchem.core.units.mlip_unit import load_predict_unit
-
-atoms.calc = FAIRChemCalculator(load_predict_unit("uma-s-1.pt"), task_name="omol")
-```
-
-TT-Atom — same shape, runs on the Tenstorrent card:
-
-```python
-from tt_atom import TTAtomCalculator
-
-atoms.calc = TTAtomCalculator.from_uma(atoms=atoms, task_name="omol")   # auto-built + cached
-```
-
-`from_uma` hides the two things that are genuinely different about running UMA on Tenstorrent (and
-which you'd otherwise do by hand): it hashes the structure's **composition + charge/spin + task**,
-and on first use for that combination it **builds the MoLE-merged bundle for you** (see *Two
-environments*, below) and caches it under `~/.cache/tt_atom/bundles`. Every later call for the same
-composition is a plain cached load — **no fairchem, no merge, no second environment**. Everything
-downstream (`get_potential_energy()`, `get_forces()`, `get_stress()`, ASE optimizers, MD) is the
-unchanged ASE surface. A bundle is composition-specific because UMA's MoLE experts are merged at
-build time (the exact released inference path for a fixed composition) — precisely the
-constant-composition regime of a relaxation or MD run.
-
-## Quickstart
+A structure in, a result out. No bundles, no compositions, no MoLE, no environments to think about:
 
 ```bash
-tt-atom run structure.xyz --uma-s-1 --task omol                 # single-point energy + forces
-tt-atom run structure.xyz --uma-s-1 --task omol --relax --out relaxed.xyz     # geometry relaxation
-tt-atom run structure.xyz --uma-s-1 --task omol --md --steps 200 --temp 300   # Langevin MD
+tt-atom run structure.xyz                       # energy + forces (uma-s-1, task auto-picked)
 ```
-
-One command, structure → result: `tt-atom run` reads any ASE-readable file (`.xyz`/`.cif`/`.pdb`/…),
-auto-builds and caches the bundle on first use for that composition, runs on the card, prints the
-energy and writes the output geometry. From Python it's the `from_uma` factory:
 
 ```python
 from ase.io import read
-from ase.optimize import FIRE
-from tt_atom import TTAtomCalculator
+from tt_atom import UMA
 
 atoms = read("structure.xyz")
-atoms.info.update(charge=0, spin=1)
-atoms.calc = TTAtomCalculator.from_uma(atoms=atoms, task_name="omol", trace=True)  # trace = ~2× loop
-FIRE(atoms).run(fmax=0.05)                                       # analytic forces -> real relaxation
-print(atoms.get_potential_energy())
+atoms.calc = UMA(atoms)                          # ready to use — get_potential_energy(), get_forces()
 ```
 
-**First use vs cached (measured, p150, ethanol/omol).** The first call for a new composition runs
-the merge in the reference env — a one-time cost, seconds to about a minute depending on how long
-the checkpoint takes to load (**~8 s here**, warm HF cache). Every later call for that composition
-is the cached fast path (**~3 s**, dominated by opening the device) and needs no fairchem at all:
+That's the whole Level-0 surface. `UMA(atoms)` (and `tt-atom run`) default to **uma-s-1**, infer the
+**task** from the structure (`omat` for a fully periodic cell, else `omol`), and **auto-build + cache**
+the model on first use for that composition — every later call is an instant cached load. The rest of
+this section is optional.
+
+### Common options
+
+```bash
+tt-atom run structure.xyz --relax --out relaxed.xyz          # geometry relaxation (FIRE)
+tt-atom run structure.xyz --md --steps 200 --temp 300        # Langevin MD
+tt-atom run ion.xyz --task omol --charge -1 --spin 2 --trace # pick task/charge/spin; trace ~2× loop
+```
+
+```python
+from ase.optimize import FIRE
+atoms.calc = UMA(atoms, task="omol", charge=0, spin=1, trace=True)   # trace = ~2× on the MD/relax loop
+FIRE(atoms).run(fmax=0.05)                                           # analytic forces -> real relaxation
+```
+
+**First use vs cached (measured, p150, ethanol/omol).** The first call for a *new composition* runs
+a one-time merge in the reference env — seconds to about a minute, depending on how long the
+checkpoint takes to load (**~8 s here**, warm HF cache). Every later call for that composition is the
+cached fast path (**~3 s**, dominated by opening the device) and touches no fairchem at all:
 
 ```
-$ tt-atom run ethanol.xyz --uma-s-1 --task omol      # first use for C2H6O/omol
+$ tt-atom run ethanol.xyz                             # first use for C2H6O / omol
 [tt-atom] building uma-s-1 bundle for composition H6C2O (task=omol, charge=0, spin=1) — one-time per composition, ~30s via the reference env...
 [tt-atom] cached bundle -> ~/.cache/tt_atom/bundles/uma-s-1_omol_86ee120303a7_c0_s1.npz
 energy: -4218.474211 eV  (9 atoms, task=omol, charge=0, spin=1)
-$ tt-atom run ethanol.xyz --uma-s-1 --task omol      # same composition again -> cached, no fairchem
+$ tt-atom run ethanol.xyz                             # same composition again -> cached, no fairchem
 energy: -4218.474211 eV  (9 atoms, task=omol, charge=0, spin=1)
 ```
 
-### Two environments (installed once)
-
-Two Python environments are required — inherently, not by choice: `ttnn` needs `numpy<2` while
-`fairchem` needs `numpy>=2`, so the merge (fairchem) and the device run (ttnn) cannot share one
-interpreter. `from_uma`/`tt-atom run` bridge them automatically by shelling out to the reference env
-only for the one-time build; you never juggle the two by hand.
+### Installing (once)
 
 ```bash
-# 1) runtime env (ttnn + TT-Atom) — where you run relaxations/MD, and the cached fast path
-pip install -e .                     # numpy<2, torch (CPU), ase; install ttnn separately (below)
-
-# 2) reference env (fairchem) — used automatically for the one-time per-composition merge
-python -m venv ~/.ttatom_run/refenv && ~/.ttatom_run/refenv/bin/pip install "fairchem-core>=2.10"
+pip install -e .                     # runtime env: numpy<2, torch (CPU), ase; install ttnn (below)
 ```
-
-TT-Atom finds the reference env via (in order): the `refenv=` argument to `from_uma` / `--refenv`,
-the `TT_ATOM_REFENV` env var, or the default `~/.ttatom_run/refenv/bin/python`. If none exists and a
-build is actually needed, it prints exactly how to set one. **A cached composition needs none of
-this** — only the very first build per composition touches fairchem.
 
 **Installing ttnn.** `ttnn` is the Tenstorrent runtime; it is not on PyPI. Install the `ttnn` /
 `tt-metal` wheel that matches your card and `tt-kmd` driver (see the
-[tt-metal releases](https://github.com/tenstorrent/tt-metal)). `import tt_atom` never imports
-`ttnn`, so the package installs and imports fine on a machine without a card.
+[tt-metal releases](https://github.com/tenstorrent/tt-metal)). `import tt_atom` never imports `ttnn`,
+so the package installs and imports fine on a machine without a card.
 
-### Advanced: build a bundle explicitly
-
-`from_uma` is the common path. If you want to manage the bundle file yourself — pin a path, ship it
-to another machine, embed a reference for `tt-atom verify` — build it once in the reference env and
-pass the `.npz` straight to the calculator:
+**The one-time build environment.** The first-use merge needs `fairchem` — and `fairchem` needs
+`numpy>=2` while `ttnn` needs `numpy<2`, so they cannot live in one interpreter. This is inherent, so
+TT-Atom hides it: it runs the merge in a *separate* reference env as a subprocess, automatically. You
+create that env once (or TT-Atom prints this exact command the first time it needs it):
 
 ```bash
-# reference env: MoLE-merge uma-s-1 for a composition + task, embed a reference for `verify`
+python -m venv ~/.ttatom_run/refenv && ~/.ttatom_run/refenv/bin/pip install "fairchem-core>=2.10"
+```
+
+TT-Atom locates it via (in order) `refenv=` / `--refenv`, `$TT_ATOM_REFENV`, then the default path
+above. **A cached composition needs none of this** — only the very first build per composition.
+(UMA weights are gated: accept the license at [huggingface.co/facebook/UMA](https://huggingface.co/facebook/UMA)
+and `huggingface-cli login` once in that env.)
+
+## Advanced
+
+<details>
+<summary>Migrating from fairchem, explicit bundles, and the low-level calculator</summary>
+
+**One-liner from fairchem.** `UMA(atoms)` is the direct analogue of handing a structure + task to
+`FAIRChemCalculator`; everything downstream (`get_potential_energy`, `get_forces`, `get_stress`, ASE
+optimizers, MD) is the unchanged ASE surface. A model is composition-specific because UMA's MoLE
+experts are merged at build time (the exact released inference path for a fixed composition) —
+precisely the constant-composition regime of a relaxation or MD run.
+
+```python
+# fairchem
+atoms.calc = FAIRChemCalculator(load_predict_unit("uma-s-1.pt"), task_name="omol")
+# TT-Atom (runs on the card)
+atoms.calc = UMA(atoms, task="omol")
+```
+
+**Manage the bundle file yourself.** To pin a path, ship a prebuilt bundle to another machine, or
+embed a reference for `tt-atom verify`, build it once in the reference env and pass the `.npz`
+straight to the low-level calculator (which `UMA`/`from_uma` sit on top of and never hide):
+
+```bash
 ~/.ttatom_run/refenv/bin/python tools/export_weights.py --uma-s-1 \
     --molecule CH3CH2OH --task omol --charge 0 --spin 1 --out uma_s_ethanol.npz
 # (--xyz structure.xyz takes any structure, for compositions not in ASE's g2 set)
 
-tt-atom verify uma_s_ethanol.npz          # runtime env: device parity vs the embedded reference
+tt-atom verify uma_s_ethanol.npz          # device parity vs the embedded fairchem reference
 tt-atom relax  uma_s_ethanol.npz --molecule CH3CH2OH --trace
 tt-atom md     uma_s_ethanol.npz --molecule CH3CH2OH --steps 200 --temp 300
 ```
 
 ```python
 from tt_atom import TTAtomCalculator
-atoms.calc = TTAtomCalculator("uma_s_ethanol.npz", task_name="omol")   # an explicit bundle
+atoms.calc = TTAtomCalculator("uma_s_ethanol.npz", task_name="omol")   # explicit prebuilt bundle
+# or, to control caching/refenv while still auto-building:
+atoms.calc = TTAtomCalculator.from_uma(atoms=atoms, task_name="omol", refenv="…", cache_dir="…")
 ```
+
+Batching, periodic/stress, and multi-card are covered below.
+
+</details>
 
 Examples: [`relax.py`](examples/relax.py), [`relax_cell.py`](examples/relax_cell.py) (variable-cell,
 stress-driven), [`md.py`](examples/md.py), [`periodic.py`](examples/periodic.py) (a bulk crystal),
@@ -304,7 +307,7 @@ mixed-composition batch needs the unmerged model, which TT-Atom does not run. Se
 ## Reproduce
 
 ```bash
-python -m pytest tests/ -q                          # 42 tests (parity, forces, stress, periodic, uma-m, trace, batch, from_uma)
+python -m pytest tests/ -q                          # 44 tests (parity, forces, stress, periodic, uma-m, trace, batch, from_uma)
 tt-atom verify  uma_s_ethanol.npz                   # device vs embedded fairchem reference
 python benchmarks/bench_trace.py --weights uma_s_ethanol.npz     # eager vs traced e2e
 python benchmarks/bench_throughput.py --weights model.npz --cells 2 3 4 5

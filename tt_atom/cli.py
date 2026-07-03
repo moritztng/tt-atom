@@ -146,18 +146,20 @@ def cmd_run(args):
     caches the composition-specific uma-s-1 bundle on first use (via the reference env), then runs
     on device. A cached composition needs no fairchem."""
     from ase.io import read
+    from . import bundle_cache as BC
     from .calculator import TTAtomCalculator
 
     atoms = read(args.structure)
     atoms.info.setdefault("charge", args.charge)
     atoms.info.setdefault("spin", args.spin)
-    calc = TTAtomCalculator.from_uma(model="uma-s-1", task_name=args.task, atoms=atoms,
+    task = args.task or BC.infer_task(atoms)     # zero-config: omat for a bulk cell, else omol
+    calc = TTAtomCalculator.from_uma(model="uma-s-1", task_name=task, atoms=atoms,
                                      charge=args.charge, spin=args.spin, refenv=args.refenv,
                                      device_id=args.device_id, fast=args.fast, trace=args.trace)
     atoms.calc = calc
     try:
         e0 = atoms.get_potential_energy()
-        print(f"energy: {e0:.6f} eV  ({len(atoms)} atoms, task={args.task}, "
+        print(f"energy: {e0:.6f} eV  ({len(atoms)} atoms, task={task}, "
               f"charge={int(args.charge)}, spin={int(args.spin)})")
         if args.relax:
             from ase.optimize import FIRE
@@ -231,8 +233,9 @@ def main(argv=None):
 
     p = sub.add_parser("run", help="one-shot: structure -> auto-bundle -> single-point/relax/md")
     p.add_argument("structure", help="ASE-readable structure (.xyz/.cif/.pdb/...)")
-    p.add_argument("--uma-s-1", action="store_true", help="use uma-s-1 (the only auto-build model)")
-    p.add_argument("--task", default="omol", help="dataset/task token (omol/omat/oc20/odac/omc)")
+    p.add_argument("--uma-s-1", action="store_true", help="use uma-s-1 (the default auto-build model)")
+    p.add_argument("--task", default=None,
+                   help="dataset/task token (omol/omat/oc20/odac/omc); inferred from periodicity if unset")
     p.add_argument("--charge", type=float, default=0.0)
     p.add_argument("--spin", type=float, default=1.0)
     p.add_argument("--refenv", default=None, help="fairchem python for the one-time bundle build")

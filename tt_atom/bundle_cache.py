@@ -27,6 +27,15 @@ CACHE_DIR = pathlib.Path(
 )
 
 
+def infer_task(atoms):
+    """Zero-config task default: a fully periodic cell -> ``'omat'`` (bulk materials), otherwise
+    ``'omol'`` (molecules). Slabs / MOFs / molecular crystals (oc20/odac/omc) should pass the task
+    explicitly — this only picks the right *common* default so the bare entry point Just Works."""
+    import numpy as np
+
+    return "omat" if np.asarray(atoms.get_pbc()).all() else "omol"
+
+
 def reduced_composition(numbers):
     """Return sorted ``((Z, reduced_count), ...)``.
 
@@ -74,11 +83,12 @@ def resolve_refenv(refenv=None):
     raise RuntimeError(
         "No reference (fairchem) environment found to build the uma bundle.\n"
         "The one-time MoLE merge needs fairchem (numpy>=2), which cannot share the ttnn env\n"
-        "(numpy<2). Point TT-Atom at a fairchem env in one of these ways:\n"
-        "  * from_uma(refenv='/path/to/fairchem/bin/python')\n"
-        "  * export TT_ATOM_REFENV=/path/to/fairchem/bin/python\n"
-        "  * install it at ~/.ttatom_run/refenv/bin/python\n"
-        "A cached bundle needs no refenv — this is only the first-use build per composition."
+        "(numpy<2). Create it once with this one command:\n\n"
+        "  python -m venv ~/.ttatom_run/refenv && "
+        "~/.ttatom_run/refenv/bin/pip install 'fairchem-core>=2.10'\n\n"
+        "or point TT-Atom at an existing fairchem env via TT_ATOM_REFENV=/path/to/bin/python\n"
+        "(or the refenv= argument). A cached bundle needs no refenv — this is only the\n"
+        "first-use build per composition."
     )
 
 
@@ -116,6 +126,9 @@ def build_bundle(atoms, out_path, *, model="uma-s-1", task="omol", charge=0, spi
             raise RuntimeError(
                 f"reference-env bundle build failed (exit {e.returncode}). Command:\n  "
                 + " ".join(cmd)
+                + "\n\nIf this is a checkpoint/access error: the UMA weights are gated — accept the "
+                "license at\n  https://huggingface.co/facebook/UMA\nand log in once with "
+                "`huggingface-cli login` (or set HF_TOKEN) in the reference env."
             ) from e
     os.replace(tmp_out, out_path)
     return out_path
