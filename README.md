@@ -10,7 +10,7 @@ Run Meta's [UMA](https://huggingface.co/facebook/UMA) interatomic potential on [
 pip install git+https://github.com/moritztng/tt-atom.git
 ```
 
-This pulls [`ttnn`](https://pypi.org/project/ttnn/) 0.68.0, the Tenstorrent runtime and the version the accuracy numbers below are validated on. If your `tt-kmd` driver and firmware need a different `ttnn`, install that one instead and run `tt-atom verify` to confirm parity. `import tt_atom` works without a card.
+You need a Tenstorrent card to run it.
 
 ## Quickstart
 
