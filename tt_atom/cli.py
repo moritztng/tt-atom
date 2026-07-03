@@ -1,14 +1,17 @@
 """``tt-atom`` console entry — the user-facing commands for the ttnn runtime environment.
 
+    tt-atom run     STRUCTURE --uma-s-1 [--task] [--charge --spin] [--relax|--md] [--trace] [--out]
     tt-atom info    BUNDLE                      # config / task / weight coverage
     tt-atom verify  BUNDLE                      # device parity vs the embedded fairchem reference
     tt-atom relax   BUNDLE [--input geom.xyz | --molecule NAME] [--trace] [--fmax --steps]
     tt-atom md      BUNDLE [--input geom.xyz | --molecule NAME] [--trace] [--steps --dt --temp]
     tt-atom convert-checkpoint CKPT.pt --out BUNDLE.npz --molecule NAME [--task --charge --spin]
 
-``relax``/``md``/``info``/``verify`` run here (numpy<2 + ttnn). ``convert-checkpoint`` needs
-fairchem (numpy>=2) and therefore the separate reference environment — the command detects its
-absence and prints the exact reference-env invocation instead of failing obscurely.
+``run`` is the fairchem-parallel one-shot: a structure file in, energy/relax/MD out, with the
+composition-specific uma-s-1 bundle auto-built (first use per composition) and cached. All commands
+run here (numpy<2 + ttnn); the one-time bundle build ``run`` triggers on a cache miss shells out to
+the reference (fairchem, numpy>=2) environment. ``convert-checkpoint`` is the explicit/advanced
+form of that build and detects a missing fairchem, printing the exact reference-env invocation.
 """
 from __future__ import annotations
 
@@ -136,6 +139,64 @@ def cmd_md(args):
     return 0
 
 
+def cmd_run(args):
+    """One-shot: STRUCTURE -> auto-built/cached bundle -> single-point / relax / MD -> result.
+
+    The fairchem-parallel entry point. Reads any ASE-readable structure, transparently builds and
+    caches the composition-specific uma-s-1 bundle on first use (via the reference env), then runs
+    on device. A cached composition needs no fairchem."""
+    from ase.io import read
+    from . import bundle_cache as BC
+    from .calculator import TTAtomCalculator
+
+    atoms = read(args.structure)
+    atoms.info.setdefault("charge", args.charge)
+    atoms.info.setdefault("spin", args.spin)
+    task = args.task or BC.infer_task(atoms)     # zero-config: omat for a bulk cell, else omol
+    calc = TTAtomCalculator.from_uma(model="uma-s-1", task_name=task, atoms=atoms,
+                                     charge=args.charge, spin=args.spin, refenv=args.refenv,
+                                     device_id=args.device_id, fast=args.fast, trace=args.trace)
+    atoms.calc = calc
+    try:
+        e0 = atoms.get_potential_energy()
+        print(f"energy: {e0:.6f} eV  ({len(atoms)} atoms, task={task}, "
+              f"charge={int(args.charge)}, spin={int(args.spin)})")
+        if args.relax:
+            from ase.optimize import FIRE
+
+            FIRE(atoms, logfile="-").run(fmax=args.fmax, steps=args.steps)
+            e1 = atoms.get_potential_energy()
+            fmax = float((atoms.get_forces() ** 2).sum(1).max() ** 0.5)
+            print(f"relax: E {e0:.6f} -> {e1:.6f} eV; fmax={fmax:.4f} (target {args.fmax}); "
+                  f"converged={fmax <= args.fmax}")
+        elif args.md:
+            from ase import units
+            from ase.md.langevin import Langevin
+            from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
+
+            MaxwellBoltzmannDistribution(atoms, temperature_K=args.temp)
+            dyn = Langevin(atoms, timestep=args.dt * units.fs, temperature_K=args.temp,
+                           friction=0.01 / units.fs)
+
+            def _log():
+                ekin = atoms.get_kinetic_energy()
+                print(f"  step {dyn.nsteps:4d}  E={atoms.get_potential_energy():.5f}  "
+                      f"T={ekin / (1.5 * units.kB * len(atoms)):.1f} K")
+
+            dyn.attach(_log, interval=max(1, args.steps // 10))
+            dyn.run(args.steps)
+            print(f"md: {args.steps} steps ({args.dt} fs) at {args.temp} K; "
+                  f"E {e0:.5f} -> {atoms.get_potential_energy():.5f} eV")
+        if args.out:
+            from ase.io import write
+
+            write(args.out, atoms)
+            print(f"wrote {args.out}")
+    finally:
+        calc.close()
+    return 0
+
+
 def cmd_convert(args):
     """Fairchem UMA checkpoint -> TT-Atom bundle. Needs the reference (fairchem) environment."""
     try:
@@ -169,6 +230,25 @@ def main(argv=None):
     ap.add_argument("--device-id", type=int, default=0)
     ap.add_argument("--fast", action="store_true", help="bf8 weights (throughput; accuracy-safe)")
     sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("run", help="one-shot: structure -> auto-bundle -> single-point/relax/md")
+    p.add_argument("structure", help="ASE-readable structure (.xyz/.cif/.pdb/...)")
+    p.add_argument("--uma-s-1", action="store_true", help="use uma-s-1 (the default auto-build model)")
+    p.add_argument("--task", default=None,
+                   help="dataset/task token (omol/omat/oc20/odac/omc); inferred from periodicity if unset")
+    p.add_argument("--charge", type=float, default=0.0)
+    p.add_argument("--spin", type=float, default=1.0)
+    p.add_argument("--refenv", default=None, help="fairchem python for the one-time bundle build")
+    p.add_argument("--trace", action="store_true", help="trace-captured device loop (~2x)")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--relax", action="store_true", help="FIRE geometry relaxation")
+    g.add_argument("--md", action="store_true", help="Langevin molecular dynamics")
+    p.add_argument("--fmax", type=float, default=0.05)
+    p.add_argument("--steps", type=int, default=200)
+    p.add_argument("--dt", type=float, default=1.0)
+    p.add_argument("--temp", type=float, default=300.0)
+    p.add_argument("--out", help="write final geometry/trajectory here")
+    p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("info", help="show bundle config/task/coverage"); p.add_argument("bundle")
     p.set_defaults(func=cmd_info)
