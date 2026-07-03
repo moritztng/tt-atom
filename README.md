@@ -58,7 +58,7 @@ Every task is checked on-device against the released `uma-s-1` checkpoint run th
 | odac | MgO framework   | 2e-4 | 0.99999 |     |
 | omc  | solid CO2       | 8e-5 | 1.0000  |     |
 
-`uma-m-1p1` matches too (ethanol: energy rel. err 2e-8, force PCC 0.9999). Dynamics are stable: NVE energy drift is about 1 meV/atom/ps.
+`uma-m-1p1` matches too (ethanol: energy rel. err 2e-8, force PCC 0.9999). Dynamics are stable: NVE energy drift is about 1 meV/atom/ps. These numbers are from `ttnn` 0.68.0. Op numerics can shift slightly between `ttnn` versions, so confirm parity on the version you actually run:
 
 Reproduce it yourself. Every bundle embeds the fairchem reference energy and forces from build time, so:
 
