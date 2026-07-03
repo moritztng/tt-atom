@@ -61,7 +61,11 @@ def export_uma_s_1(args):
                                  compile=False, external_graph_gen=False, internal_graph_gen_version=2)
     pu = load_predict_unit(ckpt, inference_settings=settings, device="cpu")
     calc = FAIRChemCalculator(pu, task_name=args.task)
-    atoms = molecule(args.molecule)
+    if args.xyz:
+        from ase.io import read as _read
+        atoms = _read(args.xyz)
+    else:
+        atoms = molecule(args.molecule)
     atoms.info.update(charge=args.charge, spin=args.spin)
     atoms.calc = calc
     E_ref = float(atoms.get_potential_energy())           # triggers the host MoLE merge
@@ -106,13 +110,14 @@ def export_uma_s_1(args):
 
     np.savez(args.out, **saved)
     print(f"wrote {args.out}  ({sum(1 for k in saved if k.startswith('w@'))} weight tensors, "
-          f"uma-s-1 merged for {args.molecule} charge={args.charge} spin={args.spin} task={args.task})")
+          f"uma-s-1 merged for {args.xyz or args.molecule} charge={args.charge} spin={args.spin} task={args.task})")
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", default=None, help="fairchem state_dict .pt (optional)")
     ap.add_argument("--uma-s-1", action="store_true", help="export the released uma-s-1 (MoLE-merged)")
+    ap.add_argument("--xyz", default=None, help="structure file (overrides --molecule; for compositions not in ASE g2)")
     ap.add_argument("--molecule", default="CH3CH2OH", help="ASE molecule name for uma-s-1 routing")
     ap.add_argument("--task", default="omol")
     ap.add_argument("--charge", type=int, default=0)

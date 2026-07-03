@@ -65,6 +65,45 @@ class TTAtomCalculator(Calculator):
         self.elem_refs = bundle.elem_refs
         self.task = self.task_name = bundle.task
 
+    @classmethod
+    def from_uma(cls, model="uma-s-1", task_name="omol", atoms=None, charge=0, spin=1,
+                 refenv=None, checkpoint=None, cache_dir=None, device=None, device_id=0,
+                 fast=False, trace=False, **kwargs):
+        """fairchem-parallel entry point: return a ready calculator for ``atoms``, auto-building
+        and caching the composition-specific merged bundle on first use.
+
+        Mirrors ``FAIRChemCalculator`` in spirit — you hand it a structure + task and get a
+        calculator back — but hides the two frictions inherent to running UMA on ttnn:
+
+          * MoLE routing bakes one merged bundle per *(reduced composition, charge, spin, task)*,
+            so we hash those into a cache key under ``~/.cache/tt_atom/bundles`` (override with
+            ``$TT_ATOM_CACHE`` or ``cache_dir``).
+          * ttnn (numpy<2) and fairchem (numpy>=2) cannot share a process, so the *build* runs the
+            reference env as a subprocess. Resolution order: ``refenv`` arg > ``$TT_ATOM_REFENV`` >
+            ``~/.ttatom_run/refenv/bin/python``. A **cache hit needs no fairchem/refenv at all** —
+            it is a plain load, which is the common path.
+
+        ``atoms`` is required (it determines the composition). When it carries ``info['charge']`` /
+        ``info['spin']`` those win over the args, so the bundle is merged with the exact charge/spin
+        the runtime will read back. First use per composition logs an honest one-time build notice.
+        """
+        from . import bundle_cache as BC
+
+        if atoms is None:
+            raise ValueError(
+                "from_uma needs `atoms` to determine the composition — MoLE bakes one bundle per "
+                "reduced composition/charge/spin/task, so there is no way to pick (or build) a "
+                "bundle without the structure. Pass the Atoms you want to run."
+            )
+        # an explicit charge/spin on the atoms wins: it is what `calculate` reads back at runtime,
+        # so the merge must use the same value for a consistent result.
+        charge = atoms.info.get("charge", charge)
+        spin = atoms.info.get("spin", spin)
+        path = BC.get_or_build(atoms, model=model, task=task_name, charge=charge, spin=spin,
+                               refenv=refenv, checkpoint=checkpoint, cache_dir=cache_dir)
+        return cls(str(path), task_name=task_name, device=device, device_id=device_id,
+                   fast=fast, trace=trace, **kwargs)
+
     def close(self):
         if self._engine is not None:
             self._engine.close()
