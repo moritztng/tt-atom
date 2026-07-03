@@ -44,7 +44,26 @@ Add `--trace` (or `UMA(atoms, trace=True)`) to replay the captured device graph 
 - Systems: isolated molecules and periodic cells. Charge and spin via `UMA(atoms, charge=-1, spin=2)`.
 - Properties: energy, conservative analytic forces, and stress, so variable-cell relaxation works (see [`examples/relax_cell.py`](examples/relax_cell.py)).
 
-Checked on-device against the released checkpoints (energy rel < 1e-3, force PCC > 0.99). For instance `uma-s-1` ethanol gives E rel 2e-7 and force PCC 0.9996, Si `omat` stress PCC 0.99999, and NVE energy drift is around 1 meV/atom/ps.
+## Accuracy
+
+Every task is checked on-device against the released `uma-s-1` checkpoint run through fairchem on the same structure.
+
+| task | system | energy rel. err | force PCC | stress PCC |
+|------|--------|----------------:|----------:|-----------:|
+| omol | ethanol         | 2e-7 | 0.9996  |     |
+| omat | bulk Si         | 3e-4 | 0.99999 | 0.99999 |
+| oc20 | Cu(100) + H slab| 9e-5 | 1.0000  |     |
+| odac | MgO framework   | 2e-4 | 0.99999 |     |
+| omc  | solid CO2       | 8e-5 | 1.0000  |     |
+
+`uma-m-1p1` matches too (ethanol: energy rel. err 2e-8, force PCC 0.9999). Dynamics are stable: NVE energy drift is about 1 meV/atom/ps.
+
+Reproduce it yourself. Every bundle embeds the fairchem reference energy and forces from build time, so:
+
+```bash
+tt-atom verify model.npz     # device output vs the embedded fairchem reference
+pytest tests/                # full parity suite against fairchem goldens
+```
 
 ## Throughput
 
@@ -55,6 +74,22 @@ out = calc.evaluate_batch(list_of_atoms)   # out["energy"], out["forces"]
 ```
 
 For many small molecules this is roughly 13x over looping on one card. To use several cards, fan systems across them with `tt_atom.batch` (one process per card).
+
+## Compared to fairchem
+
+TT-Atom is an inference runtime, not a rewrite of fairchem. It reuses the released weights and matches them.
+
+|  | fairchem | TT-Atom |
+|--|----------|---------|
+| Hardware | GPU, CPU | Tenstorrent |
+| Energy, forces, stress | yes | yes |
+| Molecules, periodic (PBC) | yes | yes |
+| Tasks (omol/omat/oc20/odac/omc) | yes | yes |
+| Models | uma-s, uma-m, uma-l | uma-s-1, uma-m-1p1 |
+| ASE relax and MD | yes | yes, plus a traced loop |
+| Batched inference | yes | yes, single composition per batch |
+| LAMMPS interface | yes | no |
+| Training, fine-tuning | yes | no, inference only |
 
 ## Bundles and the reference environment
 
