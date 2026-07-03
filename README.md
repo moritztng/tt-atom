@@ -10,7 +10,7 @@ Run Meta's [UMA](https://huggingface.co/facebook/UMA) interatomic potential on [
 pip install git+https://github.com/moritztng/tt-atom.git
 ```
 
-You also need `ttnn`, the Tenstorrent runtime. It is not on PyPI, so install the wheel matching your card and `tt-kmd` driver from [tt-metal](https://github.com/tenstorrent/tt-metal). TT-Atom pins `numpy<2` to match it. `import tt_atom` works without a card.
+This pulls [`ttnn`](https://pypi.org/project/ttnn/), the Tenstorrent runtime, from PyPI. Its version should match your `tt-kmd` driver and firmware, so pin it (`pip install ttnn==<version>`) if the default does not. `import tt_atom` works without a card.
 
 ## Quickstart
 
@@ -82,16 +82,16 @@ For many small molecules this is roughly 13x over looping on one card. To use se
 TT-Atom is an inference runtime, not a rewrite of fairchem. It reuses the released weights and matches them.
 
 |  | fairchem | TT-Atom |
-|--|----------|---------|
+|--|:--------:|:-------:|
 | Hardware | GPU, CPU | Tenstorrent |
-| Energy, forces, stress | yes | yes |
-| Molecules, periodic (PBC) | yes | yes |
-| Tasks (omol/omat/oc20/odac/omc) | yes | yes |
+| Energy, forces, stress | ✅ | ✅ |
+| Molecules, periodic (PBC) | ✅ | ✅ |
+| Tasks (omol/omat/oc20/odac/omc) | ✅ | ✅ |
 | Models | uma-s, uma-m, uma-l | uma-s-1, uma-m-1p1 |
-| ASE relax and MD | yes | yes, plus a traced loop |
-| Batched inference | yes | yes, single composition per batch |
-| LAMMPS interface | yes | no |
-| Training, fine-tuning | yes | no, inference only |
+| ASE relax and MD | ✅ | ✅ (plus a traced loop) |
+| Batched inference | ✅ | ✅ (one composition per batch) |
+| LAMMPS interface | ✅ | ❌ |
+| Training, fine-tuning | ✅ | ❌ (inference only) |
 
 ## Bundles and the reference environment
 
@@ -113,4 +113,4 @@ python -m venv refenv && refenv/bin/pip install "fairchem-core>=2.10"
 
 ## License
 
-Apache-2.0 for this code. UMA weights are separately licensed under the [FAIR Chemistry License](https://huggingface.co/facebook/UMA) and are not included.
+MIT for this code, which reimplements the UMA / eSCN-MD architecture from [fairchem](https://github.com/facebookresearch/fairchem) (also MIT). It depends on `ttnn` (Apache-2.0) and `ase` (LGPL-2.1+). The UMA weights are separately licensed under the [FAIR Chemistry License](https://huggingface.co/facebook/UMA), are gated, and are not included. Bring your own.

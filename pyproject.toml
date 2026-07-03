@@ -8,17 +8,16 @@ version = "0.1.0"
 description = "High-performance Tenstorrent inference for eSEN / eSCN-MD (UMA-family) ML interatomic potentials"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+license = { text = "MIT" }
 authors = [{ name = "Moritz Thüning" }]
 keywords = ["tenstorrent", "ttnn", "machine-learning-potential", "eSEN", "eSCN", "UMA", "equivariant", "MLIP"]
 
-# Core runtime deps. ttnn is the Tenstorrent runtime; torch/ase are host-side glue.
-# numpy is pinned <2 because the ttnn wheel is built against the numpy 1.x C ABI; torch is
-# CPU-only here (the model runs on the Tenstorrent card). ttnn itself is intentionally NOT
-# listed: it is the Tenstorrent runtime, not on PyPI — install the ttnn / tt-metal wheel that
-# matches your card + tt-kmd driver (see README "Installing ttnn"). `import tt_atom` never
-# imports ttnn, so the package installs and imports fine without a card.
+# Core runtime deps. ttnn is the Tenstorrent runtime (Apache-2.0); numpy is pinned <2 because
+# the ttnn wheel is built against the numpy 1.x C ABI; torch is CPU-only (the model runs on the
+# card). The installed ttnn version should match your tt-kmd driver / firmware; pin it if needed.
+# `import tt_atom` never imports ttnn, so it imports fine on a machine without a card.
 dependencies = [
+    "ttnn>=0.67",
     "numpy<2",
     "torch>=2.0,<3",
     "ase>=3.26",
