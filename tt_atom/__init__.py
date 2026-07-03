@@ -7,11 +7,15 @@ import ttnn lazily so that ``import tt_atom`` is cheap and never opens a device.
 
 __version__ = "0.1.0"
 
-__all__ = ["TTAtomCalculator", "WeightBundle", "Backbone", "HostGeometry", "MultiCard"]
+__all__ = ["UMA", "TTAtomCalculator", "WeightBundle", "Backbone", "HostGeometry", "MultiCard"]
 
 
 def __getattr__(name):
     # lazy so that ``import tt_atom`` stays cheap and never imports ttnn/torch eagerly
+    if name == "UMA":
+        from .calculator import UMA
+
+        return UMA
     if name == "TTAtomCalculator":
         from .calculator import TTAtomCalculator
 
