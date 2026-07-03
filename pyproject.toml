@@ -17,7 +17,7 @@ keywords = ["tenstorrent", "ttnn", "machine-learning-potential", "eSEN", "eSCN",
 # card). The installed ttnn version should match your tt-kmd driver / firmware; pin it if needed.
 # `import tt_atom` never imports ttnn, so it imports fine on a machine without a card.
 dependencies = [
-    "ttnn>=0.67",
+    "ttnn>=0.68",   # accuracy validated on 0.68.0; run `tt-atom verify` on other versions
     "numpy<2",
     "torch>=2.0,<3",
     "ase>=3.26",
