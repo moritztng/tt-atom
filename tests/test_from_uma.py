@@ -87,6 +87,22 @@ def test_from_uma_requires_atoms():
         TTAtomCalculator.from_uma(atoms=None)
 
 
+def test_infer_task_from_periodicity():
+    from ase import Atoms
+    from ase.build import molecule
+
+    assert BC.infer_task(molecule("H2O")) == "omol"                 # aperiodic -> molecules
+    bulk = Atoms("Si2", positions=[[0, 0, 0], [1.4, 1.4, 1.4]], cell=[5.4] * 3, pbc=True)
+    assert BC.infer_task(bulk) == "omat"                            # fully periodic -> materials
+
+
+def test_uma_is_exported_and_delegates():
+    import tt_atom
+
+    assert "UMA" in tt_atom.__all__
+    assert callable(tt_atom.UMA)
+
+
 # ------------------------------------------------------------------ device: cached fast path + parity
 
 real_golden = pytest.mark.skipif(
@@ -138,6 +154,14 @@ def test_cached_fast_path_needs_no_refenv_and_matches_direct(tmp_path, device, m
     e_direct = a2.get_potential_energy()
 
     assert e_factory == pytest.approx(e_direct, abs=1e-6), f"{e_factory} vs {e_direct}"
+
+    # the zero-config UMA(atoms) face must reach the identical result (task inferred = omol here)
+    if task == "omol":
+        from tt_atom import UMA
+
+        a3 = _atoms_from_golden(d)
+        a3.calc = UMA(a3, refenv="/nonexistent/python", cache_dir=str(cache_dir), device=device)
+        assert a3.get_potential_energy() == pytest.approx(e_direct, abs=1e-6)
 
 
 refenv_and_ckpt = pytest.mark.skipif(
