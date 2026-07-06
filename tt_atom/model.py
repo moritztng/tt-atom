@@ -10,6 +10,8 @@ Reference: ``fairchem ... escn_md.py:eSCNMDBackbone.forward`` + ``escn_md_block.
 """
 from __future__ import annotations
 
+import os
+
 import torch
 
 from .device import compute_kernel_config
@@ -17,6 +19,12 @@ from .norm import RMSNormSH
 from .edgewise import Edgewise
 from .grid import GridAtomwise
 from .spectral import SpectralAtomwise
+
+# Above this node count the dense one-hot scatter matmul S[N,E]@m (O(N^2)) is replaced by the
+# linear O(E) gather+reduce scatter (tt_atom/scatter.py). Small systems keep the dense path
+# (one fat matmul, bit-identical to the golden mirror tests). Override with $TT_ATOM_SCATTER_THRESHOLD
+# (set to 0 to force the linear path everywhere — used by the scatter parity test).
+SCATTER_LINEAR_THRESHOLD = int(os.environ.get("TT_ATOM_SCATTER_THRESHOLD", "384"))
 
 
 def _to_dev(t, device, dtype, layout=None):
@@ -41,14 +49,26 @@ class GraphContext:
         tgt = edge_index[1].to(torch.int32)
         self.src_idx = _to_dev(src, device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
         self.tgt_idx = _to_dev(tgt, device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
-        # scatter-add matrix S[N, E]: messages on edge e land on node tgt[e]
-        S = torch.zeros(num_nodes, E)
-        S[tgt.long(), torch.arange(E)] = 1.0
-        self.scatter = _to_dev(S, device, wdtype)
-        # source one-hot S_src[N, E] (gather-backward operand for the analytic force VJP)
-        Ssrc = torch.zeros(num_nodes, E)
-        Ssrc[src.long(), torch.arange(E)] = 1.0
-        self.scatter_src = _to_dev(Ssrc, device, wdtype)
+        # edge->node scatter-add (``out[n] = sum_{e:tgt[e]==n} m[e]``, and the src transpose used by
+        # the force VJP). Small systems: dense one-hot matmul S[N,E]@m — one fat op, bit-identical to
+        # the golden mirror tests. Large systems: linear O(E) gather+reduce (scatter.py) — the dense
+        # matmul is O(N^2) compute+memory (S alone is 92 MB at N=1000) and is why large-N scaling blew
+        # up; fairchem/PyG scatter_add is linear. See SCATTER_LINEAR_THRESHOLD.
+        self.linear_scatter = num_nodes > SCATTER_LINEAR_THRESHOLD
+        if self.linear_scatter:
+            from . import scatter as _sc
+
+            tgt_g, self.Dmax_t = _sc.build_gather(tgt, num_nodes, E)
+            src_g, self.Dmax_s = _sc.build_gather(src, num_nodes, E)
+            self.tgt_gather = _to_dev(torch.from_numpy(tgt_g), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
+            self.src_gather = _to_dev(torch.from_numpy(src_g), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
+        else:
+            S = torch.zeros(num_nodes, E)
+            S[tgt.long(), torch.arange(E)] = 1.0
+            self.scatter = _to_dev(S, device, wdtype)
+            Ssrc = torch.zeros(num_nodes, E)
+            Ssrc[src.long(), torch.arange(E)] = 1.0
+            self.scatter_src = _to_dev(Ssrc, device, wdtype)
         # Wigner rotation as a flat sparse multiply-accumulate (see rotation.py): pack the dense
         # per-edge matrices to their structural nonzeros. bf8 coefficients run faster and stay
         # PCC-safe (the rotation is an orthogonal basis change) -> use in --fast.

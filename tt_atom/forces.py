@@ -292,9 +292,16 @@ def edgewise_bw(ew, graph, g_out, acc):
     g_mcat3 = ttnn.reshape(g_mcat, (E, nsph, 2 * C))
     g_xs_f = ttnn.reshape(ttnn.slice(g_mcat3, [0, 0, 0], [E, nsph, C]), (E, nsph * C))
     g_xt_f = ttnn.reshape(ttnn.slice(g_mcat3, [0, 0, C], [E, nsph, 2 * C]), (E, nsph * C))
-    # gather backward (embedding) as one-hot matmuls: g_nodes = S_src @ g_xs + S_tgt @ g_xt
-    g_nodes = ttnn.add(ttnn.matmul(graph.scatter_src, g_xs_f, compute_kernel_config=kcfg),
-                       ttnn.matmul(graph.scatter, g_xt_f, compute_kernel_config=kcfg))
+    # gather backward: g_nodes = scatter_src(g_xs) + scatter_tgt(g_xt). Dense one-hot matmuls
+    # (small N) or the linear O(E) gather+reduce (large N) — mirrors the forward scatter.
+    if graph.linear_scatter:
+        from . import scatter
+        W = nsph * C
+        g_nodes = ttnn.add(scatter.segment_sum(ttnn, g_xs_f, graph.src_gather, graph.Dmax_s, N, W),
+                           scatter.segment_sum(ttnn, g_xt_f, graph.tgt_gather, graph.Dmax_t, N, W))
+    else:
+        g_nodes = ttnn.add(ttnn.matmul(graph.scatter_src, g_xs_f, compute_kernel_config=kcfg),
+                           ttnn.matmul(graph.scatter, g_xt_f, compute_kernel_config=kcfg))
     g_nodes = ttnn.reshape(g_nodes, (N, nsph, C))
 
     acc["rot_fwd"] = g_rfwd if acc["rot_fwd"] is None else ttnn.add(acc["rot_fwd"], g_rfwd)
