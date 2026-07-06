@@ -67,8 +67,15 @@ class TracedEngine:
         """Overwrite the pos-dependent resident buffers in place (topology buffers untouched)."""
         ttnn = self.ttnn
         g = self.graph
-        _, cf = rotation.pack(t["wigner"].detach())
-        _, ci = rotation.pack(t["wigner_inv"].detach())
+        # the sparsity pattern is fixed for the topology (cached on the graph at capture); only the
+        # coefficient values change per step, so gather them directly instead of re-running pack's
+        # amax reduction over [E,nred,nsph] twice per step.
+        if not hasattr(self, "_fwd_ii"):
+            fi = torch.tensor([i for i, j in g.rot_fwd_ij]); fj = torch.tensor([j for i, j in g.rot_fwd_ij])
+            ii = torch.tensor([i for i, j in g.rot_inv_ij]); ij = torch.tensor([j for i, j in g.rot_inv_ij])
+            self._fwd_ii, self._fwd_jj, self._inv_ii, self._inv_jj = fi, fj, ii, ij
+        cf = rotation.gather_coef(t["wigner"].detach(), self._fwd_ii, self._fwd_jj)
+        ci = rotation.gather_coef(t["wigner_inv"].detach(), self._inv_ii, self._inv_jj)
         pairs = [
             (g.rot_fwd_coef, cf),
             (g.rot_inv_coef, ci),
