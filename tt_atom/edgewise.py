@@ -48,9 +48,13 @@ class Edgewise:
         E = graph.E
         dev = self.device
         xf = ttnn.to_layout(ttnn.reshape(x, (N, nsph * C)), ttnn.ROW_MAJOR_LAYOUT)  # gather operand
-        xs = ttnn.to_layout(ttnn.reshape(ttnn.embedding(graph.src_idx, xf), (E, nsph, C)), ttnn.TILE_LAYOUT)
-        xt = ttnn.to_layout(ttnn.reshape(ttnn.embedding(graph.tgt_idx, xf), (E, nsph, C)), ttnn.TILE_LAYOUT)
-        m_cat = ttnn.reshape(ttnn.concat([xs, xt], dim=2), (E, nsph * 2 * C))   # flat, [xs_i|xt_i] per coord
+        # Keep the src/tgt gathers ROW_MAJOR: the interleave (concat dim=2) + flatten to [E, nsph*2C]
+        # is done entirely in ROW_MAJOR (contiguous, no coeff-dim tile padding) with a single
+        # to_layout TILE at the end -- avoids the ~18 ms TILE 3D->2D repack of the 9-coeff dim.
+        xs = ttnn.reshape(ttnn.embedding(graph.src_idx, xf), (E, nsph, C))   # RM [E, nsph, C]
+        xt = ttnn.reshape(ttnn.embedding(graph.tgt_idx, xf), (E, nsph, C))   # RM
+        m_cat = ttnn.to_layout(ttnn.reshape(ttnn.concat([xs, xt], dim=2), (E, nsph * 2 * C)),
+                               ttnn.TILE_LAYOUT)   # flat [xs_i|xt_i] per coord
 
         # rotate node SH (nsph) into the reduced m-space (nred); the SO(2) pipeline runs there
         m_rot = rotation.rotate(ttnn, m_cat, graph.rot_fwd_ij, graph.rot_fwd_coef, nsph, 2 * C,
