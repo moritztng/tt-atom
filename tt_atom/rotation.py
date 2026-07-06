@@ -38,6 +38,14 @@ def _ones_bd(ttnn, device, nnz, W):
     return t
 
 
+def gather_coef(wigner: torch.Tensor, ii: torch.Tensor, jj: torch.Tensor):
+    """Gather the packed coefficients ``[E, nnz]`` at a KNOWN (already-derived) sparsity pattern
+    ``(ii, jj)``. For a fixed topology the pattern never changes, so re-running :func:`pack`'s
+    ``amax`` reduction every step (trace refresh) is wasted work -- cache ``ii, jj`` once and call
+    this. Bit-identical to ``pack``'s coef output."""
+    return wigner[:, ii, jj].contiguous()
+
+
 def pack(wigner: torch.Tensor, tol: float = 1e-6):
     """``[E, n_out, n_in]`` Wigner -> (``ij``: list of structural-nonzero (out,in) pairs, ``coef``:
     ``[E, nnz]`` the per-edge values). The pattern is taken from ``amax`` over edges, so it
