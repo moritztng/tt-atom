@@ -288,10 +288,15 @@ def edgewise_bw(ew, graph, g_out, acc):
     # forward rotation backward: forward mapped node SH (nsph) -> reduced m-space (nred)
     g_mcat, g_rfwd = rotation.rotate_bw(ttnn, ew._cache_mcat, g_mrot, graph.rot_fwd_ij,
                                         graph.rot_fwd_coef, nsph, 2 * C, dev, n_out=graph.nred)
-    # m_cat per coord = [xs_i | xt_i]; split channels back out
-    g_mcat3 = ttnn.reshape(g_mcat, (E, nsph, 2 * C))
-    g_xs_f = ttnn.reshape(ttnn.slice(g_mcat3, [0, 0, 0], [E, nsph, C]), (E, nsph * C))
-    g_xt_f = ttnn.reshape(ttnn.slice(g_mcat3, [0, 0, C], [E, nsph, 2 * C]), (E, nsph * C))
+    # m_cat per coord = [xs_i | xt_i]; split channels back out. Do the 3D<->flat coeff-dim reshapes
+    # + the channel split in ROW_MAJOR (contiguous, no 9->32 tile-pad repack) with a single TILE
+    # round-trip -- the direct TILE reshapes here cost ~18 ms each at E~46k. Bit-exact.
+    g_mcat_rm = ttnn.to_layout(g_mcat, ttnn.ROW_MAJOR_LAYOUT)
+    g_mcat3 = ttnn.reshape(g_mcat_rm, (E, nsph, 2 * C))
+    g_xs_f = ttnn.to_layout(ttnn.reshape(ttnn.slice(g_mcat3, [0, 0, 0], [E, nsph, C]), (E, nsph * C)),
+                            ttnn.TILE_LAYOUT)
+    g_xt_f = ttnn.to_layout(ttnn.reshape(ttnn.slice(g_mcat3, [0, 0, C], [E, nsph, 2 * C]), (E, nsph * C)),
+                            ttnn.TILE_LAYOUT)
     # gather backward: g_nodes = scatter_src(g_xs) + scatter_tgt(g_xt). Dense one-hot matmuls
     # (small N) or the linear O(E) gather+reduce (large N) — mirrors the forward scatter.
     if graph.linear_scatter:
