@@ -75,8 +75,13 @@ def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None
     gc = [None] * len(ij)
     for k, (i, j) in enumerate(ij):
         c = ttnn.slice(coef, [0, k], [E, k + 1])
-        term = ttnn.multiply(gout_cols[i], c)
-        g_in[j] = term if g_in[j] is None else ttnn.add(g_in[j], term)
+        # fuse the g_in accumulate (g_in[j] += gout_cols[i]*c) into one addcmul (drops a kernel
+        # launch + a DRAM round-trip of the partial sum vs multiply-then-add). Bit-identical,
+        # mirrors the forward rotate().
+        if g_in[j] is None:
+            g_in[j] = ttnn.multiply(gout_cols[i], c)
+        else:
+            g_in[j] = ttnn.addcmul(g_in[j], gout_cols[i], c)
         gc[k] = ttnn.sum(ttnn.multiply(gout_cols[i], in_cols[j]), dim=1, keepdim=True)   # [E,1]
     for j in range(n_in):
         if g_in[j] is None:
