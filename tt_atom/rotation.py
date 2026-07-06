@@ -52,7 +52,13 @@ def rotate(ttnn, x_flat, ij, coef, n_in, W, device, n_out=None):
             out[i] = ttnn.addcmul(out[i], cols[j], c)
     for i in range(n_out):
         if out[i] is None:
-            out[i] = ttnn.zeros((E, W), dtype=x_flat.dtype, layout=ttnn.TILE_LAYOUT, device=device)
+            # Uncovered output coordinate (no structural nonzero maps to it — happens for the
+            # rectangular reduced-m rotation / uma-m, or a geometry whose Wigner has an all-zero
+            # row across edges). Emit an on-device zero block via multiply-by-0.0 of an existing
+            # [E,W] column rather than ttnn.zeros: a host constant write is forbidden inside a
+            # captured trace ("Writes are not supported during trace capture"), whereas this is a
+            # plain eltwise. Bit-exact (0.0*finite == 0.0). cols[0] always exists (n_in>=1).
+            out[i] = ttnn.multiply(cols[0], 0.0)
     return ttnn.concat(out, dim=1)
 
 
@@ -74,7 +80,10 @@ def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None
         gc[k] = ttnn.sum(ttnn.multiply(gout_cols[i], in_cols[j]), dim=1, keepdim=True)   # [E,1]
     for j in range(n_in):
         if g_in[j] is None:
-            g_in[j] = ttnn.zeros((E, W), dtype=x_in_flat.dtype, layout=ttnn.TILE_LAYOUT, device=device)
+            # Uncovered input coordinate — see rotate(); emit the zero block on device (trace-safe)
+            # instead of ttnn.zeros (a host write forbidden during trace capture). gout_cols[0]
+            # always exists (n_out>=1). Bit-exact zero.
+            g_in[j] = ttnn.multiply(gout_cols[0], 0.0)
     return ttnn.concat(g_in, dim=1), ttnn.concat(gc, dim=1)
 
 
