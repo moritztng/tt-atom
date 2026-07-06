@@ -28,7 +28,14 @@ from .model import GraphContext
 def _host_like(ttnn, dev_tensor, torch_tensor):
     """A HOST ttnn tensor matching ``dev_tensor``'s dtype/layout, holding ``torch_tensor``'s
     data — the only operand ``copy_host_to_device_tensor`` accepts to overwrite a resident (and
-    trace-captured) buffer in place."""
+    trace-captured) buffer in place.
+
+    Pre-convert a float32 source to bf16 in torch first: ``ttnn.from_torch(float32, dtype=bf16)``
+    does a slow scalar host conversion (~3.8 ms for x_edge alone), whereas converting in torch
+    (SIMD, ~0.03 ms) then from_torch on the already-bf16 tensor is a plain memcpy — ~10x faster
+    per-step write. Both are round-to-nearest-even, so this is bit-identical."""
+    if dev_tensor.dtype == ttnn.bfloat16 and torch_tensor.dtype == torch.float32:
+        torch_tensor = torch_tensor.to(torch.bfloat16)
     return ttnn.from_torch(torch_tensor, dtype=dev_tensor.dtype, layout=dev_tensor.layout)
 
 
