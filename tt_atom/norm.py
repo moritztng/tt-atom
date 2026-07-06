@@ -39,13 +39,18 @@ class RMSNormSH:
         """x: ttnn ``[N, nsph, C]`` -> ``[N, nsph, C]``."""
         ttnn = self.ttnn
         N = x.shape[0]
+        from .device import l1_if_fits, L1_NODE_BUDGET
         self._cache_x = x                                     # for the analytic-force VJP
+        # concat relocations only -> bit-identical (node PCC 1.0); keeps the norm's [N,nsph,C]
+        # working set on-chip while it fits L1 (falls back to DRAM at large N). Use the tile-padded
+        # width (nsph -> next mult of 32) since the 3D tensor pads the coeff dim.
+        L1 = l1_if_fits(ttnn, N, ((self.nsph + 31) // 32) * 32 * self.C, budget=L1_NODE_BUDGET)
         # center l=0 across channels
         l0 = ttnn.slice(x, [0, 0, 0], [N, 1, self.C])
         l0_mean = ttnn.mean(l0, dim=2, keepdim=True)          # [N,1,1]
         l0c = ttnn.subtract(l0, l0_mean)
         rest = ttnn.slice(x, [0, 1, 0], [N, self.nsph, self.C])
-        x = ttnn.concat([l0c, rest], dim=1)
+        x = ttnn.concat([l0c, rest], dim=1, memory_config=L1)
 
         # degree-balanced component RMS
         fn = ttnn.multiply(x, x)
@@ -58,4 +63,4 @@ class RMSNormSH:
         # add bias to l=0 only
         l0 = ttnn.add(ttnn.slice(out, [0, 0, 0], [N, 1, self.C]), self.ab)
         rest = ttnn.slice(out, [0, 1, 0], [N, self.nsph, self.C])
-        return ttnn.concat([l0, rest], dim=1)
+        return ttnn.concat([l0, rest], dim=1, memory_config=L1)
