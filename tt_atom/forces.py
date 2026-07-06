@@ -435,8 +435,14 @@ def _forces(bb, geo, graph, node_emb, t, pos, strain=None):
     g_wig = rotation.scatter_coef(ttnn.to_torch(acc["rot_fwd"]).float(), graph.rot_fwd_ij, nred, nsph)
     g_winv = rotation.scatter_coef(ttnn.to_torch(acc["rot_inv"]).float(), graph.rot_inv_ij, nsph, nred)
     g_env = ttnn.to_torch(acc["envelope"]).float().reshape(-1, 1, 1)   # [E,1]->[E,1,1]
-    # radial finish is done on device (see backbone_bw); read back the single g_x_edge adjoint
-    g_xe = ttnn.to_torch(acc["x_edge"]).float()
+    # radial finish is done on device (see backbone_bw); read back the single g_x_edge adjoint.
+    # x_edge = [gaussian(dist) | src_emb | tgt_emb]; only the gaussian block depends on pos, so the
+    # force VJP needs only its adjoint. Cast just that block bf16->f32 (the cast dominates readback);
+    # the pos-independent embedding columns contribute zero to dE/dpos.
+    ng = geo.offset.shape[0]
+    gx = ttnn.to_torch(acc["x_edge"])
+    g_xe = torch.zeros(tuple(gx.shape), dtype=torch.float32)
+    g_xe[:, :ng] = gx[:, :ng].float()
 
     outs = [t["x_init"], t["wigner"], t["wigner_inv"], t["x_edge"], t["edge_envelope"]]
     gouts = [g_xi, g_wig, g_winv, g_xe, g_env]

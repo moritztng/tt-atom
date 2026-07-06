@@ -130,8 +130,13 @@ class TracedEngine:
         g_winv = rotation.scatter_coef(ttnn.to_torch(acc["rot_inv"]).float(),
                                        self.graph.rot_inv_ij, nsph)
         g_env = ttnn.to_torch(acc["envelope"]).float().reshape(-1, 1, 1)
-        # radial finish is done on device inside the captured trace (backbone_bw); read it back
-        g_xe = ttnn.to_torch(acc["x_edge"]).float()
+        # radial finish is done on device inside the captured trace (backbone_bw); read it back.
+        # Only the gaussian block of x_edge = [gaussian | src_emb | tgt_emb] depends on pos, so cast
+        # just that block bf16->f32 (the cast dominates readback); embedding cols add zero to dpos.
+        ng = self.geo.offset.shape[0]
+        gx = ttnn.to_torch(acc["x_edge"])
+        g_xe = torch.zeros(tuple(gx.shape), dtype=torch.float32)
+        g_xe[:, :ng] = gx[:, :ng].float()
         g_pos = torch.autograd.grad(
             [t["x_init"], t["wigner"], t["wigner_inv"], t["x_edge"], t["edge_envelope"]],
             pos, grad_outputs=[g_xi, g_wig, g_winv, g_xe, g_env])[0]
