@@ -40,7 +40,6 @@ class RMSNormSH:
         ttnn = self.ttnn
         N = x.shape[0]
         from .device import l1_if_fits, L1_NODE_BUDGET
-        self._cache_x = x                                     # for the analytic-force VJP
         # concat relocations only -> bit-identical (node PCC 1.0); keeps the norm's [N,nsph,C]
         # working set on-chip while it fits L1 (falls back to DRAM at large N). Use the tile-padded
         # width (nsph -> next mult of 32) since the 3D tensor pads the coeff dim.
@@ -58,6 +57,9 @@ class RMSNormSH:
         fn = ttnn.sum(fn, dim=1, keepdim=True)                # [N,1,C]
         fn = ttnn.mean(fn, dim=2, keepdim=True)               # [N,1,1]
         fn = ttnn.rsqrt(ttnn.add(fn, self.eps))
+        # cache the centered input + rsqrt scale for the analytic-force VJP (rmsnorm_bw then skips
+        # recomputing the centering + degree-balanced RMS -- fewer backward device ops, bit-exact)
+        self._cache_xc, self._cache_inv = x, fn
 
         out = ttnn.multiply(x, ttnn.multiply(fn, self.aw))    # broadcast [N,1,1]*[1,nsph,C]
         # add bias to l=0 only
