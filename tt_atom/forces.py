@@ -21,8 +21,10 @@ import torch
 
 
 def _mm(ttnn, g, W, kcfg):
-    """grad wrt x of ``y = x @ W`` (W stored [in,out]): ``g @ W^T``."""
-    return ttnn.matmul(g, ttnn.transpose(W, -2, -1), compute_kernel_config=kcfg)
+    """grad wrt x of ``y = x @ W`` (W stored [in,out]): ``g @ W^T``. ``transpose_b`` folds the
+    transpose into the matmul (bit-identical), dropping an explicit transpose op per call — the
+    backward makes ~40 of these on constant weights, all in the captured trace."""
+    return ttnn.matmul(g, W, transpose_b=True, compute_kernel_config=kcfg)
 
 
 # --------------------------------------------------------------------------- elementwise
