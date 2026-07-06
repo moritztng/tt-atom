@@ -26,10 +26,10 @@ def pack(wigner: torch.Tensor, tol: float = 1e-6):
 
     The matrix is rectangular for mmax<lmax checkpoints (uma-m: forward maps the 25-coeff node
     representation to the 19-coeff reduced m-space, ``[E,19,25]``; the inverse maps back)."""
-    n_out, n_in = wigner.shape[1], wigner.shape[2]
     patt = wigner.abs().amax(dim=0) > tol
-    ij = [(int(i), int(j)) for i in range(n_out) for j in range(n_in) if patt[i, j]]
-    coef = torch.stack([wigner[:, i, j] for (i, j) in ij], dim=1).contiguous()   # [E, nnz]
+    idx = patt.nonzero(as_tuple=False)                          # [nnz,2], row-major (i outer, j inner)
+    coef = wigner[:, idx[:, 0], idx[:, 1]].contiguous()         # [E, nnz] — vectorized gather (was a
+    ij = [(int(i), int(j)) for i, j in idx.tolist()]            # per-nonzero torch.stack, ~2x slower)
     return ij, coef
 
 
@@ -43,8 +43,13 @@ def rotate(ttnn, x_flat, ij, coef, n_in, W, device, n_out=None):
     out = [None] * n_out
     for k, (i, j) in enumerate(ij):
         c = ttnn.slice(coef, [0, k], [E, k + 1])              # [E,1] broadcast
-        term = ttnn.multiply(cols[j], c)
-        out[i] = term if out[i] is None else ttnn.add(out[i], term)
+        # fuse the accumulate multiply+add into one addcmul (out[i] += cols[j]*c). Rotation is
+        # dispatch/op-count-bound (many tiny ops), so folding the separate add drops both a kernel
+        # launch and a DRAM round-trip of the partial sum. Bit-identical to multiply-then-add.
+        if out[i] is None:
+            out[i] = ttnn.multiply(cols[j], c)
+        else:
+            out[i] = ttnn.addcmul(out[i], cols[j], c)
     for i in range(n_out):
         if out[i] is None:
             out[i] = ttnn.zeros((E, W), dtype=x_flat.dtype, layout=ttnn.TILE_LAYOUT, device=device)
@@ -78,6 +83,6 @@ def scatter_coef(g_coef: torch.Tensor, ij, n_out: int, n_in: int = None) -> torc
     n_in = n_out if n_in is None else n_in
     E = g_coef.shape[0]
     g = torch.zeros(E, n_out, n_in, dtype=g_coef.dtype)
-    for k, (i, j) in enumerate(ij):
-        g[:, i, j] = g_coef[:, k]
+    ii = torch.tensor([i for i, j in ij]); jj = torch.tensor([j for i, j in ij])
+    g[:, ii, jj] = g_coef                                       # vectorized scatter (was a py loop)
     return g
