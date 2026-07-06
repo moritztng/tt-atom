@@ -67,7 +67,7 @@ def rotate(ttnn, x_flat, ij, coef, n_in, W, device, n_out=None):
     reduced-m-space rotation (uma-m)."""
     n_out = n_in if n_out is None else n_out
     E = x_flat.shape[0]
-    cols = [ttnn.slice(x_flat, [0, j * W], [E, (j + 1) * W]) for j in range(n_in)]
+    cols = ttnn.split(x_flat, W, dim=1)                       # n_in [E,W] blocks in one dispatch
     # split the [E,nnz] coefficients into nnz [E,1] broadcast columns in ONE dispatch instead of
     # nnz per-nonzero ttnn.slice calls. The rotation is the largest single consumer of eager ttnn
     # dispatches (~49% at N=1000) and the eager MD path is host-dispatch bound; the coef slices are
@@ -103,8 +103,8 @@ def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None
     n_out = n_in if n_out is None else n_out
     E = x_in_flat.shape[0]
     from .device import compute_kernel_config
-    in_cols = [ttnn.slice(x_in_flat, [0, j * W], [E, (j + 1) * W]) for j in range(n_in)]
-    gout_cols = [ttnn.slice(g_out_flat, [0, i * W], [E, (i + 1) * W]) for i in range(n_out)]
+    in_cols = ttnn.split(x_in_flat, W, dim=1)                    # n_in [E,W] blocks in one dispatch
+    gout_cols = ttnn.split(g_out_flat, W, dim=1)                 # n_out [E,W] blocks in one dispatch
     ccols = ttnn.split(coef, 1, dim=1)                           # nnz [E,1] cols in one dispatch
     g_in = [None] * n_in
     prods = [None] * len(ij)
