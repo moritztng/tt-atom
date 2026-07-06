@@ -13,7 +13,18 @@ probes a device.
 """
 from __future__ import annotations
 
+import os
 from contextlib import contextmanager
+
+
+def device_ede() -> bool:
+    """Whether the edge-degree embedding (node init) is computed on device inside the trace.
+
+    Default OFF (host torch, the original path). When ``TT_ATOM_DEVICE_EDE=1`` the radial MLP ->
+    rotate-back -> envelope -> scatter -> +l0 chain runs on device (see tt_atom/edge_degree.py),
+    removing the largest per-step host cost (the radial-MLP fwd+bw over E edges). Read at call
+    time so tests / benches can toggle it per run."""
+    return os.environ.get("TT_ATOM_DEVICE_EDE") == "1"
 
 
 # Budgets (bytes) for a single L1-resident intermediate. The L1-residency perf wins (grid, so2,

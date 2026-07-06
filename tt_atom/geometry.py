@@ -253,6 +253,18 @@ class HostGeometry:
         # edge-degree node init
         N = atomic_numbers.shape[0]
         nsph = (lmax + 1) ** 2
+        # pos-independent l=0 init
+        l0 = F.embedding(atomic_numbers, w["sphere_embedding.weight"]) + sys_node_embedding
+        l0 = F.pad(l0.unsqueeze(1), (0, 0, 0, nsph - 1))   # [N,9,C] with only l0 set
+
+        from .device import device_ede
+        if device_ede():
+            # the full node init (radial MLP -> rotate-back -> envelope -> scatter) runs on device
+            # inside the trace; host only supplies the constant l0 and the geometric terms below.
+            return dict(x_init=None, l0=l0, wigner=wig_M, wigner_inv=wig_M_inv,
+                        x_edge=x_edge, edge_envelope=envelope, edge_distance=dist,
+                        edge_distance_vec=edge_vec)
+
         m0 = self.cfg["mmax_m0_coeffs"] if "mmax_m0_coeffs" in self.cfg else (lmax + 1)
         edm = radial_mlp(x_edge, w, "edge_degree_embedding.rad_func").reshape(-1, m0, C)
         # the radial output is the m=0 block; place it at the front of the reduced m-space
@@ -261,11 +273,8 @@ class HostGeometry:
         edm = torch.bmm(wig_M_inv, edm) * envelope         # [E, nsph, C]
         node = torch.zeros(N, nsph, C, dtype=pos.dtype)
         node = node.index_add(0, tgt, edm / self.rescale)
-        # pos-independent l=0 init
-        l0 = F.embedding(atomic_numbers, w["sphere_embedding.weight"]) + sys_node_embedding
-        l0 = F.pad(l0.unsqueeze(1), (0, 0, 0, nsph - 1))   # [N,9,C] with only l0 set
         x_init = node + l0
 
-        return dict(x_init=x_init, wigner=wig_M, wigner_inv=wig_M_inv,
+        return dict(x_init=x_init, l0=l0, wigner=wig_M, wigner_inv=wig_M_inv,
                     x_edge=x_edge, edge_envelope=envelope, edge_distance=dist,
                     edge_distance_vec=edge_vec)

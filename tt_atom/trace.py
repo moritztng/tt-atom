@@ -60,6 +60,7 @@ class TracedEngine:
         self.C = geo.C
         self.N = atomic_numbers.shape[0]
         self.tid = None
+        self._device_ede = bb.edge_degree is not None
 
     # ------------------------------------------------------------------ capture / refresh
 
@@ -82,8 +83,11 @@ class TracedEngine:
             (g.x_edge, t["x_edge"].detach()),
             (g.edge_envelope, t["edge_envelope"].detach()),
             (g.edge_envelope_f, t["edge_envelope"].detach().reshape(g.E, 1)),
-            (self.x_init, t["x_init"].detach()),
         ]
+        # x_init operand: the host full node init (pos-dependent, refresh) or, with the device
+        # edge-degree embedding, the CONSTANT l0 init (pos-independent -> uploaded once, never here).
+        if not self._device_ede:
+            pairs.append((self.x_init, t["x_init"].detach()))
         for dev_t, src in pairs:
             ttnn.copy_host_to_device_tensor(_host_like(ttnn, dev_t, src), dev_t)
 
@@ -96,7 +100,10 @@ class TracedEngine:
             edge_envelope=t["edge_envelope"].detach(), num_nodes=N)
         self.se3 = ttnn.from_torch(self.se.reshape(N, 1, C), dtype=ttnn.bfloat16,
                                    layout=ttnn.TILE_LAYOUT, device=self.dev)
-        self.x_init = ttnn.from_torch(t["x_init"].detach(), dtype=ttnn.bfloat16,
+        # x_init operand is the constant l0 node init (device edge-degree on) or the full host
+        # x_init (off). l0 is pos-independent so it is uploaded once here and never refreshed.
+        init = t["l0"] if self._device_ede else t["x_init"]
+        self.x_init = ttnn.from_torch(init.detach(), dtype=ttnn.bfloat16,
                                       layout=ttnn.TILE_LAYOUT, device=self.dev)
         from . import forces as Fmod
 
@@ -131,7 +138,6 @@ class TracedEngine:
         E = float(ttnn.to_torch(self.energy_t).reshape(-1)[0])
         acc = self.acc
         nsph = self.graph.nsph
-        g_xi = ttnn.to_torch(acc["x_init"]).float()
         g_wig = rotation.scatter_coef(ttnn.to_torch(acc["rot_fwd"]).float(),
                                       self.graph.rot_fwd_ij, nsph)
         g_winv = rotation.scatter_coef(ttnn.to_torch(acc["rot_inv"]).float(),
@@ -144,9 +150,13 @@ class TracedEngine:
         gx = ttnn.to_torch(acc["x_edge"])
         g_xe = torch.zeros(tuple(gx.shape), dtype=torch.float32)
         g_xe[:, :ng] = gx[:, :ng].float()
-        g_pos = torch.autograd.grad(
-            [t["x_init"], t["wigner"], t["wigner_inv"], t["x_edge"], t["edge_envelope"]],
-            pos, grad_outputs=[g_xi, g_wig, g_winv, g_xe, g_env])[0]
+        outs = [t["wigner"], t["wigner_inv"], t["x_edge"], t["edge_envelope"]]
+        gouts = [g_wig, g_winv, g_xe, g_env]
+        # host x_init adjoint only when x_init is a host term (device edge-degree consumes it on device)
+        if not self._device_ede:
+            outs = [t["x_init"]] + outs
+            gouts = [ttnn.to_torch(acc["x_init"]).float()] + gouts
+        g_pos = torch.autograd.grad(outs, pos, grad_outputs=gouts)[0]
         return E, -g_pos
 
     def close(self):
