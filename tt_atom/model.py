@@ -82,7 +82,9 @@ class GraphContext:
         self.rot_fwd_coef = _to_dev(cf, device, wig_dtype)
         self.rot_inv_coef = _to_dev(ci, device, wig_dtype)
         self.x_edge = _to_dev(x_edge, device, wdtype)
-        self.edge_envelope = _to_dev(edge_envelope, device, wdtype)            # [E,1,1]
+        # only the flat [E,1] envelope is consumed on device (edgewise / edge-degree broadcast); the
+        # 3D [E,1,1] form tile-pads to [E,32,32] (a ~64 ms/step re-tilize on the trace refresh) and
+        # is read by nothing, so it is not materialised.
         self.edge_envelope_f = _to_dev(edge_envelope.reshape(E, 1), device, wdtype)  # flat bcast
 
 

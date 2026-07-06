@@ -81,7 +81,8 @@ class TracedEngine:
             (g.rot_fwd_coef, cf),
             (g.rot_inv_coef, ci),
             (g.x_edge, t["x_edge"].detach()),
-            (g.edge_envelope, t["edge_envelope"].detach()),
+            # only edge_envelope_f [E,1] is consumed on device; the 3D edge_envelope [E,1,1] is dead
+            # (its tile pads to [E,32,32] -> ~64 ms/step to re-tilize), so it is not refreshed.
             (g.edge_envelope_f, t["edge_envelope"].detach().reshape(g.E, 1)),
         ]
         # x_init operand: the host full node init (pos-dependent, refresh) or, with the device
