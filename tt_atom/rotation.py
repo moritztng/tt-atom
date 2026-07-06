@@ -68,9 +68,14 @@ def rotate(ttnn, x_flat, ij, coef, n_in, W, device, n_out=None):
     n_out = n_in if n_out is None else n_out
     E = x_flat.shape[0]
     cols = [ttnn.slice(x_flat, [0, j * W], [E, (j + 1) * W]) for j in range(n_in)]
+    # split the [E,nnz] coefficients into nnz [E,1] broadcast columns in ONE dispatch instead of
+    # nnz per-nonzero ttnn.slice calls. The rotation is the largest single consumer of eager ttnn
+    # dispatches (~49% at N=1000) and the eager MD path is host-dispatch bound; the coef slices are
+    # ~zero-traffic (each [E,1]) so collapsing them to one op cuts dispatch with no extra DRAM.
+    ccols = ttnn.split(coef, 1, dim=1)
     out = [None] * n_out
     for k, (i, j) in enumerate(ij):
-        c = ttnn.slice(coef, [0, k], [E, k + 1])              # [E,1] broadcast
+        c = ccols[k]                                          # [E,1] broadcast
         # fuse the accumulate multiply+add into one addcmul (out[i] += cols[j]*c). Rotation is
         # dispatch/op-count-bound (many tiny ops), so folding the separate add drops both a kernel
         # launch and a DRAM round-trip of the partial sum. Bit-identical to multiply-then-add.
@@ -100,10 +105,11 @@ def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None
     from .device import compute_kernel_config
     in_cols = [ttnn.slice(x_in_flat, [0, j * W], [E, (j + 1) * W]) for j in range(n_in)]
     gout_cols = [ttnn.slice(g_out_flat, [0, i * W], [E, (i + 1) * W]) for i in range(n_out)]
+    ccols = ttnn.split(coef, 1, dim=1)                           # nnz [E,1] cols in one dispatch
     g_in = [None] * n_in
     prods = [None] * len(ij)
     for k, (i, j) in enumerate(ij):
-        c = ttnn.slice(coef, [0, k], [E, k + 1])
+        c = ccols[k]
         # fuse the g_in accumulate (g_in[j] += gout_cols[i]*c) into one addcmul (drops a kernel
         # launch + a DRAM round-trip of the partial sum vs multiply-then-add). Bit-identical,
         # mirrors the forward rotate().
