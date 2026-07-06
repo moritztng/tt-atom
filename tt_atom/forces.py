@@ -345,14 +345,24 @@ def energy_bw(bb, node_emb):
 
 def backbone_bw(bb, graph, node_emb):
     """Full reverse pass of the backbone+energy head. Returns a dict of device adjoints
-    (g_x_init, g_wigner, g_wigner_inv, g_envelope) plus per-conv radial adjoints g_rad
-    (list of (conv, g_rad)) for the host radial finish that yields g_x_edge."""
+    (g_x_init, g_wigner, g_wigner_inv, g_envelope, g_x_edge). ``g_x_edge`` is finished on device
+    (radial-MLP backward), so the host only reads back adjoints and drives the geometric autograd."""
+    ttnn = bb.ttnn
     acc = {"rot_fwd": None, "rot_inv": None, "envelope": None, "g_rad": []}
     g = energy_bw(bb, node_emb)
     g = rmsnorm_bw(bb.final_norm, g)
     for blk in reversed(bb.blocks):
         g = block_bw(blk, graph, g, acc)
     acc["x_init"] = g
+    # radial-MLP backward on device: each conv's radial adjoint (at the radial output) is finished
+    # to g wrt the shared invariant edge embedding x_edge on device (hand-written LN/SiLU VJP),
+    # summed across convs. This replaces the host torch.autograd radial finish (~100 ms at N=128)
+    # with a captured device pass -- only a single [E, x_edge] readback remains on host.
+    g_xe = None
+    for conv, g_rad in acc["g_rad"]:
+        gc = conv.rad.bw(g_rad)
+        g_xe = gc if g_xe is None else ttnn.add(g_xe, gc)
+    acc["x_edge"] = g_xe
     return acc
 
 
@@ -412,7 +422,6 @@ def _forces(bb, geo, graph, node_emb, t, pos, strain=None):
     import ttnn
 
     from . import rotation
-    from .geometry import radial_mlp
 
     acc = backbone_bw(bb, graph, node_emb)
     nsph, nred = graph.nsph, graph.nred
@@ -422,11 +431,8 @@ def _forces(bb, geo, graph, node_emb, t, pos, strain=None):
     g_wig = rotation.scatter_coef(ttnn.to_torch(acc["rot_fwd"]).float(), graph.rot_fwd_ij, nred, nsph)
     g_winv = rotation.scatter_coef(ttnn.to_torch(acc["rot_inv"]).float(), graph.rot_inv_ij, nsph, nred)
     g_env = ttnn.to_torch(acc["envelope"]).float().reshape(-1, 1, 1)   # [E,1]->[E,1,1]
-    # host radial finish: radial-output adjoints -> g_x_edge
-    xe = t["x_edge"].detach().clone().requires_grad_(True)
-    for conv, grad in acc["g_rad"]:
-        radial_mlp(xe, geo.w, conv.rad_prefix).backward(ttnn.to_torch(grad).float())
-    g_xe = xe.grad
+    # radial finish is done on device (see backbone_bw); read back the single g_x_edge adjoint
+    g_xe = ttnn.to_torch(acc["x_edge"]).float()
 
     outs = [t["x_init"], t["wigner"], t["wigner_inv"], t["x_edge"], t["edge_envelope"]]
     gouts = [g_xi, g_wig, g_winv, g_xe, g_env]
