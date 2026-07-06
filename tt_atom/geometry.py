@@ -183,6 +183,14 @@ class HostGeometry:
         self.gamma = gamma
         self.Jd = [weights[f"Jd_{l}"] for l in range(self.lmax + 1)]
         self.to_m = to_m
+        # to_m is a permutation matrix (one 1 per row): the m-mapping einsums in _wigner are just a
+        # coefficient reorder. Precompute the permutation so we can index_select instead of a dense
+        # [E,nred,nsph] einsum -- bit-exact, and its autograd is a cheap index_add rather than a
+        # matmul backprop (a large chunk of the per-step host geometric-Jacobian cost at scale).
+        tm = torch.as_tensor(to_m)
+        self._is_perm = bool(((tm == 0) | (tm.abs() == 1)).all()) and bool((tm != 0).sum(1).max() == 1)
+        if self._is_perm:
+            self._to_m_perm = tm.abs().argmax(dim=1).long()   # perm[m] = source coeff index
         # coefficient subselection for mmax<lmax (uma-m): the full (lmax+1)^2 spherical-harmonic
         # coefficients are reduced to the |m|<=mmax m-space. ``to_m`` maps that reduced space
         # (nred = to_m.shape[0]) onto the m-primed layout. None/identity when mmax==lmax (uma-s).
@@ -206,8 +214,13 @@ class HostGeometry:
         if self.coefficient_index is not None:
             wig = wig.index_select(1, self.coefficient_index)      # [E, nred, nsph]
             wig_inv = wig_inv.index_select(2, self.coefficient_index)  # [E, nsph, nred]
-        wig_M = torch.einsum("mk,nkj->nmj", self.to_m, wig)
-        wig_M_inv = torch.einsum("njk,mk->njm", wig_inv, self.to_m)
+        if self._is_perm:
+            # permutation m-mapping: wig_M[n,m,j] = wig[n, perm[m], j]; wig_M_inv[n,j,m] = wig_inv[n,j,perm[m]]
+            wig_M = wig.index_select(1, self._to_m_perm)
+            wig_M_inv = wig_inv.index_select(2, self._to_m_perm)
+        else:
+            wig_M = torch.einsum("mk,nkj->nmj", self.to_m, wig)
+            wig_M_inv = torch.einsum("njk,mk->njm", wig_inv, self.to_m)
         return wig_M, wig_M_inv
 
     def __call__(self, pos, atomic_numbers, edge_index, sys_node_embedding, edge_vec=None,
