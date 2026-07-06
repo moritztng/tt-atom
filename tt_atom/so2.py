@@ -27,7 +27,7 @@ class RadialMLP:
     """Linear -> (LayerNorm -> SiLU) x2 -> Linear. Produces per-m radial weights from the
     invariant edge embedding. Mirrors ``fairchem ... nn/radial.py:RadialMLP``."""
 
-    def __init__(self, weights, prefix, device, wdtype):
+    def __init__(self, weights, prefix, device, wdtype, out_scale=1.0):
         import ttnn
 
         self.ttnn = ttnn
@@ -42,8 +42,14 @@ class RadialMLP:
         self.b3 = _to_dev(weights[f"{prefix}.net.3.bias"], device, wdtype)
         self.ln4w = _to_dev(weights[f"{prefix}.net.4.weight"], device, ttnn.bfloat16)
         self.ln4b = _to_dev(weights[f"{prefix}.net.4.bias"], device, ttnn.bfloat16)
-        self.w6 = _to_dev(weights[f"{prefix}.net.6.weight"].T.contiguous(), device, wdtype)
-        self.b6 = _to_dev(weights[f"{prefix}.net.6.bias"], device, wdtype)
+        # ``out_scale`` folds a downstream constant (e.g. the edge-degree 1/rescale) into the final
+        # linear in fp32 before the bf16 cast, so it lands inside the matmul's fp32 accumulation
+        # instead of a lossy bf16 elementwise multiply (0.2 is not representable in bf16). w6 is the
+        # scale factor applied to a linear's output, so scaling both weight and bias is exact.
+        self.out_scale = float(out_scale)
+        self.w6 = _to_dev(weights[f"{prefix}.net.6.weight"].T.contiguous() * self.out_scale,
+                          device, wdtype)
+        self.b6 = _to_dev(weights[f"{prefix}.net.6.bias"] * self.out_scale, device, wdtype)
         # broadcast copies of the LN scales for the hand-written backward ([1, n])
         n1 = weights[f"{prefix}.net.1.weight"].shape[0]
         n4 = weights[f"{prefix}.net.4.weight"].shape[0]

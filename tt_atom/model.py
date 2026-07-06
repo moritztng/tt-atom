@@ -141,6 +141,17 @@ class Backbone:
         ]
         self.final_norm = RMSNormSH(weights, "norm", device,
                                     lmax=cfg["lmax"], num_channels=self.C)
+        # optional on-device edge-degree embedding (node init) — moves the largest per-step host
+        # cost (radial-MLP fwd+bw over E edges) onto the device inside the trace. When enabled the
+        # ``x_init`` operand passed to node_embedding is instead the CONSTANT l0 init and the full
+        # node init is computed on device from the graph's geometric terms. See tt_atom/edge_degree.
+        from .device import device_ede
+        if device_ede():
+            from .edge_degree import EdgeDegreeEmbedding
+            self.edge_degree = EdgeDegreeEmbedding(weights, device, cfg,
+                                                   rescale=cfg.get("edge_degree_rescale", 5.0))
+        else:
+            self.edge_degree = None
         # energy head: Linear-SiLU-Linear-SiLU-Linear on the l=0 channel
         self.eh_w = [_to_dev(weights[f"energy_block.{i}.weight"].T.contiguous(), device, wdtype)
                      for i in (0, 2, 4)]
@@ -148,7 +159,12 @@ class Backbone:
                      for i in (0, 2, 4)]
 
     def node_embedding(self, x_init, graph, sys_node_embedding):
-        """Run the backbone; returns device node embedding ``[N, nsph, C]``."""
+        """Run the backbone; returns device node embedding ``[N, nsph, C]``.
+
+        When the device edge-degree embedding is active, ``x_init`` is the constant l0 node init
+        and the full node init is built on device from the graph's geometric terms."""
+        if self.edge_degree is not None:
+            x_init = self.edge_degree(graph, x_init)
         x = x_init
         for blk in self.blocks:
             x = blk(x, graph, sys_node_embedding)

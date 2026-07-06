@@ -370,6 +370,13 @@ def backbone_bw(bb, graph, node_emb):
     for blk in reversed(bb.blocks):
         g = block_bw(blk, graph, g, acc)
     acc["x_init"] = g
+    # device edge-degree embedding backward: the node adjoint ``g`` is backpropped through the
+    # on-device node init (scatter -> rotate-back -> envelope -> radial MLP), accumulating the
+    # geometric adjoints (rot_inv, envelope) and the radial adjoint into ``acc``. The host then
+    # never differentiates x_init -- only wigner_inv / x_edge / envelope (much cheaper).
+    if getattr(bb, "edge_degree", None) is not None:
+        from .edge_degree import edge_degree_bw
+        edge_degree_bw(bb.edge_degree, graph, g, acc)
     # radial-MLP backward on device: each conv's radial adjoint (at the radial output) is finished
     # to g wrt the shared invariant edge embedding x_edge on device (hand-written LN/SiLU VJP),
     # summed across convs. This replaces the host torch.autograd radial finish (~100 ms at N=128)
@@ -419,7 +426,10 @@ def _forward(bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding, edge_
                          edge_envelope=t["edge_envelope"].detach(), num_nodes=N)
     se3 = ttnn.from_torch(sys_node_embedding.reshape(N, 1, C), dtype=ttnn.bfloat16,
                           layout=ttnn.TILE_LAYOUT, device=device)
-    x_init = ttnn.from_torch(t["x_init"].detach(), dtype=ttnn.bfloat16,
+    # with the device edge-degree embedding on, the backbone builds x_init on device and this
+    # operand is the constant l0 node init; otherwise it is the host-computed full x_init.
+    init = t["l0"] if bb.edge_degree is not None else t["x_init"]
+    x_init = ttnn.from_torch(init.detach(), dtype=ttnn.bfloat16,
                              layout=ttnn.TILE_LAYOUT, device=device)
     node_emb = bb.node_embedding(x_init, graph, se3)
     return node_emb, graph, t, pos, strain
@@ -441,7 +451,10 @@ def _forces(bb, geo, graph, node_emb, t, pos, strain=None):
 
     acc = backbone_bw(bb, graph, node_emb)
     nsph, nred = graph.nsph, graph.nred
-    g_xi = ttnn.to_torch(acc["x_init"]).float()
+    device_ede = bb.edge_degree is not None
+    # x_init adjoint is only differentiated on host when x_init is a host term; with the device
+    # edge-degree embedding it is consumed on device (its geometric adjoints land in acc below).
+    g_xi = None if device_ede else ttnn.to_torch(acc["x_init"]).float()
     # scatter packed rotation-coefficient adjoints back to dense for the host dW/dpos autograd.
     # wig_M is [E, nred, nsph] (fwd), wig_M_inv is [E, nsph, nred] (inv) — rectangular for uma-m.
     g_wig = rotation.scatter_coef(ttnn.to_torch(acc["rot_fwd"]).float(), graph.rot_fwd_ij, nred, nsph)
@@ -456,8 +469,11 @@ def _forces(bb, geo, graph, node_emb, t, pos, strain=None):
     g_xe = torch.zeros(tuple(gx.shape), dtype=torch.float32)
     g_xe[:, :ng] = gx[:, :ng].float()
 
-    outs = [t["x_init"], t["wigner"], t["wigner_inv"], t["x_edge"], t["edge_envelope"]]
-    gouts = [g_xi, g_wig, g_winv, g_xe, g_env]
+    outs = [t["wigner"], t["wigner_inv"], t["x_edge"], t["edge_envelope"]]
+    gouts = [g_wig, g_winv, g_xe, g_env]
+    if not device_ede:
+        outs = [t["x_init"]] + outs
+        gouts = [g_xi] + gouts
     inputs = [pos] if strain is None else [pos, strain]
     grads = torch.autograd.grad(outs, inputs, grad_outputs=gouts)
     if strain is None:
