@@ -20,10 +20,16 @@ from __future__ import annotations
 import torch
 
 
-def _mm(ttnn, g, W, kcfg):
+def _mm(ttnn, g, W, kcfg, memory_config=None):
     """grad wrt x of ``y = x @ W`` (W stored [in,out]): ``g @ W^T``. ``transpose_b`` folds the
     transpose into the matmul (bit-identical), dropping an explicit transpose op per call — the
-    backward makes ~40 of these on constant weights, all in the captured trace."""
+    backward makes ~40 of these on constant weights, all in the captured trace.
+
+    ``memory_config`` lets the BW-bound grid_bw chain keep its transpose-matmul outputs
+    L1-resident instead of round-tripping DRAM (same residency win as the forward grid module)."""
+    if memory_config is not None:
+        return ttnn.matmul(g, W, transpose_b=True, compute_kernel_config=kcfg,
+                           memory_config=memory_config)
     return ttnn.matmul(g, W, transpose_b=True, compute_kernel_config=kcfg)
 
 
@@ -38,18 +44,12 @@ def silu_bw(ttnn, g, x):
 
 
 def rmsnorm_bw(norm, g_out):
-    """VJP of ``RMSNormSH``. ``norm`` is the forward module (holds bdw, aw, ab, eps)."""
+    """VJP of ``RMSNormSH``. ``norm`` is the forward module (holds bdw, aw, ab, eps).
+    Reuses the centered input ``xc`` and rsqrt scale ``inv`` cached on the forward."""
     ttnn = norm.ttnn
-    x = norm._cache_x                                   # input saved on forward
-    N, nsph, C = x.shape
-    # recompute forward internals
-    l0 = ttnn.slice(x, [0, 0, 0], [N, 1, C])
-    l0c = ttnn.subtract(l0, ttnn.mean(l0, dim=2, keepdim=True))
-    rest = ttnn.slice(x, [0, 1, 0], [N, nsph, C])
-    xc = ttnn.concat([l0c, rest], dim=1)
-    fn2 = ttnn.sum(ttnn.multiply(ttnn.multiply(xc, xc), norm.bdw), dim=1, keepdim=True)
-    ms = ttnn.mean(fn2, dim=2, keepdim=True)            # [N,1,1]
-    inv = ttnn.rsqrt(ttnn.add(ms, norm.eps))            # [N,1,1]
+    xc = norm._cache_xc                                 # centered input saved on forward
+    inv = norm._cache_inv                               # [N,1,1] rsqrt scale saved on forward
+    N, nsph, C = xc.shape
 
     # drop the affine bias on l0 (additive -> identity for grad)
     s = ttnn.multiply(inv, norm.aw)                     # [N,nsph,C] via broadcast
@@ -77,10 +77,8 @@ def gate_bw(gate, g_out):
     ttnn = gate.ttnn
     gating = gate._cache_gating                         # pre-sigmoid [E, lmax*H]
     x = gate._cache_x                                   # pre-gate input flat [E, nsph*H]
+    gate_exp = gate._cache_gate                         # expanded sigmoid gate [E,(nsph-1)*H] (cached fwd)
     E, H, lmax, ei = x.shape[0], gate.H, gate.lmax, gate.expand_index
-
-    sig = ttnn.sigmoid(gating)
-    gate_exp = ttnn.concat([ttnn.slice(sig, [0, i * H], [E, (i + 1) * H]) for i in ei], dim=1)
 
     g_scalar = ttnn.slice(g_out, [0, 0], [E, H])
     g_vec = ttnn.slice(g_out, [0, H], [E, x.shape[1]])
@@ -179,21 +177,25 @@ def so2_bw(conv, g_out, g_extra=None):
 def grid_bw(grid, g_out):
     ttnn = grid.ttnn
     kcfg = grid.kcfg
+    N = g_out.shape[0]
+    from .device import l1_if_fits, L1_NODE_BUDGET   # BW-bound [N,npts,C] chain -> L1 while it fits
+    _npts_pad = ((grid.npts + 31) // 32) * 32         # tile-padded point dim (3D tensor)
+    L1 = l1_if_fits(ttnn, N, _npts_pad * g_out.shape[2], budget=L1_NODE_BUDGET)
     a1, a2 = grid._cache_a1, grid._cache_a2             # pre-silu activations [N,npts,H]
     # from_grid backward: o = transpose(gt @ fg); gt = transpose(g_mlp_out)
     # forward: gt=transpose(mlp,1,2); o=gt@fg; out=transpose(o,1,2)
-    g_o = ttnn.transpose(g_out, 1, 2)                   # [N,C,nsph]
-    g_gt = _mm(ttnn, g_o, grid.fg, kcfg)                # [N,C,npts]
-    g_mlp = ttnn.transpose(g_gt, 1, 2)                  # [N,npts,C]
+    g_o = ttnn.transpose(g_out, 1, 2, memory_config=L1)  # [N,C,nsph]
+    g_gt = _mm(ttnn, g_o, grid.fg, kcfg, memory_config=L1)  # [N,C,npts]
+    g_mlp = ttnn.transpose(g_gt, 1, 2, memory_config=L1)  # [N,npts,C]
     # mlp backward (no bias): a3 = s2@W4 ; s2=silu(a2); a2=s1@W2; s1=silu(a1); a1=g0@W0
-    g_s2 = _mm(ttnn, g_mlp, grid.w4, kcfg)
+    g_s2 = _mm(ttnn, g_mlp, grid.w4, kcfg, memory_config=L1)
     g_a2 = silu_bw(ttnn, g_s2, a2)
-    g_s1 = _mm(ttnn, g_a2, grid.w2, kcfg)
+    g_s1 = _mm(ttnn, g_a2, grid.w2, kcfg, memory_config=L1)
     g_a1 = silu_bw(ttnn, g_s1, a1)
-    g_g0 = _mm(ttnn, g_a1, grid.w0, kcfg)               # [N,npts,C]
+    g_g0 = _mm(ttnn, g_a1, grid.w0, kcfg, memory_config=L1)  # [N,npts,C]
     # to_grid backward: g0 = transpose(xt @ tg_T); xt=transpose(x,1,2)
-    g_g0t = ttnn.transpose(g_g0, 1, 2)                  # [N,C,npts]
-    g_xt = _mm(ttnn, g_g0t, grid.tg_T, kcfg)            # [N,C,nsph]
+    g_g0t = ttnn.transpose(g_g0, 1, 2, memory_config=L1)  # [N,C,npts]
+    g_xt = _mm(ttnn, g_g0t, grid.tg_T, kcfg)            # [N,C,nsph] -> DRAM (feeds residual add)
     return ttnn.transpose(g_xt, 1, 2)                   # [N,nsph,C]
 
 

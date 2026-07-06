@@ -40,6 +40,7 @@ class GateActivation:
         # gather a gate row (H channels) per vector coefficient: lmax distinct rows -> slice+concat
         gate = ttnn.concat([ttnn.slice(g, [0, i * H], [E, (i + 1) * H])
                             for i in self.expand_index], dim=1)  # [E, (nsph-1)*H]
+        self._cache_gate = gate                                  # expanded gate for the VJP (fewer bw ops)
         scalar = ttnn.silu(ttnn.slice(x, [0, 0], [E, H]))        # l=0 coeff
         vector = ttnn.multiply(ttnn.slice(x, [0, H], [E, x.shape[1]]), gate)
         return ttnn.concat([scalar, vector], dim=1)
