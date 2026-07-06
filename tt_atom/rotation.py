@@ -15,7 +15,65 @@ into the flat SO(2) pipeline with no [E,9,C] tile-padding.
 """
 from __future__ import annotations
 
+import os
+
 import torch
+
+# Route the per-edge rotation through the custom fused ttnn kernel
+# (ttnn.experimental.fused_rotate) instead of the nnz-way addcmul MAC. One kernel launch, one
+# DRAM read of x + one write of out; ~14x faster than the MAC form in isolation. Requires the
+# source-ttnn build that has the op (see custom_kernels/). Off by default (env-gated).
+_FUSED = os.environ.get("TT_ATOM_FUSED_ROTATE") == "1"
+# separate backward toggle (defaults to _FUSED); lets us A/B forward-only vs forward+backward.
+_FUSED_BW = _FUSED
+# id(coef ttnn tensor) -> (coef_ref, coef_exp_dev, deg, ks, js). Holds the coef reference so its
+# python id cannot be recycled onto a stale entry. Cleared when it grows past a step's worth.
+_FUSED_CACHE: dict = {}
+
+
+def _fused_op(ttnn):
+    return ttnn._ttnn.operations.experimental.fused_rotate
+
+
+_GROUP_CACHE: dict = {}
+
+
+def _coef_exp(ttnn, coef):
+    """Expand compact [E, nnz] device coefficients to [E, nnz*32] ON DEVICE (each nonzero's
+    coef broadcast across its 32-column tile). Cached by id(coef); holds the coef reference so
+    its python id cannot be recycled onto a stale entry."""
+    if os.environ.get("TT_ATOM_FUSED_NOCACHE") == "1":
+        return ttnn.repeat_interleave(coef, 32, dim=1)
+    key = id(coef)
+    b = _FUSED_CACHE.get(key)
+    if b is not None and b[0] is coef:
+        return b[1]
+    ce_dev = ttnn.repeat_interleave(coef, 32, dim=1)         # [E, nnz*32]
+    if len(_FUSED_CACHE) > 64:
+        _FUSED_CACHE.clear()
+    _FUSED_CACHE[key] = (coef, ce_dev)
+    return ce_dev
+
+
+def _group(ij, nblocks, by):
+    """Group the (i,j) nonzeros by output block for the fused kernel. ``by='i'`` (forward:
+    output block = i, fan-in over j) or ``by='j'`` (backward g_in: output block = j, fan-in
+    over i). Returns (deg[nblocks], ks[nnz] coef-tile index, js[nnz] the *other* index)."""
+    key = (id(ij), nblocks, by)
+    g = _GROUP_CACHE.get(key)
+    if g is not None:
+        return g
+    deg = [0] * nblocks
+    ks: list = []
+    other: list = []
+    for b in range(nblocks):
+        for k, (i, j) in enumerate(ij):
+            blk, oth = (i, j) if by == "i" else (j, i)
+            if blk == b:
+                ks.append(k); other.append(oth); deg[b] += 1
+    g = (deg, ks, other)
+    _GROUP_CACHE[key] = g
+    return g
 
 
 # Cache of block-diagonal ones matrices [nnz*W, nnz] used to turn the rotate_bw coefficient-adjoint
@@ -66,6 +124,10 @@ def rotate(ttnn, x_flat, ij, coef, n_in, W, device, n_out=None):
     ``n_out`` defaults to ``n_in`` (square rotation, uma-s); pass it for the rectangular
     reduced-m-space rotation (uma-m)."""
     n_out = n_in if n_out is None else n_out
+    if _FUSED:
+        ce_dev = _coef_exp(ttnn, coef)
+        deg, ks, js = _group(ij, n_out, "i")
+        return _fused_op(ttnn)(x_flat, ce_dev, n_in, n_out, W, deg, ks, js)
     E = x_flat.shape[0]
     cols = ttnn.split(x_flat, W, dim=1)                       # n_in [E,W] blocks in one dispatch
     # split the [E,nnz] coefficients into nnz [E,1] broadcast columns in ONE dispatch instead of
@@ -103,6 +165,20 @@ def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None
     n_out = n_in if n_out is None else n_out
     E = x_in_flat.shape[0]
     from .device import compute_kernel_config
+    if _FUSED_BW:
+        # g_in[j] = sum_{(i,j,k)} coef_k * gout_i is the SAME fused rotation with the pattern
+        # grouped by input block j (fan-in over the output rows i). The coefficient adjoint gc
+        # (below) still needs the per-nonzero products, so those + the ones_bd GEMM are unchanged.
+        ce_dev = _coef_exp(ttnn, coef)
+        deg, ks, is_ = _group(ij, n_in, "j")
+        g_in_flat = _fused_op(ttnn)(g_out_flat, ce_dev, n_out, n_in, W, deg, ks, is_)
+        in_cols = ttnn.split(x_in_flat, W, dim=1)
+        gout_cols = ttnn.split(g_out_flat, W, dim=1)
+        prods = [ttnn.multiply(gout_cols[i], in_cols[j]) for (i, j) in ij]
+        P = ttnn.concat(prods, dim=1)                            # [E, nnz*W]
+        gc = ttnn.matmul(P, _ones_bd(ttnn, device, len(ij), W),
+                         compute_kernel_config=compute_kernel_config())
+        return g_in_flat, gc
     in_cols = ttnn.split(x_in_flat, W, dim=1)                    # n_in [E,W] blocks in one dispatch
     gout_cols = ttnn.split(g_out_flat, W, dim=1)                 # n_out [E,W] blocks in one dispatch
     ccols = ttnn.split(coef, 1, dim=1)                           # nnz [E,1] cols in one dispatch

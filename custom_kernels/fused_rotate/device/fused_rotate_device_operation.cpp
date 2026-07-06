@@ -55,13 +55,31 @@ FusedRotateDeviceOperation::tensor_return_value_t FusedRotateDeviceOperation::cr
 
 ttsl::hash::hash_t FusedRotateDeviceOperation::compute_program_hash(
     const operation_attributes_t& attrs, const tensor_args_t& inputs) {
-    // Program structure depends only on the shapes (n_in, n_out, W, nnz) and input tensor specs;
-    // the sparsity pattern (deg/ks/js) is passed as runtime args, so it does not change the program.
+    // The sparsity pattern (deg/ks/js) is set as RUNTIME args in create() but NOT refreshed in
+    // override_runtime_arguments, so two calls that share shapes but differ in pattern (e.g. the
+    // forward rotation grouped by output i vs. the backward g_in grouped by input j -- identical
+    // [n_in,n_out,W,nnz] for a square rotation) MUST NOT share a cached program. Fold the pattern
+    // into the hash so each distinct pattern gets its own program.
+    uint64_t ph = 1469598103934665603ULL;  // FNV-1a
+    auto mix = [&](uint32_t v) {
+        ph = (ph ^ v) * 1099511628211ULL;
+    };
+    for (auto v : attrs.deg) {
+        mix(v);
+    }
+    for (auto v : attrs.ks) {
+        mix(v);
+    }
+    for (auto v : attrs.js) {
+        mix(v);
+    }
     return tt::tt_metal::operation::hash_operation<FusedRotateDeviceOperation>(
         attrs.n_in,
         attrs.n_out,
         attrs.W,
         attrs.nnz,
+        static_cast<uint32_t>(ph),
+        static_cast<uint32_t>(ph >> 32),
         inputs.x_flat.dtype(),
         inputs.x_flat.memory_config(),
         inputs.x_flat.padded_shape(),
