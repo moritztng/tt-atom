@@ -16,6 +16,33 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 
+# Budgets (bytes) for a single L1-resident intermediate. The L1-residency perf wins (grid, so2,
+# norm chains) keep intermediates on-chip, but L1 is small (~1.4 MB/bank x 130) and op circular
+# buffers grow with problem size, so at large N/E they consume nearly all L1 and an L1-resident
+# activation OOMs (or fails trace capture with "writes not supported"). Residency is gated
+# per-tensor: L1 only when the estimated tile-padded byte size fits the relevant budget, else
+# DRAM-interleaved (the pre-optimization path -- correct at any size, just no L1 speedup).
+#
+# Two budgets because the crossovers differ (empirically verified on Blackhole p150):
+#   * SO2 edge tensors [E, nsph*Cin]: L1 fits at E<=2234 (N=128), fails at E=4834 (N=250).
+#     12 MB -> edge cap ~2600 (see SO2Convolution.l1_max_edges).
+#   * GRID/NORM node tensors: pass the TRUE tile-padded feature width (the 3D [N,nsph,C]/[N,npts,C]
+#     tensors pad the coeff dim up to a tile: nsph 9->32, npts 42->64 -- a 1.5-3.5x blowup a naive
+#     nsph*C estimate misses). Verified real-byte crossovers: grid L1 fits at N=432 (~7MB), fails
+#     at N=686 (~11MB); norm fits at N=686 (~5.6MB), fails at N=1024 (~8.4MB). 8 MB covers both.
+L1_RESIDENCY_BUDGET = 12_000_000        # SO(2) edge tensors [E, nsph*Cin] (flat, no coeff padding)
+L1_NODE_BUDGET = 8_000_000              # grid / norm node tensors (pass tile-padded feature width)
+
+
+def l1_if_fits(ttnn, rows, width, *, dtype_bytes=2, budget=L1_RESIDENCY_BUDGET):
+    """Return an L1 memory config if a tile-padded ``[rows, width]`` tensor of ``dtype_bytes``
+    fits the per-tensor L1 residency budget, else DRAM-interleaved. Guards the residency wins so
+    large systems degrade gracefully to DRAM instead of OOMing the trace."""
+    rp = ((rows + 31) // 32) * 32
+    wp = ((width + 31) // 32) * 32
+    return ttnn.L1_MEMORY_CONFIG if rp * wp * dtype_bytes <= budget else ttnn.DRAM_MEMORY_CONFIG
+
+
 def compute_kernel_config(fast: bool = False):
     """The TT-Atom matmul/compute numerics policy.
 
