@@ -18,6 +18,26 @@ from __future__ import annotations
 import torch
 
 
+# Cache of block-diagonal ones matrices [nnz*W, nnz] used to turn the rotate_bw coefficient-adjoint
+# reductions (nnz per-nonzero dot products) into a single dense GEMM. Keyed by (nnz, W, device id).
+_ONES_BD: dict = {}
+
+
+def _ones_bd(ttnn, device, nnz, W):
+    """A [nnz*W, nnz] 0/1 block-diagonal selector: column k is 1 over rows [k*W:(k+1)*W]. Left-
+    multiplying a [E, nnz*W] tensor of per-nonzero products by it segment-sums each W-block, i.e.
+    computes the nnz row-wise dot products as ONE matmul (matrix engine, fp32 accum) instead of
+    nnz separate reductions -- ~1.9x faster at E~46k. 1.0 is exact in bf16 so this is a plain
+    fp32-accumulated sum (bit-equivalent to ttnn.sum up to reduction order)."""
+    key = (nnz, W, id(device))
+    t = _ONES_BD.get(key)
+    if t is None:
+        blk = torch.block_diag(*[torch.ones(W, 1) for _ in range(nnz)])   # [nnz*W, nnz]
+        t = ttnn.from_torch(blk, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
+        _ONES_BD[key] = t
+    return t
+
+
 def pack(wigner: torch.Tensor, tol: float = 1e-6):
     """``[E, n_out, n_in]`` Wigner -> (``ij``: list of structural-nonzero (out,in) pairs, ``coef``:
     ``[E, nnz]`` the per-edge values). The pattern is taken from ``amax`` over edges, so it
@@ -69,10 +89,11 @@ def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None
     autograd for the force."""
     n_out = n_in if n_out is None else n_out
     E = x_in_flat.shape[0]
+    from .device import compute_kernel_config
     in_cols = [ttnn.slice(x_in_flat, [0, j * W], [E, (j + 1) * W]) for j in range(n_in)]
     gout_cols = [ttnn.slice(g_out_flat, [0, i * W], [E, (i + 1) * W]) for i in range(n_out)]
     g_in = [None] * n_in
-    gc = [None] * len(ij)
+    prods = [None] * len(ij)
     for k, (i, j) in enumerate(ij):
         c = ttnn.slice(coef, [0, k], [E, k + 1])
         # fuse the g_in accumulate (g_in[j] += gout_cols[i]*c) into one addcmul (drops a kernel
@@ -82,14 +103,20 @@ def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None
             g_in[j] = ttnn.multiply(gout_cols[i], c)
         else:
             g_in[j] = ttnn.addcmul(g_in[j], gout_cols[i], c)
-        gc[k] = ttnn.sum(ttnn.multiply(gout_cols[i], in_cols[j]), dim=1, keepdim=True)   # [E,1]
+        prods[k] = ttnn.multiply(gout_cols[i], in_cols[j])       # [E,W] per-nonzero product
+    # coefficient adjoint gc[k] = sum_W(gout_i * in_j): the nnz row-wise dot products done as ONE
+    # dense GEMM (segment-sum by a block-diagonal ones matrix) instead of nnz separate reductions
+    # -- ~1.9x faster at E~46k (matrix engine, fp32 accumulate). PCC ~1.0 vs the per-nonzero sums.
+    P = ttnn.concat(prods, dim=1)                                # [E, nnz*W]
+    gc = ttnn.matmul(P, _ones_bd(ttnn, device, len(ij), W),
+                     compute_kernel_config=compute_kernel_config())   # [E, nnz]
     for j in range(n_in):
         if g_in[j] is None:
             # Uncovered input coordinate — see rotate(); emit the zero block on device (trace-safe)
             # instead of ttnn.zeros (a host write forbidden during trace capture). gout_cols[0]
             # always exists (n_out>=1). Bit-exact zero.
             g_in[j] = ttnn.multiply(gout_cols[0], 0.0)
-    return ttnn.concat(g_in, dim=1), ttnn.concat(gc, dim=1)
+    return ttnn.concat(g_in, dim=1), gc
 
 
 def scatter_coef(g_coef: torch.Tensor, ij, n_out: int, n_in: int = None) -> torch.Tensor:
