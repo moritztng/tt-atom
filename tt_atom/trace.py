@@ -22,7 +22,6 @@ from __future__ import annotations
 import torch
 
 from . import rotation
-from .geometry import radial_mlp
 from .model import GraphContext
 
 
@@ -124,10 +123,8 @@ class TracedEngine:
         g_winv = rotation.scatter_coef(ttnn.to_torch(acc["rot_inv"]).float(),
                                        self.graph.rot_inv_ij, nsph)
         g_env = ttnn.to_torch(acc["envelope"]).float().reshape(-1, 1, 1)
-        xe = t["x_edge"].detach().clone().requires_grad_(True)
-        for conv, grad in acc["g_rad"]:
-            radial_mlp(xe, self.geo.w, conv.rad_prefix).backward(ttnn.to_torch(grad).float())
-        g_xe = xe.grad
+        # radial finish is done on device inside the captured trace (backbone_bw); read it back
+        g_xe = ttnn.to_torch(acc["x_edge"]).float()
         g_pos = torch.autograd.grad(
             [t["x_init"], t["wigner"], t["wigner_inv"], t["x_edge"], t["edge_envelope"]],
             pos, grad_outputs=[g_xi, g_wig, g_winv, g_xe, g_env])[0]

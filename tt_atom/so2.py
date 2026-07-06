@@ -32,6 +32,7 @@ class RadialMLP:
 
         self.ttnn = ttnn
         self.device = device
+        self.eps = 1e-5
         # net.0 Linear, net.1 LayerNorm, net.3 Linear, net.4 LayerNorm, net.6 Linear
         self.w0 = _to_dev(weights[f"{prefix}.net.0.weight"].T.contiguous(), device, wdtype)
         self.b0 = _to_dev(weights[f"{prefix}.net.0.bias"], device, wdtype)
@@ -43,17 +44,54 @@ class RadialMLP:
         self.ln4b = _to_dev(weights[f"{prefix}.net.4.bias"], device, ttnn.bfloat16)
         self.w6 = _to_dev(weights[f"{prefix}.net.6.weight"].T.contiguous(), device, wdtype)
         self.b6 = _to_dev(weights[f"{prefix}.net.6.bias"], device, wdtype)
+        # broadcast copies of the LN scales for the hand-written backward ([1, n])
+        n1 = weights[f"{prefix}.net.1.weight"].shape[0]
+        n4 = weights[f"{prefix}.net.4.weight"].shape[0]
+        self.ln1w_b = _to_dev(weights[f"{prefix}.net.1.weight"].reshape(1, n1), device, ttnn.bfloat16)
+        self.ln4w_b = _to_dev(weights[f"{prefix}.net.4.weight"].reshape(1, n4), device, ttnn.bfloat16)
         self.kcfg = compute_kernel_config()
 
     def __call__(self, x_edge):
         ttnn = self.ttnn
-        x = ttnn.linear(x_edge, self.w0, bias=self.b0, compute_kernel_config=self.kcfg)
-        x = ttnn.layer_norm(x, weight=self.ln1w, bias=self.ln1b, epsilon=1e-5)
-        x = ttnn.silu(x)
-        x = ttnn.linear(x, self.w3, bias=self.b3, compute_kernel_config=self.kcfg)
-        x = ttnn.layer_norm(x, weight=self.ln4w, bias=self.ln4b, epsilon=1e-5)
-        x = ttnn.silu(x)
-        return ttnn.linear(x, self.w6, bias=self.b6, compute_kernel_config=self.kcfg)
+        a0 = ttnn.linear(x_edge, self.w0, bias=self.b0, compute_kernel_config=self.kcfg)
+        n1 = ttnn.layer_norm(a0, weight=self.ln1w, bias=self.ln1b, epsilon=self.eps)
+        s1 = ttnn.silu(n1)
+        a3 = ttnn.linear(s1, self.w3, bias=self.b3, compute_kernel_config=self.kcfg)
+        n4 = ttnn.layer_norm(a3, weight=self.ln4w, bias=self.ln4b, epsilon=self.eps)
+        s2 = ttnn.silu(n4)
+        # cache pre-norm / pre-silu activations for the analytic-force VJP (device radial backward)
+        self._cache = (a0, n1, a3, n4)
+        return ttnn.linear(s2, self.w6, bias=self.b6, compute_kernel_config=self.kcfg)
+
+    def _ln_bw(self, g_out, x, w_b):
+        """VJP of ``F.layer_norm`` (grad wrt the LN input ``x``, affine scale folded in).
+        ``x`` is the cached forward input; ``w_b`` the LN scale as [1, n] for broadcast."""
+        ttnn = self.ttnn
+        mu = ttnn.mean(x, dim=1, keepdim=True)
+        xc = ttnn.subtract(x, mu)
+        var = ttnn.mean(ttnn.multiply(xc, xc), dim=1, keepdim=True)
+        rstd = ttnn.rsqrt(ttnn.add(var, self.eps))
+        y = ttnn.multiply(xc, rstd)                       # normalized activation
+        g_y = ttnn.multiply(g_out, w_b)                   # broadcast LN scale over rows
+        m1 = ttnn.mean(g_y, dim=1, keepdim=True)
+        m2 = ttnn.mean(ttnn.multiply(g_y, y), dim=1, keepdim=True)
+        inner = ttnn.subtract(ttnn.subtract(g_y, m1), ttnn.multiply(y, m2))
+        return ttnn.multiply(rstd, inner)
+
+    def bw(self, g_out):
+        """Adjoint of the radial MLP: given ``g_out`` at the output, return g wrt ``x_edge``.
+        Mirrors :meth:`__call__` on device (transpose-matmuls + hand-written LN/SiLU backward),
+        replacing the host ``torch.autograd`` radial finish (~100 ms at N=128 on the force path)."""
+        ttnn = self.ttnn
+        from .forces import silu_bw, _mm
+        a0, n1, a3, n4 = self._cache
+        g_s2 = _mm(ttnn, g_out, self.w6, self.kcfg)        # [E, hidden]
+        g_n4 = silu_bw(ttnn, g_s2, n4)
+        g_a3 = self._ln_bw(g_n4, a3, self.ln4w_b)
+        g_s1 = _mm(ttnn, g_a3, self.w3, self.kcfg)
+        g_n1 = silu_bw(ttnn, g_s1, n1)
+        g_a0 = self._ln_bw(g_n1, a0, self.ln1w_b)
+        return _mm(ttnn, g_a0, self.w0, self.kcfg)         # [E, x_edge dim]
 
 
 class SO2Convolution:
