@@ -64,5 +64,11 @@ class Edgewise:
                                  dev, n_out=nsph)
         self._cache_mcat, self._cache_mso2, self._cache_menv = m_cat, m_so2, m_env
 
-        out = ttnn.matmul(graph.scatter, m_back, compute_kernel_config=self.kcfg)   # [N, 9C]
+        # scatter-add messages onto target nodes: dense one-hot matmul (small N) or linear O(E)
+        # gather+reduce (large N). See GraphContext.linear_scatter / tt_atom/scatter.py.
+        if graph.linear_scatter:
+            from . import scatter
+            out = scatter.segment_sum(ttnn, m_back, graph.tgt_gather, graph.Dmax_t, N, nsph * C)
+        else:
+            out = ttnn.matmul(graph.scatter, m_back, compute_kernel_config=self.kcfg)   # [N, 9C]
         return ttnn.reshape(out, (N, nsph, C))
