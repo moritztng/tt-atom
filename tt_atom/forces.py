@@ -114,15 +114,8 @@ def gate_bw(gate, g_out):
     g_x = ttnn.concat([silu_bw(ttnn, g_scalar, x_scalar), ttnn.multiply(g_vec, gate_exp)], dim=1)
 
     g_gate_exp = ttnn.multiply(g_vec, x_vec)            # [E, (nsph-1)*H]
-    # segment-sum the H-blocks back to [E, lmax*H] over expand_index
-    rows = []
-    for l in range(lmax):
-        pos = [k for k, e in enumerate(ei) if e == l]
-        acc = ttnn.slice(g_gate_exp, [0, pos[0] * H], [E, (pos[0] + 1) * H])
-        for k in pos[1:]:
-            acc = ttnn.add(acc, ttnn.slice(g_gate_exp, [0, k * H], [E, (k + 1) * H]))
-        rows.append(acc)
-    g_sig = ttnn.concat(rows, dim=1)                    # [E, lmax*H]
+    # segment-sum the H-blocks back to [E, lmax*H]: transpose of the fwd expand matmul (one op)
+    g_sig = _mm(ttnn, g_gate_exp, gate.expand_w, gate.kcfg)   # [E, lmax*H]
     g_gating = ttnn.sigmoid_bw(g_sig, gating)[0]
     return g_gating, g_x
 
