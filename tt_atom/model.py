@@ -104,9 +104,30 @@ class GraphContext:
         # only the flat [E,1] envelope is consumed on device (edgewise / edge-degree broadcast); the
         # 3D [E,1,1] form tile-pads to [E,32,32] (a ~64 ms/step re-tilize on the trace refresh) and
         # is read by nothing, so it is not materialised.
-        # envelope multiplies the bf8 so2 output in bf8-edge mode -> store bf8 so dtypes match
-        env_dtype = ttnn.bfloat8_b if _b8 else wdtype
-        self.edge_envelope_f = _to_dev(edge_envelope.reshape(E, 1), device, env_dtype)  # flat bcast
+        # Store ROW_MAJOR bf16 (like x_edge / rot coefs): a TILE (esp. bf8) host from_torch of the
+        # [E,1] envelope on the per-step refresh does a pathological host tilize + bf8 shared-exp
+        # pack (~7.8 ms/step for bf8, the single largest refresh cost). RM upload is ~0.1 ms; the
+        # forward tilizes (and, in bf8-edge mode, casts to bf8) ON DEVICE inside the trace via
+        # ``materialize_envelope`` — moving the whole cost to a tiny device op on the [E,1] tensor.
+        self._env_dtype = ttnn.bfloat8_b if _b8 else wdtype
+        self.edge_envelope_rm = _to_dev(edge_envelope.reshape(E, 1), device, wdtype,
+                                        ttnn.ROW_MAJOR_LAYOUT)
+        # materialize once here so the eager / per-module test path (which calls edge_wise without
+        # going through node_embedding) has a valid buffer; the traced forward re-materializes at
+        # its start so the tilize op reads the per-step-refreshed RM buffer (see node_embedding).
+        self.materialize_envelope()
+
+    def materialize_envelope(self):
+        """Tilize (and, in bf8-edge mode, cast to bf8) the RM envelope on device. Called once at
+        the start of the backbone forward; the resulting device tensor is reused by every edgewise
+        block, the edge-degree init, and the backward. Captured in the trace so the per-step
+        refresh only writes the cheap RM buffer."""
+        import ttnn
+        ev = ttnn.to_layout(self.edge_envelope_rm, ttnn.TILE_LAYOUT)
+        if self._env_dtype == ttnn.bfloat8_b:
+            ev = ttnn.typecast(ev, ttnn.bfloat8_b)
+        self.edge_envelope_f = ev
+        return ev
 
 
 class _Block:
@@ -186,6 +207,7 @@ class Backbone:
 
         When the device edge-degree embedding is active, ``x_init`` is the constant l0 node init
         and the full node init is built on device from the graph's geometric terms."""
+        graph.materialize_envelope()   # tilize (+bf8 cast) the RM envelope on device, once per fwd
         if self.edge_degree is not None:
             x_init = self.edge_degree(graph, x_init)
         x = x_init

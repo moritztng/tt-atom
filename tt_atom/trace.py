@@ -81,9 +81,11 @@ class TracedEngine:
             (g.rot_fwd_coef, cf),
             (g.rot_inv_coef, ci),
             (g.x_edge, t["x_edge"].detach()),
-            # only edge_envelope_f [E,1] is consumed on device; the 3D edge_envelope [E,1,1] is dead
+            # only the envelope [E,1] is consumed on device; the 3D edge_envelope [E,1,1] is dead
             # (its tile pads to [E,32,32] -> ~64 ms/step to re-tilize), so it is not refreshed.
-            (g.edge_envelope_f, t["edge_envelope"].detach().reshape(g.E, 1)),
+            # Write the ROW_MAJOR bf16 buffer (~0.1 ms); the forward tilizes/casts on device (the
+            # bf8 TILE host from_torch here was ~7.8 ms/step -- the largest single refresh cost).
+            (g.edge_envelope_rm, t["edge_envelope"].detach().reshape(g.E, 1)),
         ]
         # x_init operand: the host full node init (pos-dependent, refresh) or, with the device
         # edge-degree embedding, the CONSTANT l0 init (pos-independent -> uploaded once, never here).
