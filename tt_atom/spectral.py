@@ -18,7 +18,18 @@ reorder), so the gate's per-degree expansion is the plain ``[0]*3 + [1]*5`` map 
 """
 from __future__ import annotations
 
+import os
+
+import torch
+
 from .device import compute_kernel_config
+
+# SO3_Linear shares one [cin,cout] weight per degree l across that degree's 2l+1 coefficients.
+# The per-degree path slices x into 3D [N, 2l+1, cin] blocks and runs a batched matmul -- but the
+# tiny coefficient dim (1/3/5) tile-pads to 32, a ~6-32x row blowup that makes this tiny-N module
+# cost ~100 ms/step. Folding it into ONE flat 2D matmul with a block-diagonal-by-coefficient
+# weight [nsph*cin, nsph*cout] kills the padding entirely (bit-compatible ordering). Gated for A/B.
+_SPECTRAL_FUSED = os.environ.get("TT_ATOM_SPECTRAL_FUSED", "1") == "1"
 
 
 def _to_dev(t, device, dtype):
@@ -55,6 +66,37 @@ class SpectralAtomwise:
 
         self.l1_w, self.l1_b = so3("so3_linear_1", self.C, self.H)     # C -> H
         self.l2_w, self.l2_b = so3("so3_linear_2", self.H, self.C)     # H -> C
+
+        # fused block-diagonal-by-coefficient weights (see module docstring). One flat 2D matmul.
+        self.l1_wf = self.l1_bf = self.l2_wf = self.l2_bf = None
+        if _SPECTRAL_FUSED:
+            self.l1_wf, self.l1_bf = self._build_so3_fused("so3_linear_1", weights, prefix,
+                                                           self.C, self.H, wdtype)
+            self.l2_wf, self.l2_bf = self._build_so3_fused("so3_linear_2", weights, prefix,
+                                                           self.H, self.C, wdtype)
+
+    def _build_so3_fused(self, name, weights, prefix, cin, cout, wdtype):
+        """Block-diagonal weight [nsph*cin, nsph*cout]: coeff c (degree l(c)) uses W_l. Bias on
+        coeff 0 (l=0) only."""
+        W = weights[f"{prefix}.{name}.weight"]           # [lmax+1, out, in]
+        bias = weights[f"{prefix}.{name}.bias"].float()  # [cout]
+        deg = []                                          # degree of each coefficient
+        for l in range(self.lmax + 1):
+            deg += [l] * (2 * l + 1)
+        Wbd = torch.zeros(self.nsph * cin, self.nsph * cout, dtype=torch.float32)
+        for c, l in enumerate(deg):
+            Wbd[c * cin:(c + 1) * cin, c * cout:(c + 1) * cout] = W[l].T.float()   # [in,out]
+        bbd = torch.zeros(self.nsph * cout, dtype=torch.float32)
+        bbd[:cout] = bias                                 # l=0 == coeff 0
+        return _to_dev(Wbd.contiguous(), self.device, wdtype), _to_dev(bbd.contiguous(), self.device, wdtype)
+
+    def _so3_linear_fused(self, x, wf, bf, cout):
+        """x [N, nsph, cin] -> [N, nsph, cout] via one flat 2D matmul on the block-diagonal weight."""
+        ttnn = self.ttnn
+        N, cin = x.shape[0], x.shape[2]
+        xf = ttnn.reshape(x, (N, self.nsph * cin))
+        out = ttnn.linear(xf, wf, bias=bf, compute_kernel_config=self.kcfg)
+        return ttnn.reshape(out, (N, self.nsph, cout))
 
     def _so3_linear(self, x, w_blocks, bias):
         """Per-degree SO3_Linear: x [N, nsph, cin] -> [N, nsph, cout]. One shared GEMM per l,
@@ -97,9 +139,14 @@ class SpectralAtomwise:
         a_scalar = ttnn.linear(scalar, self.smlp_w, bias=self.smlp_b,
                                compute_kernel_config=self.kcfg)        # [N, lmax*H] pre-SiLU
         gating = ttnn.silu(a_scalar)
-        h = self._so3_linear(x, self.l1_w, self.l1_b)                  # [N, nsph, H]
+        if self.l1_wf is not None:
+            h = self._so3_linear_fused(x, self.l1_wf, self.l1_bf, self.H)
+        else:
+            h = self._so3_linear(x, self.l1_w, self.l1_b)              # [N, nsph, H]
         # cached for the analytic-force VJP (gating is post-SiLU = sigmoid input)
         self._cache_x, self._cache_a_scalar = x, a_scalar
         self._cache_gating, self._cache_h = gating, h
         g = self._gate(gating, h)                                     # [N, nsph, H]
+        if self.l2_wf is not None:
+            return self._so3_linear_fused(g, self.l2_wf, self.l2_bf, self.C)
         return self._so3_linear(g, self.l2_w, self.l2_b)              # [N, nsph, C]
