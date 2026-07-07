@@ -84,8 +84,12 @@ class GraphContext:
         wig_dtype = ttnn.bfloat8_b if fast else wdtype
         self.rot_fwd_ij, cf = rotation.pack(wigner)        # node SH (nsph) -> reduced m-space (nred)
         self.rot_inv_ij, ci = rotation.pack(wigner_inv)    # reduced m-space (nred) -> node SH (nsph)
-        self.rot_fwd_coef = _to_dev(cf, device, wig_dtype)
-        self.rot_inv_coef = _to_dev(ci, device, wig_dtype)
+        # coef stored ROW_MAJOR: the per-step refresh's from_torch of a [E, nnz] TILE tensor pays a
+        # tile-pad host tilize (~1.7-3.9 ms each; nnz pads to 32) vs ~0.04 ms RM. Consumers
+        # (rotation._coef_exp for the fused kernel; the non-fused MAC split) to_layout to TILE on
+        # device. Only affects the pos-dependent refresh cost -- topology buffers are unchanged.
+        self.rot_fwd_coef = _to_dev(cf, device, wig_dtype, ttnn.ROW_MAJOR_LAYOUT)
+        self.rot_inv_coef = _to_dev(ci, device, wig_dtype, ttnn.ROW_MAJOR_LAYOUT)
         # x_edge is stored ROW_MAJOR: the per-step trace refresh's from_torch of a wide [E,320] TILE
         # tensor does a slow host tilize (~24 ms vs ~1.4 ms RM); RadialMLP to_layouts it to TILE on
         # device (~0.16 ms, inside the trace) instead. Only consumer is RadialMLP (so2 rad + edge_degree).
