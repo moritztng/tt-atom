@@ -62,14 +62,25 @@ def _sel(ttnn, device):
     return t
 
 
-def _gc_kernel_ok(n_out, n_in, nnz, W) -> bool:
+# The gc kernel's product CB (32*Wt = 512KB at W=256) leaves little L1 headroom, so it can clash
+# with the trace's L1-resident backward tensors (grid/spectral) in the SMALL/MID-N regime (measured
+# clash at N=216 E~10k and N=512 E~23k; clash-free at N=1000 E~46k and N=1728 E~79k where the large-N
+# path spills those tensors to DRAM). The gc kernel only matters where the device replay dominates
+# (large N); small/mid-N MD is dispatch-bound and the ones_bd GEMM there is cheap. So gate the kernel
+# to large graphs and fall back to the GEMM below -- no small-N regression, no clash. (A batched-CB
+# variant that fits small-N exists but its reload-add serial chain regressed large-N ~35%, so the
+# fast full-tile kernel + this edge gate is the shippable choice.)
+_GC_MIN_EDGES = int(os.environ.get("TT_ATOM_GC_MIN_EDGES", "45000"))
+
+
+def _gc_kernel_ok(n_out, n_in, nnz, W, E) -> bool:
     """L1 budget for the gc kernel CBs (see gc_program_factory): 2*(n_out+n_in)*Wt gout/xin +
     32 sel + 32*Wt prod + 2*ceil(nnz/32) out tiles. uma-s fits (~1.16MB); uma-m (W=256, 19x25)
-    overflows -> GEMM fallback."""
+    overflows. Also require a large graph so the CBs co-reside with the trace's L1 tensors."""
     Wt = W // 32
     out_tiles = (nnz + 31) // 32
     tiles = 2 * (n_out + n_in) * Wt + 32 + 32 * Wt + 2 * out_tiles
-    return tiles * _TILE_BYTES <= _L1_CB_BUDGET
+    return tiles * _TILE_BYTES <= _L1_CB_BUDGET and E >= _GC_MIN_EDGES
 
 
 # Two hard limits gate the kernel to shapes it can run, with a MAC fallback otherwise (so the fast
@@ -237,7 +248,7 @@ def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None
         # coefficient adjoint gc[k] = sum_W(gout_i * in_j): custom fused mul-reduce kernel (products
         # L1-resident, one accumulating matmul reduces+places into gc[E,nnz]) instead of the ~823MB
         # product-concat + ones_bd GEMM. PCC ~1.0 vs the GEMM; the ttnn path stays as the fallback.
-        if _FUSED_GC and _gc_kernel_ok(n_out, n_in, len(ij), W):
+        if _FUSED_GC and _gc_kernel_ok(n_out, n_in, len(ij), W, E):
             is_l = [i for i, j in ij]; js_l = [j for i, j in ij]
             gc = _gc_op(ttnn)(g_out_flat, x_in_flat, _sel(ttnn, device), n_out, n_in, W, is_l, js_l)
             return g_in_flat, gc
