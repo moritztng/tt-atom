@@ -112,13 +112,19 @@ def _coef_exp(ttnn, coef):
     """Expand compact [E, nnz] device coefficients to [E, nnz*32] ON DEVICE (each nonzero's
     coef broadcast across its 32-column tile). Cached by id(coef); holds the coef reference so
     its python id cannot be recycled onto a stale entry."""
+    # coef is stored ROW_MAJOR (cheap refresh); tilize on device here for the kernel (see
+    # GraphContext). Cache keyed on the ORIGINAL (persistent) coef so repeat hits across calls.
+    orig = coef
+    def _tile(c):
+        return ttnn.to_layout(c, ttnn.TILE_LAYOUT) if c.layout != ttnn.TILE_LAYOUT else c
     if os.environ.get("TT_ATOM_FUSED_NOCACHE") == "1":
-        return ttnn.repeat_interleave(coef, 32, dim=1)
-    key = id(coef)
+        return ttnn.repeat_interleave(_tile(coef), 32, dim=1)
+    key = id(orig)
     b = _FUSED_CACHE.get(key)
-    if b is not None and b[0] is coef:
+    if b is not None and b[0] is orig:
         return b[1]
-    ce_dev = ttnn.repeat_interleave(coef, 32, dim=1)         # [E, nnz*32]
+    ce_dev = ttnn.repeat_interleave(_tile(coef), 32, dim=1)  # [E, nnz*32]
+    coef = orig
     if len(_FUSED_CACHE) > 64:
         _FUSED_CACHE.clear()
     _FUSED_CACHE[key] = (coef, ce_dev)
@@ -205,6 +211,8 @@ def rotate(ttnn, x_flat, ij, coef, n_in, W, device, n_out=None):
     # nnz per-nonzero ttnn.slice calls. The rotation is the largest single consumer of eager ttnn
     # dispatches (~49% at N=1000) and the eager MD path is host-dispatch bound; the coef slices are
     # ~zero-traffic (each [E,1]) so collapsing them to one op cuts dispatch with no extra DRAM.
+    if coef.layout != ttnn.TILE_LAYOUT:                      # coef stored RM (cheap refresh)
+        coef = ttnn.to_layout(coef, ttnn.TILE_LAYOUT)
     ccols = ttnn.split(coef, 1, dim=1)
     out = [None] * n_out
     for k, (i, j) in enumerate(ij):
@@ -261,6 +269,8 @@ def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None
         return g_in_flat, gc
     in_cols = ttnn.split(x_in_flat, W, dim=1)                    # n_in [E,W] blocks in one dispatch
     gout_cols = ttnn.split(g_out_flat, W, dim=1)                 # n_out [E,W] blocks in one dispatch
+    if coef.layout != ttnn.TILE_LAYOUT:                          # coef stored RM (cheap refresh)
+        coef = ttnn.to_layout(coef, ttnn.TILE_LAYOUT)
     ccols = ttnn.split(coef, 1, dim=1)                           # nnz [E,1] cols in one dispatch
     g_in = [None] * n_in
     prods = [None] * len(ij)
