@@ -27,6 +27,22 @@ def device_ede() -> bool:
     return os.environ.get("TT_ATOM_DEVICE_EDE") == "1"
 
 
+def bf8_edge() -> bool:
+    """Whether the edgewise message dataflow runs in bfloat8_b (the E-sized [E,nsph*C] activations
+    that dominate the bandwidth-bound device replay). The device replay is DRAM-bandwidth bound on
+    these activations (bf8 halves the traffic -> ~2x on the fat matmuls; measured), NOT compute-
+    bound (HiFi4==LoFi) nor weight-bound (bf8 weights alone = 1.00x). The bf16<->bf8 boundary sits
+    at the SMALL N-sized node features (gather input / scatter output), so there is no per-edge
+    typecast overhead. Node residual stream + norms stay bf16. Requires the source-ttnn build whose
+    fused_rotate/gate/gc kernels accept bf8 I/O. Default OFF."""
+    return os.environ.get("TT_ATOM_BF8_EDGE") == "1"
+
+
+def edge_dtype(ttnn):
+    """bfloat8_b when bf8_edge() else bfloat16 — the working dtype of the edgewise E-sized flow."""
+    return ttnn.bfloat8_b if bf8_edge() else ttnn.bfloat16
+
+
 # Budgets (bytes) for a single L1-resident intermediate. The L1-residency perf wins (grid, so2,
 # norm chains) keep intermediates on-chip, but L1 is small (~1.4 MB/bank x 130) and op circular
 # buffers grow with problem size, so at large N/E they consume nearly all L1 and an L1-resident

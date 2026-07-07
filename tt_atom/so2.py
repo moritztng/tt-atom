@@ -169,7 +169,12 @@ class SO2Convolution:
         self.lmax, self.mmax = lmax, mmax
         self.extra = extra_m0_output_channels
         self.kcfg = compute_kernel_config()
-        wdtype = ttnn.bfloat8_b if fast else ttnn.bfloat16
+        from .device import bf8_edge
+        self.bf8_edge = bf8_edge()
+        # bf8-edge: weights bf8 too (both matmul operands bf8 -> full bandwidth win) and the edge
+        # activations/outputs run bf8; the edt output dtype keeps the flow bf8 for the next op.
+        wdtype = ttnn.bfloat8_b if (fast or self.bf8_edge) else ttnn.bfloat16
+        self.edt = ttnn.bfloat8_b if self.bf8_edge else None
 
         self.num_coef = [lmax - m + 1 for m in range(mmax + 1)]   # coeffs per order m
         # flattened column offsets of each m-block in the [E, (lmax+1)^2 * Cin] input
@@ -260,13 +265,15 @@ class SO2Convolution:
                     off += self.rad_sizes[m]
                 mult = ttnn.concat([rms[0]] + sum(([rms[m], rms[m]]
                                     for m in range(1, self.mmax + 1)), []), dim=1)
+            if self.edt is not None and mult.dtype != self.edt:
+                mult = ttnn.typecast(mult, self.edt)         # match bf8 xf for the multiply
             self._cache_xin, self._cache_mult = xf, mult     # for the analytic-force VJP
-            xf = ttnn.multiply(xf, mult)
+            xf = ttnn.multiply(xf, mult)                     # bf8*bf8 -> bf8 (keeps the edge flow bf8)
 
         # per-m fused path: m0 one linear + one dense matmul per m>0 (see _build_fused)
         if self.fused_w is not None:
             x0 = ttnn.slice(xf, [0, self.in_offsets[0]], [E, self.in_offsets[1]])
-            full0 = ttnn.linear(x0, self.fused_wm0, bias=self.fused_bm0,
+            full0 = ttnn.linear(x0, self.fused_wm0, bias=self.fused_bm0, dtype=self.edt,
                                 compute_kernel_config=self.kcfg)             # [E, 640]
             extra = None
             if self.extra:
@@ -277,7 +284,8 @@ class SO2Convolution:
             blocks = [m0]
             for m in range(1, self.mmax + 1):
                 blk = ttnn.slice(xf, [0, self.in_offsets[m]], [E, self.in_offsets[m + 1]])  # [E,2K]
-                blocks.append(ttnn.matmul(blk, self.fused_wm[m - 1], compute_kernel_config=self.kcfg))
+                blocks.append(ttnn.matmul(blk, self.fused_wm[m - 1], dtype=self.edt,
+                                          compute_kernel_config=self.kcfg))
             out = ttnn.concat(blocks, dim=1)                                 # [E, nsph*H]
             return (out, extra) if self.extra else out
 

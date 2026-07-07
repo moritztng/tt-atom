@@ -55,10 +55,11 @@ class GateActivation:
         Returns flat ``[E, nsph*H]``."""
         ttnn = self.ttnn
         E, H = x.shape[0], self.H
+        edt = x.dtype if x.dtype == ttnn.bfloat8_b else None    # keep the bf8 edge flow bf8
         self._cache_gating, self._cache_x = gating_scalars, x   # for the analytic-force VJP
         g = ttnn.sigmoid(gating_scalars)                         # [E, lmax*H], H-block per degree
         # expand the gate rows per vector coefficient as ONE matmul (0/1 selector); see __init__
-        gate = ttnn.matmul(g, self.expand_w, compute_kernel_config=self.kcfg)  # [E, (nsph-1)*H]
+        gate = ttnn.matmul(g, self.expand_w, dtype=edt, compute_kernel_config=self.kcfg)  # [E,(nsph-1)*H]
         self._cache_gate = gate                                  # expanded gate for the VJP (fewer bw ops)
         if _FUSED_GATE and x.shape[1] % 32 == 0 and gate.shape[1] % 32 == 0:
             # one kernel: out = [silu(x[:, :H]) | x[:, H:] * gate]

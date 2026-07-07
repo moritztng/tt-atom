@@ -78,9 +78,14 @@ class GraphContext:
         # per-edge matrices to their structural nonzeros. bf8 coefficients run faster and stay
         # PCC-safe (the rotation is an orthogonal basis change) -> use in --fast.
         from . import rotation
+        from .device import bf8_edge
         # wigner (wig_M) is [E, nred, nsph], its inverse [E, nsph, nred]. nred is the reduced
         # m-space (|m|<=mmax); nred == nsph when mmax==lmax (uma-s), nred < nsph for uma-m.
         self.nred, self.nsph = wigner.shape[1], wigner.shape[2]
+        # bf8-edge: coef stays bf16 ROW_MAJOR here (bf8 can't be RM; RM is needed for the cheap
+        # per-step refresh). rotation.rotate casts the on-device TILE-expanded coef to bf8 to match
+        # its bf8 x input. bf8 rotation coef is parity-safe (orthogonal basis change, O(1) coefs).
+        _b8 = bf8_edge()
         wig_dtype = ttnn.bfloat8_b if fast else wdtype
         self.rot_fwd_ij, cf = rotation.pack(wigner)        # node SH (nsph) -> reduced m-space (nred)
         self.rot_inv_ij, ci = rotation.pack(wigner_inv)    # reduced m-space (nred) -> node SH (nsph)
@@ -97,7 +102,9 @@ class GraphContext:
         # only the flat [E,1] envelope is consumed on device (edgewise / edge-degree broadcast); the
         # 3D [E,1,1] form tile-pads to [E,32,32] (a ~64 ms/step re-tilize on the trace refresh) and
         # is read by nothing, so it is not materialised.
-        self.edge_envelope_f = _to_dev(edge_envelope.reshape(E, 1), device, wdtype)  # flat bcast
+        # envelope multiplies the bf8 so2 output in bf8-edge mode -> store bf8 so dtypes match
+        env_dtype = ttnn.bfloat8_b if _b8 else wdtype
+        self.edge_envelope_f = _to_dev(edge_envelope.reshape(E, 1), device, env_dtype)  # flat bcast
 
 
 class _Block:
