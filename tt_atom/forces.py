@@ -154,20 +154,10 @@ def so2_bw(conv, g_out, g_extra=None):
         if conv.has_radial:
             xin = conv._cache_xin
             mult = conv._cache_mult
-            g_mult = ttnn.multiply(g_xf, xin)
+            # g_rad is the adjoint at the (duplicated) radial output; rad.bw's matmul with the
+            # duplicated net.6 weight sums the repeated real/imag rows -> the old collapse is implicit.
+            g_rad = ttnn.multiply(g_xf, xin)
             g_xf = ttnn.multiply(g_xf, mult)
-            o = 0
-            widths = [conv.rad_sizes[0]]
-            for m in range(1, mmax + 1):
-                widths += [conv.rad_sizes[m], conv.rad_sizes[m]]
-            segs = []
-            for wd in widths:
-                segs.append(ttnn.slice(g_mult, [0, o], [E, o + wd])); o += wd
-            g_rad_parts = [segs[0]]
-            i = 1
-            for m in range(1, mmax + 1):
-                g_rad_parts.append(ttnn.add(segs[i], segs[i + 1])); i += 2
-            g_rad = ttnn.concat(g_rad_parts, dim=1)
         return g_xf, g_rad
 
     # split g into out-blocks: m0 (lmax+1 coeffs), then per m>0 (real Hh, imag Hh)
