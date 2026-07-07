@@ -24,7 +24,12 @@ from .spectral import SpectralAtomwise
 # linear O(E) gather+reduce scatter (tt_atom/scatter.py). Small systems keep the dense path
 # (one fat matmul, bit-identical to the golden mirror tests). Override with $TT_ATOM_SCATTER_THRESHOLD
 # (set to 0 to force the linear path everywhere — used by the scatter parity test).
-SCATTER_LINEAR_THRESHOLD = int(os.environ.get("TT_ATOM_SCATTER_THRESHOLD", "384"))
+# The dense one-hot matmul scatter S[N,E]@m is the golden (bit-identical) path AND measured ~5x
+# faster than the linear gather+reduce at N<=~1728 (segment_sum's RM-pad + gather dominate; the
+# matmul is one fat bf16 op). The O(N*E) one-hot (92 MB @N=1000, 546 MB @N=1728) fits DRAM easily
+# at MD sizes, so use it up to ~2048 nodes; only truly-large scale runs fall back to the linear
+# O(E) path (scatter.py) to bound the O(N^2) memory. Was 384 (linear kicked in far too early).
+SCATTER_LINEAR_THRESHOLD = int(os.environ.get("TT_ATOM_SCATTER_THRESHOLD", "2048"))
 
 
 def _to_dev(t, device, dtype, layout=None):
