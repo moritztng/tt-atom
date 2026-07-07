@@ -68,6 +68,8 @@ class GraphContext:
             self.tgt_gather = _to_dev(torch.from_numpy(tgt_g), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
             self.src_gather = _to_dev(torch.from_numpy(src_g), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
         else:
+            # scatter one-hot stays bf16: bf8_b is block-float (shared per-tile exponent), so the
+            # 0/1 one-hot is NOT bit-exact in bf8 (measured Fpcc 0.98, no speed gain) — keep bf16.
             S = torch.zeros(num_nodes, E)
             S[tgt.long(), torch.arange(E)] = 1.0
             self.scatter = _to_dev(S, device, wdtype)
