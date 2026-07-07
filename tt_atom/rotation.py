@@ -35,6 +35,28 @@ def _fused_op(ttnn):
     return ttnn._ttnn.operations.experimental.fused_rotate
 
 
+# Two hard limits gate the kernel to shapes it can run, with a MAC fallback otherwise (so the fast
+# kernel is a drop-in for ANY checkpoint, not just uma-s):
+#   (1) The compute kernel fans-in all `d` per-block products into dst[0..d-1] and sums them there,
+#       so the max fan-in degree must fit the fp32 DST register file (dst_full_sync_en -> 8 slots).
+#   (2) The program factory statically allocates double-buffered CBs for the x, coef and out tiles
+#       on each core; their total must fit L1 (1.5 MB). uma-m (W=256, n_in=25, n_out=19) blows past
+#       it (~2 MB) and TT_THROWs at program build; uma-s (W=128, 9x9) is ~0.4 MB and fits.
+_MAX_DST = 8
+_TILE_BYTES = 2048            # bf16 32x32 tile
+_L1_CB_BUDGET = 1_400_000     # < 1.5 MB L1, leaving headroom for runtime/semaphores
+
+
+def _cb_bytes(n_in, n_out, nnz, W) -> int:
+    Wt = W // 32
+    return 2 * (n_in * Wt + n_out * Wt + nnz) * _TILE_BYTES
+
+
+def _kernel_ok(deg, n_in, n_out, nnz, W) -> bool:
+    return (len(deg) > 0 and max(deg) <= _MAX_DST
+            and _cb_bytes(n_in, n_out, nnz, W) <= _L1_CB_BUDGET)
+
+
 _GROUP_CACHE: dict = {}
 
 
@@ -125,9 +147,10 @@ def rotate(ttnn, x_flat, ij, coef, n_in, W, device, n_out=None):
     reduced-m-space rotation (uma-m)."""
     n_out = n_in if n_out is None else n_out
     if _FUSED:
-        ce_dev = _coef_exp(ttnn, coef)
         deg, ks, js = _group(ij, n_out, "i")
-        return _fused_op(ttnn)(x_flat, ce_dev, n_in, n_out, W, deg, ks, js)
+        if _kernel_ok(deg, n_in, n_out, len(ij), W):
+            ce_dev = _coef_exp(ttnn, coef)
+            return _fused_op(ttnn)(x_flat, ce_dev, n_in, n_out, W, deg, ks, js)
     E = x_flat.shape[0]
     cols = ttnn.split(x_flat, W, dim=1)                       # n_in [E,W] blocks in one dispatch
     # split the [E,nnz] coefficients into nnz [E,1] broadcast columns in ONE dispatch instead of
@@ -165,7 +188,7 @@ def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None
     n_out = n_in if n_out is None else n_out
     E = x_in_flat.shape[0]
     from .device import compute_kernel_config
-    if _FUSED_BW:
+    if _FUSED_BW and _kernel_ok(_group(ij, n_in, "j")[0], n_in, n_out, len(ij), W):
         # g_in[j] = sum_{(i,j,k)} coef_k * gout_i is the SAME fused rotation with the pattern
         # grouped by input block j (fan-in over the output rows i). The coefficient adjoint gc
         # (below) still needs the per-nonzero products, so those + the ones_bd GEMM are unchanged.
