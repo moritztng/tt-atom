@@ -55,12 +55,16 @@ class RadialMLP:
     """Linear -> (LayerNorm -> SiLU) x2 -> Linear. Produces per-m radial weights from the
     invariant edge embedding. Mirrors ``fairchem ... nn/radial.py:RadialMLP``."""
 
-    def __init__(self, weights, prefix, device, wdtype, out_scale=1.0, dup_index=None):
+    def __init__(self, weights, prefix, device, wdtype, out_scale=1.0, dup_index=None,
+                 out_dtype=None):
         import ttnn
 
         self.ttnn = ttnn
         self.device = device
         self.eps = 1e-5
+        # bf8-edge: emit the per-m multiplier directly in bf8 so the so2 xf*mult multiply needs no
+        # boundary typecast (the trunk stays bf16 for LN/SiLU precision; only net.6's output casts).
+        self.out_dtype = out_dtype
         # ``dup_index`` (list of original output rows) duplicates/reorders net.6's output so the MLP
         # emits the SO2 per-m multiplier ``mult`` [E, nsph*Cin] directly (real/imag blocks repeated),
         # folding the so2 slice+concat mult-build into the constant weight. The backward is automatic:
@@ -107,7 +111,8 @@ class RadialMLP:
         s2 = ttnn.silu(n4)
         # cache pre-norm / pre-silu activations for the analytic-force VJP (device radial backward)
         self._cache = (a0, n1, a3, n4)
-        return ttnn.linear(s2, self.w6, bias=self.b6, compute_kernel_config=self.kcfg)
+        return ttnn.linear(s2, self.w6, bias=self.b6, dtype=self.out_dtype,
+                           compute_kernel_config=self.kcfg)
 
     def _silu_ln_bw(self, g, n, x, w_b):
         """Fused SiLU-bw + LayerNorm-bw in ONE kernel launch: computes
@@ -201,7 +206,8 @@ class SO2Convolution:
                 blk = list(range(off, off + self.rad_sizes[m]))
                 dup_index += blk + blk                                   # real then imag
                 off += self.rad_sizes[m]
-        self.rad = (RadialMLP(weights, self.rad_prefix, device, wdtype, dup_index=dup_index)
+        self.rad = (RadialMLP(weights, self.rad_prefix, device, wdtype, dup_index=dup_index,
+                              out_dtype=self.edt)
                     if self.has_radial else None)
 
         # m=0 dense linear (has bias)
