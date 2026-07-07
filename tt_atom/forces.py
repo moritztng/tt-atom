@@ -228,12 +228,17 @@ def grid_bw(grid, g_out):
 # --------------------------------------------------------------------------- spectral atomwise
 
 
-def _so3_linear_bw(sp, g_out, w_blocks):
+def _so3_linear_bw(sp, g_out, w_blocks, wf=None, cin=None):
     """VJP of one ``SO3_Linear`` wrt its input. ``g_out`` [N,nsph,cout] -> g_x [N,nsph,cin].
     Per degree the GEMM is shared, so the input adjoint is ``g_out_block @ W_block^T`` (bias on
-    l=0 is additive -> identity wrt the input)."""
+    l=0 is additive -> identity wrt the input). When ``wf`` (the fused block-diagonal weight) is
+    given, this is one flat transpose-matmul (mirrors the fused forward)."""
     ttnn = sp.ttnn
     N = g_out.shape[0]
+    if wf is not None:
+        gf = ttnn.reshape(g_out, (N, sp.nsph * g_out.shape[2]))
+        gx = _mm(ttnn, gf, wf, sp.kcfg)                     # [N, nsph*cin]
+        return ttnn.reshape(gx, (N, sp.nsph, cin))
     outs, start = [], 0
     for l in range(sp.lmax + 1):
         n = 2 * l + 1
@@ -251,7 +256,7 @@ def spectral_bw(sp, g_out):
     gating, h = sp._cache_gating, sp._cache_h
 
     # so3_linear_2 backward
-    g_g = _so3_linear_bw(sp, g_out, sp.l2_w)                  # [N, nsph, H]
+    g_g = _so3_linear_bw(sp, g_out, sp.l2_w, wf=sp.l2_wf, cin=H)  # [N, nsph, H]
 
     # gate backward: l0 SiLU; l>=1 multiply by sigmoid(gating) per degree
     sg = ttnn.sigmoid(gating)                                 # [N, lmax*H]
@@ -272,7 +277,7 @@ def spectral_bw(sp, g_out):
     g_gating = ttnn.sigmoid_bw(g_sg, gating)[0]               # through sigmoid
 
     # so3_linear_1 backward -> g wrt x (l>=... all degrees)
-    g_x = _so3_linear_bw(sp, g_h, sp.l1_w)                    # [N, nsph, C]
+    g_x = _so3_linear_bw(sp, g_h, sp.l1_w, wf=sp.l1_wf, cin=sp.C)  # [N, nsph, C]
 
     # scalar_mlp backward: gating = SiLU(scalar @ W + b); add g_scalar onto x's l=0 channel
     g_a = silu_bw(ttnn, g_gating, a_scalar)                   # [N, lmax*H]
