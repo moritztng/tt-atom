@@ -195,8 +195,18 @@ def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None
         ce_dev = _coef_exp(ttnn, coef)
         deg, ks, is_ = _group(ij, n_in, "j")
         g_in_flat = _fused_op(ttnn)(g_out_flat, ce_dev, n_out, n_in, W, deg, ks, is_)
+        if os.environ.get("TT_ATOM_ABLATE_GC") == "1":
+            return g_in_flat, ttnn.multiply(coef, 0.0)          # PERF PROBE: skip the gc GEMM
         in_cols = ttnn.split(x_in_flat, W, dim=1)
         gout_cols = ttnn.split(g_out_flat, W, dim=1)
+        if os.environ.get("TT_ATOM_GC_SUM") == "1":
+            # gc[k] = sum_W(gout_i * in_j) as nnz independent [E,W]->[E,1] reductions, then concat.
+            # Avoids materialising the [E, nnz*W] product concat P AND its ones_bd GEMM (which reads
+            # P a second time) -- ~2-3x less DRAM traffic. In a captured trace the extra kernel
+            # launches are free, so the memory saving is a net win vs the eager-tuned GEMM.
+            gcs = [ttnn.sum(ttnn.multiply(gout_cols[i], in_cols[j]), dim=1, keepdim=True)
+                   for (i, j) in ij]
+            return g_in_flat, ttnn.concat(gcs, dim=1)           # [E, nnz]
         prods = [ttnn.multiply(gout_cols[i], in_cols[j]) for (i, j) in ij]
         P = ttnn.concat(prods, dim=1)                            # [E, nnz*W]
         gc = ttnn.matmul(P, _ones_bd(ttnn, device, len(ij), W),
