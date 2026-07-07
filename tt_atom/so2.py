@@ -12,9 +12,21 @@ features by m directly.
 """
 from __future__ import annotations
 
+import os
+
 import torch
 
 from .device import compute_kernel_config
+
+# The whole SO(2) convolution (m=0 dense linear + every m>0 real/imag mixing) is ONE linear map
+# from the post-radial input [E, nsph*Cin] to [extra | out]. The m>0 cross terms
+#   out_real = real@Wa - imag@Wb ,  out_imag = real@Wb + imag@Wa
+# fold into a single constant block-structured weight, collapsing ~27 slice/matmul/combine ops
+# (per conv, per pass) into one ttnn.linear. The device is op-count/DRAM-glue bound (matmul
+# compute floor is ~5 ms/step), so the ~3x extra MACs from the block-diagonal zeros are cheap
+# relative to the eliminated intermediate traffic. Bit-compatible column ordering; gated so the
+# per-m path stays available for A/B.
+_SO2_FUSED = os.environ.get("TT_ATOM_SO2_FUSED", "1") == "1"
 
 
 def _to_dev(t: torch.Tensor, device, dtype):
@@ -137,6 +149,46 @@ class SO2Convolution:
             for m in range(1, mmax + 1)
         ]
 
+        # fused single-matmul weight (see module docstring). Built from the SAME weights, so the
+        # output column ordering is bit-identical to the per-m path: [extra | m0coeffs | m1r | m1i
+        # | ... ]. self.fused_extra_out is the extra-gating width sliced off the front.
+        self.fused_w = self.fused_b = None
+        self.fused_extra_out = extra_m0_output_channels
+        if _SO2_FUSED:
+            self._build_fused(weights, prefix, wdtype)
+
+    def _build_fused(self, weights, prefix, wdtype):
+        import ttnn
+
+        lmax, mmax, Cin = self.lmax, self.mmax, self.Cin
+        w_m0 = weights[f"{prefix}.fc_m0.weight"].T.contiguous().float()       # [in0, out0=640]
+        b_m0 = weights[f"{prefix}.fc_m0.bias"].float()                        # [out0]
+        in_total = self.in_offsets[-1]
+        out0 = w_m0.shape[1]
+        hh = [weights[f"{prefix}.so2_m_conv.{m-1}.fc.weight"].shape[0] // 2
+              for m in range(1, mmax + 1)]                                    # Hh per m
+        out_total = out0 + sum(2 * h for h in hh)
+        W = torch.zeros(in_total, out_total, dtype=torch.float32)
+        b = torch.zeros(out_total, dtype=torch.float32)
+        # m = 0 block (rows [0:in_offsets[1]] -> cols [0:out0]); carries extra+coeffs and bias
+        W[0:self.in_offsets[1], 0:out0] = w_m0
+        b[0:out0] = b_m0
+        off = out0
+        for m in range(1, mmax + 1):
+            Hh = hh[m - 1]
+            K = self.num_coef[m] * Cin
+            r0 = self.in_offsets[m]; i0 = r0 + K                              # real / imag input col starts
+            wm = weights[f"{prefix}.so2_m_conv.{m-1}.fc.weight"].T.contiguous().float()  # [K, 2Hh]
+            Wa = wm[:, :Hh]; Wb = wm[:, Hh:2 * Hh]
+            # out_real = real@Wa - imag@Wb ; out_imag = real@Wb + imag@Wa
+            W[r0:r0 + K, off:off + Hh] = Wa
+            W[i0:i0 + K, off:off + Hh] = -Wb
+            W[r0:r0 + K, off + Hh:off + 2 * Hh] = Wb
+            W[i0:i0 + K, off + Hh:off + 2 * Hh] = Wa
+            off += 2 * Hh
+        self.fused_w = _to_dev(W.contiguous(), self.device, wdtype)
+        self.fused_b = _to_dev(b.contiguous(), self.device, wdtype)
+
     def __call__(self, x, x_edge=None):
         """x: ttnn ``[E, (lmax+1)**2, Cin]`` or flat ``[E, (lmax+1)**2 * Cin]``; returns flat
         ``[E, (lmax+1)**2 * H]`` (+ extra_m0 gating features ``[E, extra]`` when configured)."""
@@ -156,6 +208,15 @@ class SO2Convolution:
             mult = ttnn.concat(mult, dim=1)
             self._cache_xin, self._cache_mult = xf, mult     # for the analytic-force VJP
             xf = ttnn.multiply(xf, mult)
+
+        # fused single-matmul path: whole conv is one linear (see module docstring)
+        if self.fused_w is not None:
+            full = ttnn.linear(xf, self.fused_w, bias=self.fused_b, compute_kernel_config=self.kcfg)
+            if self.extra:
+                extra = ttnn.slice(full, [0, 0], [E, self.extra])
+                out = ttnn.slice(full, [0, self.extra], [E, full.shape[1]])
+                return out, extra
+            return full
 
         out_blocks = []
 

@@ -117,6 +117,32 @@ def so2_bw(conv, g_out, g_extra=None):
     E = g_out.shape[0]
 
     gf = g_out if len(g_out.shape) == 2 else ttnn.reshape(g_out, (E, nsph * H))
+
+    # fused single-matmul backward: g_xf = [g_extra | g_out] @ W_so2^T (one transpose-matmul,
+    # mirrors the collapsed forward linear). See so2.py module docstring.
+    if getattr(conv, "fused_w", None) is not None:
+        g_full = ttnn.concat([g_extra, gf], dim=1) if conv.extra else gf
+        g_xf = _mm(ttnn, g_full, conv.fused_w, kcfg)     # [E, nsph*Cin] pre-radial-multiply
+        g_rad = None
+        if conv.has_radial:
+            xin = conv._cache_xin
+            mult = conv._cache_mult
+            g_mult = ttnn.multiply(g_xf, xin)
+            g_xf = ttnn.multiply(g_xf, mult)
+            o = 0
+            widths = [conv.rad_sizes[0]]
+            for m in range(1, mmax + 1):
+                widths += [conv.rad_sizes[m], conv.rad_sizes[m]]
+            segs = []
+            for wd in widths:
+                segs.append(ttnn.slice(g_mult, [0, o], [E, o + wd])); o += wd
+            g_rad_parts = [segs[0]]
+            i = 1
+            for m in range(1, mmax + 1):
+                g_rad_parts.append(ttnn.add(segs[i], segs[i + 1])); i += 2
+            g_rad = ttnn.concat(g_rad_parts, dim=1)
+        return g_xf, g_rad
+
     # split g into out-blocks: m0 (lmax+1 coeffs), then per m>0 (real Hh, imag Hh)
     coeff_w = []                                        # column width per out-block (in H units)
     coeff_w.append((lmax + 1) * H)
