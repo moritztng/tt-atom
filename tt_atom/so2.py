@@ -27,6 +27,22 @@ from .device import compute_kernel_config
 # relative to the eliminated intermediate traffic. Bit-compatible column ordering; gated so the
 # per-m path stays available for A/B.
 _SO2_FUSED = os.environ.get("TT_ATOM_SO2_FUSED", "1") == "1"
+# Route the radial-MLP LayerNorm backward (_ln_bw) through the custom fused reduction kernel
+# (ttnn.experimental.fused_ln_bw): one kernel launch computes mean/rstd + dx with W L1-resident,
+# vs ~15 ttnn ops. Biggest single fuseable glue (~14 ms/step, x~10 calls). Needs source-ttnn build.
+_FUSED_LNBW = os.environ.get("TT_ATOM_FUSED_LNBW") == "1"
+_RED_CACHE: dict = {}
+
+
+def _red_tile(ttnn, device, W):
+    """[32,32] reduction selector: column 0 = 1/W (matmul rowsum-to-col0 = row mean). Cached."""
+    key = (id(device), W)
+    t = _RED_CACHE.get(key)
+    if t is None:
+        r = torch.zeros(32, 32); r[:, 0] = 1.0 / W
+        t = ttnn.from_torch(r, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
+        _RED_CACHE[key] = t
+    return t
 
 
 def _to_dev(t: torch.Tensor, device, dtype):
@@ -97,6 +113,17 @@ class RadialMLP:
         """VJP of ``F.layer_norm`` (grad wrt the LN input ``x``, affine scale folded in).
         ``x`` is the cached forward input; ``w_b`` the LN scale as [1, n] for broadcast."""
         ttnn = self.ttnn
+        if _FUSED_LNBW:
+            # fold the affine scale into gy on host (one multiply), then the fused reduction kernel
+            # computes mean_x/rstd/x_hat and dx = rstd*(gy - mean(gy) - x_hat*mean(gy*x_hat)) in one launch.
+            import struct
+            W = x.shape[-1]
+            if W % 32 == 0:
+                gy = ttnn.multiply(g_out, w_b)
+                red = _red_tile(ttnn, self.device, W)
+                eps_bits = struct.unpack("<I", struct.pack("<f", self.eps))[0]
+                op = ttnn._ttnn.operations.experimental.fused_ln_bw
+                return op(gy, x, red, W, eps_bits)
         mu = ttnn.mean(x, dim=1, keepdim=True)
         xc = ttnn.subtract(x, mu)
         var = ttnn.mean(ttnn.multiply(xc, xc), dim=1, keepdim=True)
