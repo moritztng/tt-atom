@@ -378,26 +378,34 @@ def edgewise_bw(ew, graph, g_out, acc):
     # forward rotation backward: forward mapped node SH (nsph) -> reduced m-space (nred)
     g_mcat, g_rfwd = rotation.rotate_bw(ttnn, ew._cache_mcat, g_mrot, graph.rot_fwd_ij,
                                         graph.rot_fwd_coef, nsph, 2 * C, dev, n_out=graph.nred)
-    # m_cat per coord = [xs_i | xt_i]; split channels back out. Do the 3D<->flat coeff-dim reshapes
-    # + the channel split in ROW_MAJOR (contiguous, no 9->32 tile-pad repack) with a single TILE
-    # round-trip -- the direct TILE reshapes here cost ~18 ms each at E~46k. Bit-exact.
-    g_mcat_rm = ttnn.to_layout(g_mcat, ttnn.ROW_MAJOR_LAYOUT)
-    g_mcat3 = ttnn.reshape(g_mcat_rm, (E, nsph, 2 * C))
-    g_xs_f = ttnn.to_layout(ttnn.reshape(ttnn.slice(g_mcat3, [0, 0, 0], [E, nsph, C]), (E, nsph * C)),
-                            ttnn.TILE_LAYOUT)
-    g_xt_f = ttnn.to_layout(ttnn.reshape(ttnn.slice(g_mcat3, [0, 0, C], [E, nsph, 2 * C]), (E, nsph * C)),
-                            ttnn.TILE_LAYOUT)
-    # gather backward: g_nodes = scatter_src(g_xs) + scatter_tgt(g_xt). Dense one-hot matmuls
-    # (small N) or the linear O(E) gather+reduce (large N) — mirrors the forward scatter.
+    # gather backward: g_nodes = scatter_src(g_xs) + scatter_tgt(g_xt), where g_mcat per coord =
+    # [g_xs | g_xt] interleaved. For the matmul scatter path, matmul commutes with the channel
+    # slice, so scatter the FULL interleaved g_mcat then deinterleave the src/tgt channels on the
+    # N-sized [N,nsph*2C] result (~46x fewer rows than deinterleaving g_mcat at E) -- the E-sized
+    # RM<->TILE deinterleave was ~5 ms/block. Bit-identical (linearity).
     if graph.linear_scatter:
+        # large-N linear path: deinterleave at E (RM round-trip, avoids the 9->32 tile-pad repack)
         from . import scatter
         W = nsph * C
+        g_mcat_rm = ttnn.to_layout(g_mcat, ttnn.ROW_MAJOR_LAYOUT)
+        g_mcat3 = ttnn.reshape(g_mcat_rm, (E, nsph, 2 * C))
+        g_xs_f = ttnn.to_layout(ttnn.reshape(ttnn.slice(g_mcat3, [0, 0, 0], [E, nsph, C]), (E, W)),
+                                ttnn.TILE_LAYOUT)
+        g_xt_f = ttnn.to_layout(ttnn.reshape(ttnn.slice(g_mcat3, [0, 0, C], [E, nsph, 2 * C]), (E, W)),
+                                ttnn.TILE_LAYOUT)
         g_nodes = ttnn.add(scatter.segment_sum(ttnn, g_xs_f, graph.src_gather, graph.Dmax_s, N, W),
                            scatter.segment_sum(ttnn, g_xt_f, graph.tgt_gather, graph.Dmax_t, N, W))
+        g_nodes = ttnn.reshape(g_nodes, (N, nsph, C))
     else:
-        g_nodes = ttnn.add(ttnn.matmul(graph.scatter_src, g_xs_f, compute_kernel_config=kcfg),
-                           ttnn.matmul(graph.scatter, g_xt_f, compute_kernel_config=kcfg))
-    g_nodes = ttnn.reshape(g_nodes, (N, nsph, C))
+        A = ttnn.matmul(graph.scatter_src, g_mcat, compute_kernel_config=kcfg)   # [N, nsph*2C]
+        B = ttnn.matmul(graph.scatter, g_mcat, compute_kernel_config=kcfg)       # [N, nsph*2C]
+        A_rm = ttnn.reshape(ttnn.to_layout(A, ttnn.ROW_MAJOR_LAYOUT), (N, nsph, 2 * C))
+        B_rm = ttnn.reshape(ttnn.to_layout(B, ttnn.ROW_MAJOR_LAYOUT), (N, nsph, 2 * C))
+        A_src = ttnn.to_layout(ttnn.reshape(ttnn.slice(A_rm, [0, 0, 0], [N, nsph, C]), (N, nsph * C)),
+                               ttnn.TILE_LAYOUT)
+        B_tgt = ttnn.to_layout(ttnn.reshape(ttnn.slice(B_rm, [0, 0, C], [N, nsph, 2 * C]), (N, nsph * C)),
+                               ttnn.TILE_LAYOUT)
+        g_nodes = ttnn.reshape(ttnn.add(A_src, B_tgt), (N, nsph, C))
 
     acc["rot_fwd"] = g_rfwd if acc["rot_fwd"] is None else ttnn.add(acc["rot_fwd"], g_rfwd)
     acc["rot_inv"] = g_rinv if acc["rot_inv"] is None else ttnn.add(acc["rot_inv"], g_rinv)
