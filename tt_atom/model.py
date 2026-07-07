@@ -86,7 +86,10 @@ class GraphContext:
         self.rot_inv_ij, ci = rotation.pack(wigner_inv)    # reduced m-space (nred) -> node SH (nsph)
         self.rot_fwd_coef = _to_dev(cf, device, wig_dtype)
         self.rot_inv_coef = _to_dev(ci, device, wig_dtype)
-        self.x_edge = _to_dev(x_edge, device, wdtype)
+        # x_edge is stored ROW_MAJOR: the per-step trace refresh's from_torch of a wide [E,320] TILE
+        # tensor does a slow host tilize (~24 ms vs ~1.4 ms RM); RadialMLP to_layouts it to TILE on
+        # device (~0.16 ms, inside the trace) instead. Only consumer is RadialMLP (so2 rad + edge_degree).
+        self.x_edge = _to_dev(x_edge, device, wdtype, ttnn.ROW_MAJOR_LAYOUT)
         # only the flat [E,1] envelope is consumed on device (edgewise / edge-degree broadcast); the
         # 3D [E,1,1] form tile-pads to [E,32,32] (a ~64 ms/step re-tilize on the trace refresh) and
         # is read by nothing, so it is not materialised.
