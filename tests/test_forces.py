@@ -62,5 +62,15 @@ def test_backbone_vjp(golden, device):
     # host radial finish: g_rad (radial-MLP output adjoint) -> g_x_edge
     xel = _leaves(golden)["xe"].clone().requires_grad_()
     for conv, grad in acc["g_rad"]:
-        mirror.radial_mlp(xel, w, conv.rad_prefix).backward(ttnn.to_torch(grad).float())
+        g = ttnn.to_torch(grad).float()
+        # the fused SO2 radial emits a duplicated (real|imag) mult [E, nsph*Cin] via a duplicated
+        # net.6 weight; its adjoint g_rad is at that duplicated output. The mirror radial_mlp emits
+        # the compact [E, sum rad_sizes] output, so collapse the duplicated rows (== what the fused
+        # rad.bw's dup weight does inside its matmul) before comparing.
+        di = getattr(conv.rad, "_dup_index", None)
+        if di is not None:
+            gc = torch.zeros(g.shape[0], max(di) + 1, dtype=g.dtype)
+            gc.index_add_(1, torch.as_tensor(di, dtype=torch.long), g)
+            g = gc
+        mirror.radial_mlp(xel, w, conv.rad_prefix).backward(g)
     assert pcc(xel.grad, lv["xe"].grad) >= 0.98

@@ -39,12 +39,17 @@ class RadialMLP:
     """Linear -> (LayerNorm -> SiLU) x2 -> Linear. Produces per-m radial weights from the
     invariant edge embedding. Mirrors ``fairchem ... nn/radial.py:RadialMLP``."""
 
-    def __init__(self, weights, prefix, device, wdtype, out_scale=1.0):
+    def __init__(self, weights, prefix, device, wdtype, out_scale=1.0, dup_index=None):
         import ttnn
 
         self.ttnn = ttnn
         self.device = device
         self.eps = 1e-5
+        # ``dup_index`` (list of original output rows) duplicates/reorders net.6's output so the MLP
+        # emits the SO2 per-m multiplier ``mult`` [E, nsph*Cin] directly (real/imag blocks repeated),
+        # folding the so2 slice+concat mult-build into the constant weight. The backward is automatic:
+        # matmul with the duplicated weight sums the repeated rows' gradients (== the old collapse).
+        self._dup_index = dup_index
         # net.0 Linear, net.1 LayerNorm, net.3 Linear, net.4 LayerNorm, net.6 Linear
         self.w0 = _to_dev(weights[f"{prefix}.net.0.weight"].T.contiguous(), device, wdtype)
         self.b0 = _to_dev(weights[f"{prefix}.net.0.bias"], device, wdtype)
@@ -59,9 +64,13 @@ class RadialMLP:
         # instead of a lossy bf16 elementwise multiply (0.2 is not representable in bf16). w6 is the
         # scale factor applied to a linear's output, so scaling both weight and bias is exact.
         self.out_scale = float(out_scale)
-        self.w6 = _to_dev(weights[f"{prefix}.net.6.weight"].T.contiguous() * self.out_scale,
-                          device, wdtype)
-        self.b6 = _to_dev(weights[f"{prefix}.net.6.bias"] * self.out_scale, device, wdtype)
+        w6 = weights[f"{prefix}.net.6.weight"] * self.out_scale            # [out, hidden]
+        b6 = weights[f"{prefix}.net.6.bias"] * self.out_scale             # [out]
+        if dup_index is not None:
+            idx = torch.as_tensor(dup_index, dtype=torch.long)
+            w6 = w6[idx]; b6 = b6[idx]                                    # duplicate/reorder rows
+        self.w6 = _to_dev(w6.T.contiguous(), device, wdtype)
+        self.b6 = _to_dev(b6, device, wdtype)
         # broadcast copies of the LN scales for the hand-written backward ([1, n])
         n1 = weights[f"{prefix}.net.1.weight"].shape[0]
         n4 = weights[f"{prefix}.net.4.weight"].shape[0]
@@ -139,9 +148,23 @@ class SO2Convolution:
 
         self.has_radial = f"{prefix}.rad_func.net.0.weight" in weights
         self.rad_prefix = f"{prefix}.rad_func"
-        self.rad = RadialMLP(weights, self.rad_prefix, device, wdtype) if self.has_radial else None
         # radial output is split per-m into widths num_coef[m]*Cin
         self.rad_sizes = [self.num_coef[m] * self.Cin for m in range(mmax + 1)]
+        # dup_index makes the radial MLP emit the full mult [E, nsph*Cin] directly: m=0 block once,
+        # each m>0 block twice (real|imag). Maps output positions -> original radial-output rows.
+        # Only for the fused path (its backward relies on the dup weight summing repeated rows); the
+        # non-fused A/B path keeps the plain [E, sum rad_sizes] output + slice/concat mult build.
+        dup_index = None
+        self._rad_dup = _SO2_FUSED and self.has_radial
+        if self._rad_dup:
+            off, dup_index = 0, list(range(self.rad_sizes[0]))
+            off = self.rad_sizes[0]
+            for m in range(1, mmax + 1):
+                blk = list(range(off, off + self.rad_sizes[m]))
+                dup_index += blk + blk                                   # real then imag
+                off += self.rad_sizes[m]
+        self.rad = (RadialMLP(weights, self.rad_prefix, device, wdtype, dup_index=dup_index)
+                    if self.has_radial else None)
 
         # m=0 dense linear (has bias)
         self.w_m0 = _to_dev(weights[f"{prefix}.fc_m0.weight"].T.contiguous(), device, wdtype)
@@ -194,14 +217,16 @@ class SO2Convolution:
         xf = ttnn.reshape(x, (E, nsph * self.Cin)) if len(x.shape) == 3 else x
 
         if self.has_radial:
-            rad = self.rad(x_edge)                       # [E, sum(num_coef*Cin)]
-            off = 0
-            rms = []
-            for m in range(self.mmax + 1):
-                rms.append(ttnn.slice(rad, [0, off], [E, off + self.rad_sizes[m]]))
-                off += self.rad_sizes[m]
-            mult = [rms[0]] + sum(([rms[m], rms[m]] for m in range(1, self.mmax + 1)), [])
-            mult = ttnn.concat(mult, dim=1)
+            rad = self.rad(x_edge)
+            if self._rad_dup:
+                mult = rad                               # [E, nsph*Cin] directly (dup weight)
+            else:
+                off, rms = 0, []
+                for m in range(self.mmax + 1):
+                    rms.append(ttnn.slice(rad, [0, off], [E, off + self.rad_sizes[m]]))
+                    off += self.rad_sizes[m]
+                mult = ttnn.concat([rms[0]] + sum(([rms[m], rms[m]]
+                                    for m in range(1, self.mmax + 1)), []), dim=1)
             self._cache_xin, self._cache_mult = xf, mult     # for the analytic-force VJP
             xf = ttnn.multiply(xf, mult)
 
