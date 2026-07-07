@@ -108,26 +108,32 @@ def _kernel_ok(deg, n_in, n_out, nnz, W) -> bool:
 _GROUP_CACHE: dict = {}
 
 
-def _coef_exp(ttnn, coef):
+def _coef_exp(ttnn, coef, dtype=None):
     """Expand compact [E, nnz] device coefficients to [E, nnz*32] ON DEVICE (each nonzero's
-    coef broadcast across its 32-column tile). Cached by id(coef); holds the coef reference so
-    its python id cannot be recycled onto a stale entry."""
+    coef broadcast across its 32-column tile). Cached by (id(coef), dtype); holds the coef
+    reference so its python id cannot be recycled onto a stale entry. ``dtype`` (bf8-edge) casts
+    the expanded coef to match the kernel's bf8 x input — CACHED, so the per-step trace refresh
+    does the typecast once, not on every rotate call (16x/step of a ~100MB tensor)."""
     # coef is stored ROW_MAJOR (cheap refresh); tilize on device here for the kernel (see
     # GraphContext). Cache keyed on the ORIGINAL (persistent) coef so repeat hits across calls.
     orig = coef
     def _tile(c):
         return ttnn.to_layout(c, ttnn.TILE_LAYOUT) if c.layout != ttnn.TILE_LAYOUT else c
+    def _build():
+        ce = ttnn.repeat_interleave(_tile(orig), 32, dim=1)     # [E, nnz*32]
+        if dtype is not None and ce.dtype != dtype:
+            ce = ttnn.typecast(ce, dtype)
+        return ce
     if os.environ.get("TT_ATOM_FUSED_NOCACHE") == "1":
-        return ttnn.repeat_interleave(_tile(coef), 32, dim=1)
-    key = id(orig)
+        return _build()
+    key = (id(orig), dtype)
     b = _FUSED_CACHE.get(key)
     if b is not None and b[0] is orig:
         return b[1]
-    ce_dev = ttnn.repeat_interleave(_tile(coef), 32, dim=1)  # [E, nnz*32]
-    coef = orig
+    ce_dev = _build()
     if len(_FUSED_CACHE) > 64:
         _FUSED_CACHE.clear()
-    _FUSED_CACHE[key] = (coef, ce_dev)
+    _FUSED_CACHE[key] = (orig, ce_dev)
     return ce_dev
 
 
@@ -203,12 +209,9 @@ def rotate(ttnn, x_flat, ij, coef, n_in, W, device, n_out=None):
     if _FUSED:
         deg, ks, js = _group(ij, n_out, "i")
         if _kernel_ok(deg, n_in, n_out, len(ij), W):
-            ce_dev = _coef_exp(ttnn, coef)
-            # bf8-edge: the kernel requires coef in the SAME dtype as its bf8 x input. Cast the
-            # (TILE, cached) expanded coef to match. Kept out of the cache key: x dtype is fixed
-            # per call site, and typecast on the small [E,nnz*32] TILE tensor is cheap.
-            if x_flat.dtype != ce_dev.dtype:
-                ce_dev = ttnn.typecast(ce_dev, x_flat.dtype)
+            # bf8-edge: the kernel requires coef in the SAME dtype as its bf8 x input; the cast is
+            # done once inside _coef_exp and CACHED (not per rotate call).
+            ce_dev = _coef_exp(ttnn, coef, dtype=x_flat.dtype)
             return _fused_op(ttnn)(x_flat, ce_dev, n_in, n_out, W, deg, ks, js)
     E = x_flat.shape[0]
     cols = ttnn.split(x_flat, W, dim=1)                       # n_in [E,W] blocks in one dispatch
@@ -253,9 +256,7 @@ def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None
         # g_in[j] = sum_{(i,j,k)} coef_k * gout_i is the SAME fused rotation with the pattern
         # grouped by input block j (fan-in over the output rows i). The coefficient adjoint gc
         # (below) still needs the per-nonzero products, so those + the ones_bd GEMM are unchanged.
-        ce_dev = _coef_exp(ttnn, coef)
-        if g_out_flat.dtype != ce_dev.dtype:                 # bf8-edge: match kernel operand dtype
-            ce_dev = ttnn.typecast(ce_dev, g_out_flat.dtype)
+        ce_dev = _coef_exp(ttnn, coef, dtype=g_out_flat.dtype)   # bf8-edge: cached bf8 coef
         deg, ks, is_ = _group(ij, n_in, "j")
         g_in_flat = _fused_op(ttnn)(g_out_flat, ce_dev, n_out, n_in, W, deg, ks, is_)
         if os.environ.get("TT_ATOM_ABLATE_GC") == "1":
