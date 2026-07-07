@@ -530,9 +530,10 @@ def _forces(bb, geo, graph, node_emb, t, pos, strain=None):
     # force VJP needs only its adjoint. Cast just that block bf16->f32 (the cast dominates readback);
     # the pos-independent embedding columns contribute zero to dE/dpos.
     ng = geo.offset.shape[0]
-    gx = ttnn.to_torch(acc["x_edge"])
-    g_xe = torch.zeros(tuple(gx.shape), dtype=torch.float32)
-    g_xe[:, :ng] = gx[:, :ng].float()
+    W = acc["x_edge"].shape[1]
+    gx = ttnn.to_torch(ttnn.slice(acc["x_edge"], [0, 0], [acc["x_edge"].shape[0], ng]))
+    g_xe = torch.zeros((gx.shape[0], W), dtype=torch.float32)
+    g_xe[:, :ng] = gx.float()
 
     outs = [t["wigner"], t["wigner_inv"], t["x_edge"], t["edge_envelope"]]
     gouts = [g_wig, g_winv, g_xe, g_env]
