@@ -204,6 +204,11 @@ def rotate(ttnn, x_flat, ij, coef, n_in, W, device, n_out=None):
         deg, ks, js = _group(ij, n_out, "i")
         if _kernel_ok(deg, n_in, n_out, len(ij), W):
             ce_dev = _coef_exp(ttnn, coef)
+            # bf8-edge: the kernel requires coef in the SAME dtype as its bf8 x input. Cast the
+            # (TILE, cached) expanded coef to match. Kept out of the cache key: x dtype is fixed
+            # per call site, and typecast on the small [E,nnz*32] TILE tensor is cheap.
+            if x_flat.dtype != ce_dev.dtype:
+                ce_dev = ttnn.typecast(ce_dev, x_flat.dtype)
             return _fused_op(ttnn)(x_flat, ce_dev, n_in, n_out, W, deg, ks, js)
     E = x_flat.shape[0]
     cols = ttnn.split(x_flat, W, dim=1)                       # n_in [E,W] blocks in one dispatch
@@ -249,6 +254,8 @@ def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None
         # grouped by input block j (fan-in over the output rows i). The coefficient adjoint gc
         # (below) still needs the per-nonzero products, so those + the ones_bd GEMM are unchanged.
         ce_dev = _coef_exp(ttnn, coef)
+        if g_out_flat.dtype != ce_dev.dtype:                 # bf8-edge: match kernel operand dtype
+            ce_dev = ttnn.typecast(ce_dev, g_out_flat.dtype)
         deg, ks, is_ = _group(ij, n_in, "j")
         g_in_flat = _fused_op(ttnn)(g_out_flat, ce_dev, n_out, n_in, W, deg, ks, is_)
         if os.environ.get("TT_ATOM_ABLATE_GC") == "1":
@@ -258,7 +265,10 @@ def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None
         # product-concat + ones_bd GEMM. PCC ~1.0 vs the GEMM; the ttnn path stays as the fallback.
         if _FUSED_GC and _gc_kernel_ok(n_out, n_in, len(ij), W, E):
             is_l = [i for i, j in ij]; js_l = [j for i, j in ij]
-            gc = _gc_op(ttnn)(g_out_flat, x_in_flat, _sel(ttnn, device), n_out, n_in, W, is_l, js_l)
+            sel = _sel(ttnn, device)
+            if g_out_flat.dtype != sel.dtype:                # bf8-edge: gc needs gout/xin/sel same dtype
+                sel = ttnn.typecast(sel, g_out_flat.dtype)
+            gc = _gc_op(ttnn)(g_out_flat, x_in_flat, sel, n_out, n_in, W, is_l, js_l)
             return g_in_flat, gc
         in_cols = ttnn.split(x_in_flat, W, dim=1)
         gout_cols = ttnn.split(g_out_flat, W, dim=1)

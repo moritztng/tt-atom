@@ -44,9 +44,11 @@ class Edgewise:
         envelope -> rotate back -> scatter-add to targets (one-hot matmul)."""
         ttnn = self.ttnn
         from . import rotation
+        from .device import bf8_edge
         N, nsph, C = x.shape[0], x.shape[1], self.C
         E = graph.E
         dev = self.device
+        _b8 = bf8_edge()
         xf = ttnn.to_layout(ttnn.reshape(x, (N, nsph * C)), ttnn.ROW_MAJOR_LAYOUT)  # gather operand
         # Keep the src/tgt gathers ROW_MAJOR: the interleave (concat dim=2) + flatten to [E, nsph*2C]
         # is done entirely in ROW_MAJOR (contiguous, no coeff-dim tile padding) with a single
@@ -55,6 +57,11 @@ class Edgewise:
         xt = ttnn.reshape(ttnn.embedding(graph.tgt_idx, xf), (E, nsph, C))   # RM
         m_cat = ttnn.to_layout(ttnn.reshape(ttnn.concat([xs, xt], dim=2), (E, nsph * 2 * C)),
                                ttnn.TILE_LAYOUT)   # flat [xs_i|xt_i] per coord
+        # bf8-edge boundary: from here the whole E-sized edge flow (rotate->so2->gate->so2->
+        # rotate_back) runs bf8. bf8 can't be ROW_MAJOR so the cast lands after the RM gather. The
+        # device replay is DRAM-bandwidth bound on these [E,nsph*C] activations; bf8 halves traffic.
+        if _b8:
+            m_cat = ttnn.typecast(m_cat, ttnn.bfloat8_b)
 
         # rotate node SH (nsph) into the reduced m-space (nred); the SO(2) pipeline runs there
         m_rot = rotation.rotate(ttnn, m_cat, graph.rot_fwd_ij, graph.rot_fwd_coef, nsph, 2 * C,
@@ -70,9 +77,11 @@ class Edgewise:
 
         # scatter-add messages onto target nodes: dense one-hot matmul (small N) or linear O(E)
         # gather+reduce (large N). See GraphContext.linear_scatter / tt_atom/scatter.py.
+        odt = ttnn.bfloat16 if bf8_edge() else None
         if graph.linear_scatter:
             from . import scatter
             out = scatter.segment_sum(ttnn, m_back, graph.tgt_gather, graph.Dmax_t, N, nsph * C)
         else:
-            out = ttnn.matmul(graph.scatter, m_back, compute_kernel_config=self.kcfg)   # [N, 9C]
+            # scatter (bf16 one-hot) @ m_back (bf8) -> bf16 node features (back on the bf16 stream)
+            out = ttnn.matmul(graph.scatter, m_back, dtype=odt, compute_kernel_config=self.kcfg)
         return ttnn.reshape(out, (N, nsph, C))

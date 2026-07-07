@@ -27,10 +27,13 @@ def _mm(ttnn, g, W, kcfg, memory_config=None):
 
     ``memory_config`` lets the BW-bound grid_bw chain keep its transpose-matmul outputs
     L1-resident instead of round-tripping DRAM (same residency win as the forward grid module)."""
+    # bf8-edge: when the incoming adjoint is bf8, keep the transpose-matmul output bf8 so the
+    # backward edge flow stays bf8 (halves the [E,W] gradient traffic; the dominant bw cost).
+    edt = ttnn.bfloat8_b if g.dtype == ttnn.bfloat8_b else None
     if memory_config is not None:
-        return ttnn.matmul(g, W, transpose_b=True, compute_kernel_config=kcfg,
+        return ttnn.matmul(g, W, transpose_b=True, dtype=edt, compute_kernel_config=kcfg,
                            memory_config=memory_config)
-    return ttnn.matmul(g, W, transpose_b=True, compute_kernel_config=kcfg)
+    return ttnn.matmul(g, W, transpose_b=True, dtype=edt, compute_kernel_config=kcfg)
 
 
 # --------------------------------------------------------------------------- elementwise
@@ -359,9 +362,13 @@ def edgewise_bw(ew, graph, g_out, acc):
     E = graph.E
     dev = ew.device
 
+    from .device import bf8_edge
+    _b8 = bf8_edge()
     # scatter backward: g_m_back[e] = g_out[tgt[e]]  (gather by target), flat [E, nsph*C]
     gof = ttnn.to_layout(ttnn.reshape(g_out, (N, nsph * C)), ttnn.ROW_MAJOR_LAYOUT)
     g_mback = ttnn.to_layout(ttnn.embedding(graph.tgt_idx, gof), ttnn.TILE_LAYOUT)
+    if _b8:  # bf8-edge boundary (bw): the reverse edge flow runs bf8 from here (see fwd in edgewise.py)
+        g_mback = ttnn.typecast(g_mback, ttnn.bfloat8_b)
     # inverse rotation backward: forward mapped reduced m-space (nred) -> node SH (nsph)
     g_menv, g_rinv = rotation.rotate_bw(ttnn, ew._cache_menv, g_mback, graph.rot_inv_ij,
                                         graph.rot_inv_coef, graph.nred, C, dev, n_out=nsph)
@@ -394,8 +401,9 @@ def edgewise_bw(ew, graph, g_out, acc):
                            scatter.segment_sum(ttnn, g_xt_f, graph.tgt_gather, graph.Dmax_t, N, W))
         g_nodes = ttnn.reshape(g_nodes, (N, nsph, C))
     else:
-        A = ttnn.matmul(graph.scatter_src, g_mcat, compute_kernel_config=kcfg)   # [N, nsph*2C]
-        B = ttnn.matmul(graph.scatter, g_mcat, compute_kernel_config=kcfg)       # [N, nsph*2C]
+        odt = ttnn.bfloat16 if _b8 else None                                     # back to bf16 node grads
+        A = ttnn.matmul(graph.scatter_src, g_mcat, dtype=odt, compute_kernel_config=kcfg)  # [N, nsph*2C]
+        B = ttnn.matmul(graph.scatter, g_mcat, dtype=odt, compute_kernel_config=kcfg)       # [N, nsph*2C]
         A_rm = ttnn.reshape(ttnn.to_layout(A, ttnn.ROW_MAJOR_LAYOUT), (N, nsph, 2 * C))
         B_rm = ttnn.reshape(ttnn.to_layout(B, ttnn.ROW_MAJOR_LAYOUT), (N, nsph, 2 * C))
         A_src = ttnn.to_layout(ttnn.reshape(ttnn.slice(A_rm, [0, 0, 0], [N, nsph, C]), (N, nsph * C)),
@@ -478,6 +486,10 @@ def backbone_bw(bb, graph, node_emb):
     # with a captured device pass -- only a single [E, x_edge] readback remains on host.
     g_xe = None
     for conv, g_rad in acc["g_rad"]:
+        # radial backward runs bf16 (small hidden=128; the fused_ln_bw kernel is bf16-only and the
+        # x_edge adjoint feeds forces -> keep precision). Cast the bf8-edge g_rad back to bf16 here.
+        if g_rad.dtype == ttnn.bfloat8_b:
+            g_rad = ttnn.typecast(g_rad, ttnn.bfloat16)
         gc = conv.rad.bw(g_rad)
         g_xe = gc if g_xe is None else ttnn.add(g_xe, gc)
     acc["x_edge"] = g_xe
