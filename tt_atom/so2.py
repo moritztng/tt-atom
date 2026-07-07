@@ -71,6 +71,9 @@ class RadialMLP:
 
     def __call__(self, x_edge):
         ttnn = self.ttnn
+        # x_edge arrives ROW_MAJOR (cheap trace refresh); tilize on device here (see GraphContext.x_edge)
+        if x_edge.layout != ttnn.TILE_LAYOUT:
+            x_edge = ttnn.to_layout(x_edge, ttnn.TILE_LAYOUT)
         a0 = ttnn.linear(x_edge, self.w0, bias=self.b0, compute_kernel_config=self.kcfg)
         n1 = ttnn.layer_norm(a0, weight=self.ln1w, bias=self.ln1b, epsilon=self.eps)
         s1 = ttnn.silu(n1)
