@@ -68,12 +68,24 @@ class SpectralAtomwise:
         self.l2_w, self.l2_b = so3("so3_linear_2", self.H, self.C)     # H -> C
 
         # fused block-diagonal-by-coefficient weights (see module docstring). One flat 2D matmul.
-        self.l1_wf = self.l1_bf = self.l2_wf = self.l2_bf = None
+        self.l1_wf = self.l1_bf = self.l2_wf = self.l2_bf = self.gate_exp_w = None
         if _SPECTRAL_FUSED:
             self.l1_wf, self.l1_bf = self._build_so3_fused("so3_linear_1", weights, prefix,
                                                            self.C, self.H, wdtype)
             self.l2_wf, self.l2_bf = self._build_so3_fused("so3_linear_2", weights, prefix,
                                                            self.H, self.C, wdtype)
+            # gate expand (natural-order): sigmoid gate row (l-1) broadcasts over degree-l's 2l+1
+            # coeffs. Ex [lmax*H, (nsph-1)*H] 0/1 selector -> one matmul (fwd) + transpose (bw),
+            # replacing the per-degree 3D [N,2l+1,H] slices (coeff tile-pad).
+            H = self.H
+            ex = torch.zeros(lmax * H, (self.nsph - 1) * H)
+            c = 0
+            for l in range(1, lmax + 1):
+                for _ in range(2 * l + 1):
+                    ex[(l - 1) * H:l * H, c * H:(c + 1) * H] = torch.eye(H)
+                    c += 1
+            self.gate_exp_w = ttnn.from_torch(ex.contiguous(), dtype=ttnn.bfloat16,
+                                              layout=ttnn.TILE_LAYOUT, device=device)
 
     def _build_so3_fused(self, name, weights, prefix, cin, cout, wdtype):
         """Block-diagonal weight [nsph*cin, nsph*cout]: coeff c (degree l(c)) uses W_l. Bias on
@@ -135,6 +147,8 @@ class SpectralAtomwise:
         """x: ttnn ``[N, nsph, C]`` -> ``[N, nsph, C]``."""
         ttnn = self.ttnn
         N = x.shape[0]
+        if self.gate_exp_w is not None:
+            return self._call_flat(x)
         scalar = ttnn.reshape(ttnn.slice(x, [0, 0, 0], [N, 1, self.C]), (N, self.C))
         a_scalar = ttnn.linear(scalar, self.smlp_w, bias=self.smlp_b,
                                compute_kernel_config=self.kcfg)        # [N, lmax*H] pre-SiLU
@@ -150,3 +164,25 @@ class SpectralAtomwise:
         if self.l2_wf is not None:
             return self._so3_linear_fused(g, self.l2_wf, self.l2_bf, self.C)
         return self._so3_linear(g, self.l2_w, self.l2_b)              # [N, nsph, C]
+
+    def _call_flat(self, x):
+        """Fully-flat SpectralAtomwise ([N, nsph*C]) -- so3_linears are block-diagonal flat matmuls
+        and the per-degree gate expands via one 0/1 matmul (no 3D coeff tile-pad). Bit-compatible.
+        Caches flat h and the gating for the flat backward (spectral_bw)."""
+        ttnn = self.ttnn
+        N, C, H, nsph = x.shape[0], self.C, self.H, self.nsph
+        xf = ttnn.reshape(x, (N, nsph * C))
+        scalar = ttnn.slice(xf, [0, 0], [N, C])                       # l=0 block
+        a_scalar = ttnn.linear(scalar, self.smlp_w, bias=self.smlp_b, compute_kernel_config=self.kcfg)
+        gating = ttnn.silu(a_scalar)                                  # [N, lmax*H]
+        h = ttnn.linear(xf, self.l1_wf, bias=self.l1_bf, compute_kernel_config=self.kcfg)  # [N, nsph*H]
+        self._cache_xf, self._cache_a_scalar = xf, a_scalar
+        self._cache_gating, self._cache_hf = gating, h
+        # gate: SiLU on l=0 block, sigmoid-gate (expanded per degree) on the vector blocks
+        sg = ttnn.sigmoid(gating)
+        scalar_h = ttnn.silu(ttnn.slice(h, [0, 0], [N, H]))
+        gate_exp = ttnn.matmul(sg, self.gate_exp_w, compute_kernel_config=self.kcfg)  # [N,(nsph-1)*H]
+        vec = ttnn.multiply(ttnn.slice(h, [0, H], [N, nsph * H]), gate_exp)
+        g = ttnn.concat([scalar_h, vec], dim=1)                       # [N, nsph*H]
+        out = ttnn.linear(g, self.l2_wf, bias=self.l2_bf, compute_kernel_config=self.kcfg)
+        return ttnn.reshape(out, (N, nsph, C))

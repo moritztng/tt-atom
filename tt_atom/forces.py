@@ -275,9 +275,41 @@ def _so3_linear_bw(sp, g_out, w_blocks, wf=None, cin=None):
     return ttnn.concat(outs, dim=1)
 
 
+def _spectral_bw_flat(sp, g_out):
+    """Fully-flat VJP of ``SpectralAtomwise`` -- mirror of ``SpectralAtomwise._call_flat``."""
+    ttnn = sp.ttnn
+    N, H, C, nsph = g_out.shape[0], sp.H, sp.C, sp.nsph
+    xf = sp._cache_xf                                          # [N, nsph*C]
+    a_scalar, gating, hf = sp._cache_a_scalar, sp._cache_gating, sp._cache_hf
+    gf = ttnn.reshape(g_out, (N, nsph * C))
+    # so3_linear_2 backward (flat block-diagonal transpose-matmul)
+    g_g = _mm(ttnn, gf, sp.l2_wf, sp.kcfg)                    # [N, nsph*H]
+    # gate backward (flat): l0 SiLU; vector = h_vec * gate_exp
+    sg = ttnn.sigmoid(gating)
+    gate_exp = ttnn.matmul(sg, sp.gate_exp_w, compute_kernel_config=sp.kcfg)   # [N,(nsph-1)*H]
+    g_scalar_h = silu_bw(ttnn, ttnn.slice(g_g, [0, 0], [N, H]), ttnn.slice(hf, [0, 0], [N, H]))
+    g_vec = ttnn.slice(g_g, [0, H], [N, nsph * H])
+    g_h_vec = ttnn.multiply(g_vec, gate_exp)                  # g wrt h vector blocks
+    g_h = ttnn.concat([g_scalar_h, g_h_vec], dim=1)          # [N, nsph*H]
+    # g wrt the (expanded) gate = g_vec * h_vec ; contract back to [N, lmax*H] via Ex^T
+    g_gate_exp = ttnn.multiply(g_vec, ttnn.slice(hf, [0, H], [N, nsph * H]))
+    g_sg = _mm(ttnn, g_gate_exp, sp.gate_exp_w, sp.kcfg)     # [N, lmax*H]
+    g_gating = ttnn.sigmoid_bw(g_sg, gating)[0]
+    # so3_linear_1 backward -> g wrt x
+    g_x = _mm(ttnn, g_h, sp.l1_wf, sp.kcfg)                  # [N, nsph*C]
+    # scalar_mlp backward: add g_scalar onto x's l=0 block
+    g_a = silu_bw(ttnn, g_gating, a_scalar)
+    g_scalar = _mm(ttnn, g_a, sp.smlp_w, sp.kcfg)            # [N, C]
+    g_x_l0 = ttnn.add(ttnn.slice(g_x, [0, 0], [N, C]), g_scalar)
+    out = ttnn.concat([g_x_l0, ttnn.slice(g_x, [0, C], [N, nsph * C])], dim=1)
+    return ttnn.reshape(out, (N, nsph, C))
+
+
 def spectral_bw(sp, g_out):
     """VJP of ``SpectralAtomwise``. ``g_out`` [N,nsph,C] -> g wrt input x [N,nsph,C]."""
     ttnn = sp.ttnn
+    if getattr(sp, "gate_exp_w", None) is not None:
+        return _spectral_bw_flat(sp, g_out)
     N, H, C = g_out.shape[0], sp.H, sp.C
     a_scalar = sp._cache_a_scalar
     gating, h = sp._cache_gating, sp._cache_h
