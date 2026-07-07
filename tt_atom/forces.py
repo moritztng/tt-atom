@@ -43,10 +43,36 @@ def silu_bw(ttnn, g, x):
 # --------------------------------------------------------------------------- RMS norm SH
 
 
+def _rmsnorm_bw_flat(norm, g_out):
+    """Flat VJP of ``RMSNormSH`` ([N, nsph*C]) -- mirror of ``RMSNormSH._call_flat``. Uses the
+    cached flat centered input xc [N,nsph*C] and rsqrt scale inv [N,1]."""
+    ttnn = norm.ttnn
+    xc = norm._cache_xc                                 # [N, nsph*C]
+    inv = norm._cache_inv                               # [N, 1]
+    N, C, nsph = g_out.shape[0], norm.C, norm.nsph
+    W = nsph * C
+    gf = ttnn.reshape(g_out, (N, W))
+    # out = xc * (inv * awvec); bias additive (identity wrt input)
+    g_xc = ttnn.multiply(gf, ttnn.multiply(inv, norm.awvec))            # direct path
+    # g_inv = sum_j g_out_j * xc_j * awvec_j
+    g_inv = ttnn.sum(ttnn.multiply(ttnn.multiply(gf, xc), norm.awvec), dim=1, keepdim=True)  # [N,1]
+    # inv=(ms+eps)^-1/2 -> g_ms = -0.5 inv^3 g_inv ; ms = sum_j wvec_j xc_j^2 -> g_xc += g_ms 2 wvec xc
+    g_ms = ttnn.multiply(g_inv, ttnn.multiply(ttnn.multiply(inv, inv), inv))
+    g_ms = ttnn.multiply(g_ms, -0.5)
+    g_xc = ttnn.add(g_xc, ttnn.multiply(ttnn.multiply(ttnn.multiply(xc, norm.wvec), g_ms), 2.0))
+    # centering backward on l0: g_x_l0 = g_xc_l0 - mean_C(g_xc_l0)
+    g_l0 = ttnn.slice(g_xc, [0, 0], [N, C])
+    g_l0 = ttnn.subtract(g_l0, ttnn.mean(g_l0, dim=1, keepdim=True))
+    out = ttnn.concat([g_l0, ttnn.slice(g_xc, [0, C], [N, W])], dim=1)
+    return ttnn.reshape(out, (N, nsph, C))
+
+
 def rmsnorm_bw(norm, g_out):
     """VJP of ``RMSNormSH``. ``norm`` is the forward module (holds bdw, aw, ab, eps).
     Reuses the centered input ``xc`` and rsqrt scale ``inv`` cached on the forward."""
     ttnn = norm.ttnn
+    if getattr(norm, "flat", False):
+        return _rmsnorm_bw_flat(norm, g_out)
     xc = norm._cache_xc                                 # centered input saved on forward
     inv = norm._cache_inv                               # [N,1,1] rsqrt scale saved on forward
     N, nsph, C = xc.shape
