@@ -106,12 +106,19 @@ def gate_bw(gate, g_out):
     gate_exp = gate._cache_gate                         # expanded sigmoid gate [E,(nsph-1)*H] (cached fwd)
     E, H, lmax, ei = x.shape[0], gate.H, gate.lmax, gate.expand_index
 
-    g_scalar = ttnn.slice(g_out, [0, 0], [E, H])
-    g_vec = ttnn.slice(g_out, [0, H], [E, x.shape[1]])
-    x_scalar = ttnn.slice(x, [0, 0], [E, H])
-    x_vec = ttnn.slice(x, [0, H], [E, x.shape[1]])
-
-    g_x = ttnn.concat([silu_bw(ttnn, g_scalar, x_scalar), ttnn.multiply(g_vec, gate_exp)], dim=1)
+    from .activation import _FUSED_GATE
+    if _FUSED_GATE and x.shape[1] % 32 == 0 and gate_exp.shape[1] % 32 == 0:
+        # one kernel: g_x = [g_out[:,:H]*silu'(x[:,:H]) | g_out[:,H:]*gate_exp]
+        op = ttnn._ttnn.operations.experimental.fused_gate
+        g_x = op(g_out, gate_exp, x, x.shape[1] // 32, gate_exp.shape[1] // 32, H // 32, 1)
+        g_vec = ttnn.slice(g_out, [0, H], [E, x.shape[1]])
+        x_vec = ttnn.slice(x, [0, H], [E, x.shape[1]])
+    else:
+        g_scalar = ttnn.slice(g_out, [0, 0], [E, H])
+        g_vec = ttnn.slice(g_out, [0, H], [E, x.shape[1]])
+        x_scalar = ttnn.slice(x, [0, 0], [E, H])
+        x_vec = ttnn.slice(x, [0, H], [E, x.shape[1]])
+        g_x = ttnn.concat([silu_bw(ttnn, g_scalar, x_scalar), ttnn.multiply(g_vec, gate_exp)], dim=1)
 
     g_gate_exp = ttnn.multiply(g_vec, x_vec)            # [E, (nsph-1)*H]
     # segment-sum the H-blocks back to [E, lmax*H]: transpose of the fwd expand matmul (one op)

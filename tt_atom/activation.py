@@ -9,6 +9,12 @@ Reference: ``fairchem ... nn/activation.py:GateActivation`` (``m_prime=True``).
 """
 from __future__ import annotations
 
+import os
+
+# Route the gate fwd/bw column-split glue (slice+silu+slice+multiply+concat) through the custom
+# ttnn.experimental.fused_gate kernel (one launch, no reduction). Needs source ttnn.
+_FUSED_GATE = os.environ.get("TT_ATOM_FUSED_GATE") == "1"
+
 
 def _expand_index_m_prime(lmax, mmax):
     """The per-vector-coefficient gate index in m-primed order (see reference)."""
@@ -54,6 +60,10 @@ class GateActivation:
         # expand the gate rows per vector coefficient as ONE matmul (0/1 selector); see __init__
         gate = ttnn.matmul(g, self.expand_w, compute_kernel_config=self.kcfg)  # [E, (nsph-1)*H]
         self._cache_gate = gate                                  # expanded gate for the VJP (fewer bw ops)
+        if _FUSED_GATE and x.shape[1] % 32 == 0 and gate.shape[1] % 32 == 0:
+            # one kernel: out = [silu(x[:, :H]) | x[:, H:] * gate]
+            op = ttnn._ttnn.operations.experimental.fused_gate
+            return op(x, gate, x, x.shape[1] // 32, gate.shape[1] // 32, H // 32, 0)
         scalar = ttnn.silu(ttnn.slice(x, [0, 0], [E, H]))        # l=0 coeff
         vector = ttnn.multiply(ttnn.slice(x, [0, H], [E, x.shape[1]]), gate)
         return ttnn.concat([scalar, vector], dim=1)
