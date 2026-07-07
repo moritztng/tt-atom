@@ -147,10 +147,14 @@ class TracedEngine:
         # radial finish is done on device inside the captured trace (backbone_bw); read it back.
         # Only the gaussian block of x_edge = [gaussian | src_emb | tgt_emb] depends on pos, so cast
         # just that block bf16->f32 (the cast dominates readback); embedding cols add zero to dpos.
+        # only the gaussian block (first ng cols) of x_edge depends on pos; the src/tgt embedding
+        # columns are pos-independent (their adjoint is discarded). Slice on device -> read back
+        # only [E, ng] (5x less transfer+cast than the full [E, x_edge_width]).
         ng = self.geo.offset.shape[0]
-        gx = ttnn.to_torch(acc["x_edge"])
-        g_xe = torch.zeros(tuple(gx.shape), dtype=torch.float32)
-        g_xe[:, :ng] = gx[:, :ng].float()
+        W = acc["x_edge"].shape[1]
+        gx = ttnn.to_torch(ttnn.slice(acc["x_edge"], [0, 0], [acc["x_edge"].shape[0], ng]))
+        g_xe = torch.zeros((gx.shape[0], W), dtype=torch.float32)
+        g_xe[:, :ng] = gx.float()
         outs = [t["wigner"], t["wigner_inv"], t["x_edge"], t["edge_envelope"]]
         gouts = [g_wig, g_winv, g_xe, g_env]
         # host x_init adjoint only when x_init is a host term (device edge-degree consumes it on device)
