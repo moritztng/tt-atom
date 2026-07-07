@@ -35,6 +35,43 @@ def _fused_op(ttnn):
     return ttnn._ttnn.operations.experimental.fused_rotate
 
 
+def _gc_op(ttnn):
+    return ttnn._ttnn.operations.experimental.fused_rotate_gc
+
+
+# Route the rotate_bw coefficient adjoint (dE/dcoef) through the custom fused mul-reduce kernel
+# instead of the [E, nnz*W] product concat + ones_bd GEMM. The GEMM is memory-bound on the ~823MB
+# P concat (measured 111ms/step at N=1000); the kernel keeps the products L1-resident and does the
+# W-reduction + column placement in one accumulating matmul, reading gout+xin once. Env-gated (A/B).
+_FUSED_GC = os.environ.get("TT_ATOM_FUSED_GC", "1") == "1"
+
+# The 32 column-selector tiles ([32, 32*32]; tile c has column c all-ones). Pos/topology-independent
+# constant -> built once per device. matmul(prod, sel[c]) = rowsum(prod) placed in output column c.
+_SEL_CACHE: dict = {}
+
+
+def _sel(ttnn, device):
+    key = id(device)
+    t = _SEL_CACHE.get(key)
+    if t is None:
+        s = torch.zeros(32, 32 * 32)
+        for c in range(32):
+            s[:, c * 32 + c] = 1.0
+        t = ttnn.from_torch(s, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=device)
+        _SEL_CACHE[key] = t
+    return t
+
+
+def _gc_kernel_ok(n_out, n_in, nnz, W) -> bool:
+    """L1 budget for the gc kernel CBs (see gc_program_factory): 2*(n_out+n_in)*Wt gout/xin +
+    32 sel + 32*Wt prod + 2*ceil(nnz/32) out tiles. uma-s fits (~1.16MB); uma-m (W=256, 19x25)
+    overflows -> GEMM fallback."""
+    Wt = W // 32
+    out_tiles = (nnz + 31) // 32
+    tiles = 2 * (n_out + n_in) * Wt + 32 + 32 * Wt + 2 * out_tiles
+    return tiles * _TILE_BYTES <= _L1_CB_BUDGET
+
+
 # Two hard limits gate the kernel to shapes it can run, with a MAC fallback otherwise (so the fast
 # kernel is a drop-in for ANY checkpoint, not just uma-s):
 #   (1) The compute kernel fans-in all `d` per-block products into dst[0..d-1] and sums them there,
@@ -197,6 +234,13 @@ def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None
         g_in_flat = _fused_op(ttnn)(g_out_flat, ce_dev, n_out, n_in, W, deg, ks, is_)
         if os.environ.get("TT_ATOM_ABLATE_GC") == "1":
             return g_in_flat, ttnn.multiply(coef, 0.0)          # PERF PROBE: skip the gc GEMM
+        # coefficient adjoint gc[k] = sum_W(gout_i * in_j): custom fused mul-reduce kernel (products
+        # L1-resident, one accumulating matmul reduces+places into gc[E,nnz]) instead of the ~823MB
+        # product-concat + ones_bd GEMM. PCC ~1.0 vs the GEMM; the ttnn path stays as the fallback.
+        if _FUSED_GC and _gc_kernel_ok(n_out, n_in, len(ij), W):
+            is_l = [i for i, j in ij]; js_l = [j for i, j in ij]
+            gc = _gc_op(ttnn)(g_out_flat, x_in_flat, _sel(ttnn, device), n_out, n_in, W, is_l, js_l)
+            return g_in_flat, gc
         in_cols = ttnn.split(x_in_flat, W, dim=1)
         gout_cols = ttnn.split(g_out_flat, W, dim=1)
         prods = [ttnn.multiply(gout_cols[i], in_cols[j]) for (i, j) in ij]
