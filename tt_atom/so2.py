@@ -109,21 +109,23 @@ class RadialMLP:
         self._cache = (a0, n1, a3, n4)
         return ttnn.linear(s2, self.w6, bias=self.b6, compute_kernel_config=self.kcfg)
 
+    def _silu_ln_bw(self, g, n, x, w_b):
+        """Fused SiLU-bw + LayerNorm-bw in ONE kernel launch: computes
+        ``dx = ln_bw( silu'(n) * g * gamma, x )`` where ``gy = g * silu'(n) * gamma`` is built
+        in-kernel (folds the external ``silu_bw`` op AND the affine-scale multiply). ``n`` is the
+        cached pre-silu activation (LN output); ``x`` the cached LN input; ``w_b`` the LN scale [1,W]."""
+        import struct
+        ttnn = self.ttnn
+        W = x.shape[-1]
+        red = _red_tile(ttnn, self.device, W)
+        eps_bits = struct.unpack("<I", struct.pack("<f", self.eps))[0]
+        op = ttnn._ttnn.operations.experimental.fused_ln_bw
+        return op(g, x, red, n, w_b, W, eps_bits)
+
     def _ln_bw(self, g_out, x, w_b):
         """VJP of ``F.layer_norm`` (grad wrt the LN input ``x``, affine scale folded in).
         ``x`` is the cached forward input; ``w_b`` the LN scale as [1, n] for broadcast."""
         ttnn = self.ttnn
-        if _FUSED_LNBW:
-            # fold the affine scale into gy on host (one multiply), then the fused reduction kernel
-            # computes mean_x/rstd/x_hat and dx = rstd*(gy - mean(gy) - x_hat*mean(gy*x_hat)) in one launch.
-            import struct
-            W = x.shape[-1]
-            if W % 32 == 0:
-                gy = ttnn.multiply(g_out, w_b)
-                red = _red_tile(ttnn, self.device, W)
-                eps_bits = struct.unpack("<I", struct.pack("<f", self.eps))[0]
-                op = ttnn._ttnn.operations.experimental.fused_ln_bw
-                return op(gy, x, red, W, eps_bits)
         mu = ttnn.mean(x, dim=1, keepdim=True)
         xc = ttnn.subtract(x, mu)
         var = ttnn.mean(ttnn.multiply(xc, xc), dim=1, keepdim=True)
@@ -143,11 +145,15 @@ class RadialMLP:
         from .forces import silu_bw, _mm
         a0, n1, a3, n4 = self._cache
         g_s2 = _mm(ttnn, g_out, self.w6, self.kcfg)        # [E, hidden]
-        g_n4 = silu_bw(ttnn, g_s2, n4)
-        g_a3 = self._ln_bw(g_n4, a3, self.ln4w_b)
+        if _FUSED_LNBW and a3.shape[-1] % 32 == 0:
+            g_a3 = self._silu_ln_bw(g_s2, n4, a3, self.ln4w_b)   # one kernel: silu-bw + LN-bw
+        else:
+            g_a3 = self._ln_bw(silu_bw(ttnn, g_s2, n4), a3, self.ln4w_b)
         g_s1 = _mm(ttnn, g_a3, self.w3, self.kcfg)
-        g_n1 = silu_bw(ttnn, g_s1, n1)
-        g_a0 = self._ln_bw(g_n1, a0, self.ln1w_b)
+        if _FUSED_LNBW and a0.shape[-1] % 32 == 0:
+            g_a0 = self._silu_ln_bw(g_s1, n1, a0, self.ln1w_b)
+        else:
+            g_a0 = self._ln_bw(silu_bw(ttnn, g_s1, n1), a0, self.ln1w_b)
         return _mm(ttnn, g_a0, self.w0, self.kcfg)         # [E, x_edge dim]
 
 
