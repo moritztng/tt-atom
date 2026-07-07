@@ -158,36 +158,29 @@ class SO2Convolution:
             self._build_fused(weights, prefix, wdtype)
 
     def _build_fused(self, weights, prefix, wdtype):
-        import ttnn
-
+        """Per-m fused weights: m=0 one linear [in0->640]; each m>0 ONE dense matmul on the
+        contiguous [real|imag] input with the [[Wa,Wb],[-Wb,Wa]] block [2K->2Hh]. No block-diagonal
+        zeros (unlike a single whole-conv matmul) so no MAC blowup at large E, yet ~5 ops per conv
+        instead of ~15 (kills the real/imag slices + subtract/add combine)."""
         lmax, mmax, Cin = self.lmax, self.mmax, self.Cin
-        w_m0 = weights[f"{prefix}.fc_m0.weight"].T.contiguous().float()       # [in0, out0=640]
-        b_m0 = weights[f"{prefix}.fc_m0.bias"].float()                        # [out0]
-        in_total = self.in_offsets[-1]
-        out0 = w_m0.shape[1]
-        hh = [weights[f"{prefix}.so2_m_conv.{m-1}.fc.weight"].shape[0] // 2
-              for m in range(1, mmax + 1)]                                    # Hh per m
-        out_total = out0 + sum(2 * h for h in hh)
-        W = torch.zeros(in_total, out_total, dtype=torch.float32)
-        b = torch.zeros(out_total, dtype=torch.float32)
-        # m = 0 block (rows [0:in_offsets[1]] -> cols [0:out0]); carries extra+coeffs and bias
-        W[0:self.in_offsets[1], 0:out0] = w_m0
-        b[0:out0] = b_m0
-        off = out0
+        w_m0 = weights[f"{prefix}.fc_m0.weight"].T.contiguous().float()       # [in0, 640]
+        b_m0 = weights[f"{prefix}.fc_m0.bias"].float()
+        self.fused_wm0 = _to_dev(w_m0.contiguous(), self.device, wdtype)
+        self.fused_bm0 = _to_dev(b_m0.contiguous(), self.device, wdtype)
+        self.fused_m0_out = w_m0.shape[1]                                     # 640 (extra + coeffs)
+        self.fused_wm = []                                                   # [2K, 2Hh] per m>0
+        self.fused_out_w = [self.fused_m0_out - self.extra]                  # coeff out width per block
         for m in range(1, mmax + 1):
-            Hh = hh[m - 1]
-            K = self.num_coef[m] * Cin
-            r0 = self.in_offsets[m]; i0 = r0 + K                              # real / imag input col starts
             wm = weights[f"{prefix}.so2_m_conv.{m-1}.fc.weight"].T.contiguous().float()  # [K, 2Hh]
+            K, twoHh = wm.shape[0], wm.shape[1]
+            Hh = twoHh // 2
             Wa = wm[:, :Hh]; Wb = wm[:, Hh:2 * Hh]
-            # out_real = real@Wa - imag@Wb ; out_imag = real@Wb + imag@Wa
-            W[r0:r0 + K, off:off + Hh] = Wa
-            W[i0:i0 + K, off:off + Hh] = -Wb
-            W[r0:r0 + K, off + Hh:off + 2 * Hh] = Wb
-            W[i0:i0 + K, off + Hh:off + 2 * Hh] = Wa
-            off += 2 * Hh
-        self.fused_w = _to_dev(W.contiguous(), self.device, wdtype)
-        self.fused_b = _to_dev(b.contiguous(), self.device, wdtype)
+            Wblk = torch.zeros(2 * K, 2 * Hh, dtype=torch.float32)
+            Wblk[0:K, 0:Hh] = Wa; Wblk[0:K, Hh:2 * Hh] = Wb                   # real -> [out_real|out_imag]
+            Wblk[K:2 * K, 0:Hh] = -Wb; Wblk[K:2 * K, Hh:2 * Hh] = Wa         # imag -> [out_real|out_imag]
+            self.fused_wm.append(_to_dev(Wblk.contiguous(), self.device, wdtype))
+            self.fused_out_w.append(2 * Hh)
+        self.fused_w = True                                                  # sentinel: fused path on
 
     def __call__(self, x, x_edge=None):
         """x: ttnn ``[E, (lmax+1)**2, Cin]`` or flat ``[E, (lmax+1)**2 * Cin]``; returns flat
@@ -209,14 +202,23 @@ class SO2Convolution:
             self._cache_xin, self._cache_mult = xf, mult     # for the analytic-force VJP
             xf = ttnn.multiply(xf, mult)
 
-        # fused single-matmul path: whole conv is one linear (see module docstring)
+        # per-m fused path: m0 one linear + one dense matmul per m>0 (see _build_fused)
         if self.fused_w is not None:
-            full = ttnn.linear(xf, self.fused_w, bias=self.fused_b, compute_kernel_config=self.kcfg)
+            x0 = ttnn.slice(xf, [0, self.in_offsets[0]], [E, self.in_offsets[1]])
+            full0 = ttnn.linear(x0, self.fused_wm0, bias=self.fused_bm0,
+                                compute_kernel_config=self.kcfg)             # [E, 640]
+            extra = None
             if self.extra:
-                extra = ttnn.slice(full, [0, 0], [E, self.extra])
-                out = ttnn.slice(full, [0, self.extra], [E, full.shape[1]])
-                return out, extra
-            return full
+                extra = ttnn.slice(full0, [0, 0], [E, self.extra])
+                m0 = ttnn.slice(full0, [0, self.extra], [E, self.fused_m0_out])
+            else:
+                m0 = full0
+            blocks = [m0]
+            for m in range(1, self.mmax + 1):
+                blk = ttnn.slice(xf, [0, self.in_offsets[m]], [E, self.in_offsets[m + 1]])  # [E,2K]
+                blocks.append(ttnn.matmul(blk, self.fused_wm[m - 1], compute_kernel_config=self.kcfg))
+            out = ttnn.concat(blocks, dim=1)                                 # [E, nsph*H]
+            return (out, extra) if self.extra else out
 
         out_blocks = []
 
