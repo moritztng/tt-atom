@@ -214,7 +214,18 @@ def rotate(ttnn, x_flat, ij, coef, n_in, W, device, n_out=None):
             ce_dev = _coef_exp(ttnn, coef, dtype=x_flat.dtype)
             return _fused_op(ttnn)(x_flat, ce_dev, n_in, n_out, W, deg, ks, js)
     E = x_flat.shape[0]
-    cols = ttnn.split(x_flat, W, dim=1)                       # n_in [E,W] blocks in one dispatch
+    # non-fused fallback (the fused kernel rejects this pattern — e.g. the rectangular reduced-m
+    # uma-m rotation). Splitting a bf8 tensor into [E,1] columns yields MIXED per-column dtypes
+    # (bf8 is block-float: a width-1 slice can't carry the tile's shared exponent), so the
+    # addcmul MAC below would mix bf8/bf16 operands. Run the MAC in bf16 — cast the bf8-edge
+    # activation up once and cast the concatenated result back once (2 casts, vs a per-column
+    # fixup); the coef is already bf16 here. bf16 is also the safer dtype for the fallback.
+    odt = x_flat.dtype
+    if odt == ttnn.bfloat8_b:
+        x_flat = ttnn.typecast(x_flat, ttnn.bfloat16)
+    if coef.dtype == ttnn.bfloat8_b:                         # --fast stores coef bf8; same split issue
+        coef = ttnn.typecast(coef, ttnn.bfloat16)
+    cols = ttnn.split(x_flat, W, dim=1)                      # n_in [E,W] blocks in one dispatch
     # split the [E,nnz] coefficients into nnz [E,1] broadcast columns in ONE dispatch instead of
     # nnz per-nonzero ttnn.slice calls. The rotation is the largest single consumer of eager ttnn
     # dispatches (~49% at N=1000) and the eager MD path is host-dispatch bound; the coef slices are
@@ -241,7 +252,8 @@ def rotate(ttnn, x_flat, ij, coef, n_in, W, device, n_out=None):
             # captured trace ("Writes are not supported during trace capture"), whereas this is a
             # plain eltwise. Bit-exact (0.0*finite == 0.0). cols[0] always exists (n_in>=1).
             out[i] = ttnn.multiply(cols[0], 0.0)
-    return ttnn.concat(out, dim=1)
+    res = ttnn.concat(out, dim=1)
+    return ttnn.typecast(res, odt) if res.dtype != odt else res
 
 
 def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None):
@@ -278,6 +290,15 @@ def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None
         gc = ttnn.matmul(P, _ones_bd(ttnn, device, len(ij), W),
                          compute_kernel_config=compute_kernel_config())
         return g_in_flat, gc
+    # non-fused fallback: as in rotate(), a bf8 split yields mixed per-column dtypes, so run the
+    # MAC in bf16 (cast the bf8-edge adjoints/inputs up, cast g_in back at the return).
+    odt = g_out_flat.dtype
+    if g_out_flat.dtype == ttnn.bfloat8_b:
+        g_out_flat = ttnn.typecast(g_out_flat, ttnn.bfloat16)
+    if x_in_flat.dtype == ttnn.bfloat8_b:
+        x_in_flat = ttnn.typecast(x_in_flat, ttnn.bfloat16)
+    if coef.dtype == ttnn.bfloat8_b:
+        coef = ttnn.typecast(coef, ttnn.bfloat16)
     in_cols = ttnn.split(x_in_flat, W, dim=1)                    # n_in [E,W] blocks in one dispatch
     gout_cols = ttnn.split(g_out_flat, W, dim=1)                 # n_out [E,W] blocks in one dispatch
     if coef.layout != ttnn.TILE_LAYOUT:                          # coef stored RM (cheap refresh)
@@ -307,7 +328,10 @@ def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None
             # instead of ttnn.zeros (a host write forbidden during trace capture). gout_cols[0]
             # always exists (n_out>=1). Bit-exact zero.
             g_in[j] = ttnn.multiply(gout_cols[0], 0.0)
-    return ttnn.concat(g_in, dim=1), gc
+    g_in_flat = ttnn.concat(g_in, dim=1)
+    if g_in_flat.dtype != odt:
+        g_in_flat = ttnn.typecast(g_in_flat, odt)
+    return g_in_flat, gc
 
 
 def scatter_coef(g_coef: torch.Tensor, ij, n_out: int, n_in: int = None) -> torch.Tensor:
