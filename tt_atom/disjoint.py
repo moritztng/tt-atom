@@ -70,6 +70,7 @@ class BatchedGraph:
     batch: torch.Tensor         # [Ntot] atom -> system id
     natoms: list                # per-system atom counts (len K)
     sys_emb: torch.Tensor       # [Ntot, C]
+    charge: float = 0.0         # shared system charge (a batch is one composition => one charge)
 
     @property
     def K(self):
@@ -94,9 +95,11 @@ def assemble(systems, cutoff, weights, sphere_channels, task="omol"):
         raise ValueError("empty batch")
     pos_all, Z_all, ei_all, shift_all, batch_all, sys_all = [], [], [], [], [], []
     natoms = []
+    charges = []
     node_off = 0
     for k, system in enumerate(systems):
         pos, Z, charge, spin, cell, pbc = _as_atoms_fields(system)
+        charges.append(charge)
         n = Z.shape[0]
         ei, shift = radius_graph(pos, cutoff, cell=cell, pbc=pbc)
         if ei.shape[1] == 0:
@@ -111,6 +114,20 @@ def assemble(systems, cutoff, weights, sphere_channels, task="omol"):
         sys_all.append(se.expand(n, -1))
         natoms.append(n)
         node_off += n
+    # charge_balanced_channels needs a per-system charge target; a merged bundle is one composition,
+    # so the batch shares one charge.
+    if len(set(charges)) != 1:
+        raise ValueError(f"evaluate_batch needs one shared charge; got {sorted(set(charges))}")
+    charge = charges[0]
+    # A charged batch's per-system target is charge/natoms — a per-system quantity the batched balance
+    # currently expresses as one scalar (charge/natoms[0]). That is only exact when all systems share
+    # an atom count, so require it (the reduced-composition guard permits e.g. CH-reducible systems of
+    # different sizes). Neutral batches (target 0) are unaffected.
+    if charge != 0.0 and len(set(natoms)) > 1:
+        raise ValueError(
+            "charged uma-s-1.2 batched forces need equal atom counts per system (the per-system "
+            f"charge/natoms target differs across sizes {sorted(set(natoms))}); batch equal-size "
+            "systems, or evaluate the charged systems one at a time.")
     return BatchedGraph(
         pos=torch.cat(pos_all, dim=0),
         Z=torch.cat(Z_all, dim=0),
@@ -119,4 +136,5 @@ def assemble(systems, cutoff, weights, sphere_channels, task="omol"):
         batch=torch.cat(batch_all, dim=0),
         natoms=natoms,
         sys_emb=torch.cat(sys_all, dim=0),
+        charge=charge,
     )

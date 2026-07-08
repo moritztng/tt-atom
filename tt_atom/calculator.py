@@ -155,7 +155,8 @@ class TTAtomCalculator(Calculator):
         super().calculate(atoms, properties, system_changes)
         pos = torch.tensor(np.asarray(atoms.get_positions()), dtype=torch.float32)
         Z = torch.tensor(np.asarray(atoms.get_atomic_numbers()), dtype=torch.long)
-        charge = torch.tensor([float(atoms.info.get("charge", 0.0))])
+        chg = float(atoms.info.get("charge", 0.0))
+        charge = torch.tensor([chg])
         spin = torch.tensor([float(atoms.info.get("spin", 0.0))])
 
         pbc = np.asarray(atoms.get_pbc())
@@ -175,14 +176,14 @@ class TTAtomCalculator(Calculator):
         # the eager stress path rather than silently dropping stress. A fully-periodic system that
         # only wants energy/forces still enjoys the trace (stress is auto-computed but unrequested).
         if self.trace and "stress" not in properties:
-            E, F = self._traced(pos, Z, edge_index, edge_cell_shift, sys_emb)
+            E, F = self._traced(pos, Z, edge_index, edge_cell_shift, sys_emb, charge=chg)
         elif want_stress:
             E, F, virial = Fmod.energy_and_forces(self.backbone, self.geo, pos, Z, edge_index,
                                                   sys_emb, edge_cell_shift=edge_cell_shift,
-                                                  compute_stress=True)
+                                                  compute_stress=True, charge=chg)
         else:
             E, F = Fmod.energy_and_forces(self.backbone, self.geo, pos, Z, edge_index, sys_emb,
-                                          edge_cell_shift=edge_cell_shift)
+                                          edge_cell_shift=edge_cell_shift, charge=chg)
         # apply the per-task energy normalizer + element references (forces/virial scale by rmsd)
         E = self.scale_rmsd * E + self.scale_mean
         if self.elem_refs is not None:
@@ -251,6 +252,10 @@ class TTAtomCalculator(Calculator):
                     )
 
         bg = disjoint.assemble(systems, self.cfg["cutoff"], self._w, self.C, task=self.task)
+        # NB: unlike the single-system calculate(), the batched path does NOT apply the generic
+        # eval-rotation, so a batch member sitting at an EXACT high-symmetry geometry keeps the small
+        # residual bf16 symmetry-force error the quaternion frame doesn't fully cancel (throughput
+        # path — a 0.03 A rattle or the single-system path removes it).
         want_forces = "forces" in properties
         if trace and want_forces:
             E_raw, F = self._traced_batch(bg)
@@ -283,11 +288,12 @@ class TTAtomCalculator(Calculator):
                 self._batch_engine.close()
             self._batch_engine = TracedEngine(
                 self.backbone, self.geo, bg.Z, bg.edge_index, bg.sys_emb,
-                edge_cell_shift=bg.cell_shift, seg=bg.segment_matrix(), linear_scatter=True)
+                edge_cell_shift=bg.cell_shift, seg=bg.segment_matrix(), linear_scatter=True,
+                charge=bg.charge, system_natoms=bg.natoms)
             self._batch_edges = bg.edge_index.clone()
         return self._batch_engine(bg.pos)
 
-    def _traced(self, pos, Z, edge_index, edge_cell_shift, sys_emb):
+    def _traced(self, pos, Z, edge_index, edge_cell_shift, sys_emb, charge=0.0):
         """Trace-replayed energy+forces; (re)captures when the neighbour list changes.
 
         The captured trace bakes in ``edge_cell_shift`` (the per-edge periodic image offset), so a
@@ -305,7 +311,7 @@ class TTAtomCalculator(Calculator):
             if self._engine is not None:
                 self._engine.close()
             self._engine = TracedEngine(self.backbone, self.geo, Z, edge_index, sys_emb,
-                                        edge_cell_shift=edge_cell_shift)
+                                        edge_cell_shift=edge_cell_shift, charge=charge)
             self._engine_edges = edge_index.clone()
             self._engine_shift = edge_cell_shift.clone()
         return self._engine(pos)

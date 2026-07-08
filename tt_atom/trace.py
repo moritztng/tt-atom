@@ -46,7 +46,8 @@ class TracedEngine:
     successive positions. The first call captures the trace; later calls refresh + replay."""
 
     def __init__(self, bb, geo, atomic_numbers, edge_index, sys_node_embedding,
-                 edge_cell_shift=None, seg=None, linear_scatter=None):
+                 edge_cell_shift=None, seg=None, linear_scatter=None, charge=0.0,
+                 system_natoms=None):
         import ttnn
 
         self.ttnn = ttnn
@@ -67,6 +68,14 @@ class TracedEngine:
         self.seg = seg
         self.K = seg.shape[0] if seg is not None else 1
         self._linear_scatter = linear_scatter
+        # charge_balanced_channels: the per-system mean operator uses the TRUE per-system atom counts
+        # (``system_natoms`` = bg.natoms for a batch; None => single system => (1/N) mean). A charged
+        # batch is required to have equal atom counts (disjoint.assemble guards this — the scalar
+        # target below can't express per-system counts), so charge/natoms[0] is exact there; a neutral
+        # batch has add=0. 0 when balancing is disabled.
+        self._system_natoms = list(system_natoms) if system_natoms else None
+        per_sys_n = int(system_natoms[0]) if system_natoms else self.N
+        self.balance_add = (float(charge) / per_sys_n) if bb.ce > bb.cs else 0.0
 
     # ------------------------------------------------------------------ capture / refresh
 
@@ -107,7 +116,8 @@ class TracedEngine:
             self.dev, edge_index=self.edge_index, wigner=t["wigner"].detach(),
             wigner_inv=t["wigner_inv"].detach(), x_edge=t["x_edge"].detach(),
             edge_envelope=t["edge_envelope"].detach(), num_nodes=N,
-            linear_scatter=self._linear_scatter)
+            linear_scatter=self._linear_scatter,
+            system_natoms=self._system_natoms, build_mean_op=(self.bb.ce > self.bb.cs))
         self.se3 = ttnn.from_torch(self.se.reshape(N, 1, C), dtype=ttnn.bfloat16,
                                    layout=ttnn.TILE_LAYOUT, device=self.dev)
         if self.seg is not None:
@@ -122,9 +132,9 @@ class TracedEngine:
 
         def body():
             if self.seg is None:
-                node_emb, energy = self.bb(self.x_init, self.graph, self.se3)
+                node_emb, energy = self.bb(self.x_init, self.graph, self.se3, self.balance_add)
             else:
-                node_emb = self.bb.node_embedding(self.x_init, self.graph, self.se3)
+                node_emb = self.bb.node_embedding(self.x_init, self.graph, self.se3, self.balance_add)
                 energy = self.bb.energy_batch(node_emb, self.seg_dev)   # [K, 1]
             acc = Fmod.backbone_bw(self.bb, self.graph, node_emb)
             return energy, acc
