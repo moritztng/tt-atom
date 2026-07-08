@@ -75,6 +75,7 @@ class TTAtomCalculator(Calculator):
             device_id, trace_region_size=trace_region_size if trace else 0)
         self._engine = None
         self._engine_edges = None
+        self._engine_shift = None
         self._batch_engine = None
         self._batch_edges = None
         w = bundle.weights
@@ -125,6 +126,13 @@ class TTAtomCalculator(Calculator):
         # so the merge must use the same value for a consistent result.
         charge = atoms.info.get("charge", charge)
         spin = atoms.info.get("spin", spin)
+        # ...and, symmetrically, stamp the resolved values back onto the atoms so `calculate`
+        # reads the *same* charge/spin the bundle was merged for. Without this, the flagship
+        # `UMA(atoms)` path (default charge=0, spin=1) merges a spin=1 bundle but `calculate`
+        # falls back to spin=0 — a silent mismatch between the baked MoLE routing and the runtime
+        # system embedding. `setdefault` respects an explicit value (which already won above).
+        atoms.info.setdefault("charge", charge)
+        atoms.info.setdefault("spin", spin)
         path = BC.get_or_build(atoms, model=model, task=task_name, charge=charge, spin=spin,
                                refenv=refenv, checkpoint=checkpoint, cache_dir=cache_dir)
         return cls(str(path), task_name=task_name, device=device, device_id=device_id,
@@ -162,7 +170,11 @@ class TTAtomCalculator(Calculator):
         # cell (variable-cell relaxation / NPT); request it when ASE asks or a cell is present.
         want_stress = cell is not None and ("stress" in properties or pbc.all())
         virial = None
-        if self.trace:
+        # The trace engine captures only the energy+force op stream — it has no stress readout —
+        # so when stress is *explicitly* requested (e.g. an ASE variable-cell filter) fall back to
+        # the eager stress path rather than silently dropping stress. A fully-periodic system that
+        # only wants energy/forces still enjoys the trace (stress is auto-computed but unrequested).
+        if self.trace and "stress" not in properties:
             E, F = self._traced(pos, Z, edge_index, edge_cell_shift, sys_emb)
         elif want_stress:
             E, F, virial = Fmod.energy_and_forces(self.backbone, self.geo, pos, Z, edge_index,
@@ -249,15 +261,24 @@ class TTAtomCalculator(Calculator):
         return self._batch_engine(bg.pos)
 
     def _traced(self, pos, Z, edge_index, edge_cell_shift, sys_emb):
-        """Trace-replayed energy+forces; (re)captures when the neighbour list changes."""
+        """Trace-replayed energy+forces; (re)captures when the neighbour list changes.
+
+        The captured trace bakes in ``edge_cell_shift`` (the per-edge periodic image offset), so a
+        changing cell at *fixed* topology — e.g. an NPT / variable-cell step that doesn't cross the
+        cutoff — must also trigger a re-capture, else the replay would silently use the stale
+        shift and return wrong forces. Hence the change test covers the cell shift, not just the
+        edge index."""
         from .trace import TracedEngine
 
         changed = (self._engine_edges is None or self._engine_edges.shape != edge_index.shape
-                   or not torch.equal(self._engine_edges, edge_index))
+                   or not torch.equal(self._engine_edges, edge_index)
+                   or self._engine_shift is None or self._engine_shift.shape != edge_cell_shift.shape
+                   or not torch.equal(self._engine_shift, edge_cell_shift))
         if changed:
             if self._engine is not None:
                 self._engine.close()
             self._engine = TracedEngine(self.backbone, self.geo, Z, edge_index, sys_emb,
                                         edge_cell_shift=edge_cell_shift)
             self._engine_edges = edge_index.clone()
+            self._engine_shift = edge_cell_shift.clone()
         return self._engine(pos)

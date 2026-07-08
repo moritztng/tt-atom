@@ -164,6 +164,47 @@ def test_cached_fast_path_needs_no_refenv_and_matches_direct(tmp_path, device, m
         assert a3.get_potential_energy() == pytest.approx(e_direct, abs=1e-6)
 
 
+@real_golden
+def test_uma_evaluates_with_the_bundles_charge_spin(tmp_path, device, monkeypatch):
+    """Regression (silent-wrong-answer): the flagship ``UMA(atoms)`` / ``from_uma`` path must
+    evaluate with the SAME charge/spin the bundle was merged for. The ethanol golden is merged at
+    charge=0, spin=1 (the UMA omol default); before the fix ``calculate`` fell back to spin=0,
+    silently disagreeing with the baked MoLE routing. Assert (a) the resolved values are stamped
+    onto ``atoms.info`` and (b) the energy matches an explicit spin=1 run and *differs* from a
+    spin=0 run (so the test has teeth — spin genuinely moves this bundle's answer)."""
+    from ase import Atoms
+
+    from tt_atom import UMA, TTAtomCalculator
+
+    d = np.load(REAL_GOLDEN)
+    assert int(d["in@charge"][0]) == 0 and int(d["in@spin"][0]) == 1  # golden's merge (charge, spin)
+    numbers, pos = d["in@atomic_numbers"], d["in@pos"]
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    target = BC.bundle_path("uma-s-1", "omol", numbers, 0, 1, cache_dir=cache_dir)
+    shutil.copyfile(REAL_GOLDEN, target)
+    monkeypatch.setenv("TT_ATOM_REFENV", "/nonexistent/python")   # a build attempt would raise
+
+    atoms = Atoms(numbers=numbers, positions=pos)                 # NO info: exercises the defaults
+    atoms.calc = UMA(atoms, refenv="/nonexistent/python", cache_dir=str(cache_dir), device=device)
+    e_uma = atoms.get_potential_energy()
+    assert atoms.info["charge"] == 0 and atoms.info["spin"] == 1  # resolved values stamped back
+
+    a1 = Atoms(numbers=numbers, positions=pos)
+    a1.info.update(charge=0, spin=1)
+    a1.calc = TTAtomCalculator(str(target), device=device)
+    e_spin1 = a1.get_potential_energy()
+
+    a0 = Atoms(numbers=numbers, positions=pos)
+    a0.info.update(charge=0, spin=0)
+    a0.calc = TTAtomCalculator(str(target), device=device)
+    e_spin0 = a0.get_potential_energy()
+
+    assert e_uma == pytest.approx(e_spin1, abs=1e-6), f"UMA(atoms) used the wrong spin: {e_uma} vs {e_spin1}"
+    assert abs(e_spin1 - e_spin0) > 1e-4, "spin has no effect on this bundle — test would not catch the bug"
+
+
 refenv_and_ckpt = pytest.mark.skipif(
     _default_refenv() is None or HF_CKPT is None,
     reason="reference (fairchem) env and/or UMA checkpoint not available for a live merge",
