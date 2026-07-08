@@ -106,7 +106,7 @@ TT-Atom is an inference runtime, not a rewrite of fairchem. It reuses the releas
 The model is a "bundle": UMA weights merged for one composition. `UMA(atoms)` builds and caches bundles for you, so most users never touch this. To build one yourself:
 
 ```bash
-tt-atom convert-checkpoint --uma-s-1 --xyz structure.xyz --task omol --out model.npz
+refenv/bin/python tools/export_weights.py --uma-s-1 --xyz structure.xyz --task omol --out model.npz
 ```
 
 then `TTAtomCalculator("model.npz")`.
