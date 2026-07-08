@@ -77,6 +77,14 @@ out = calc.evaluate_batch(list_of_atoms)   # out["energy"], out["forces"]
 
 For many small molecules this is roughly 13x over looping on one card. To use several cards, fan systems across them with `tt_atom.batch` (one process per card).
 
+For a **batched MD ensemble / relaxation** — K fixed-composition replicas evolving with a stable neighbour list — add `trace=True` to capture the batched device graph once and replay it (forces stay bit-identical; it re-captures whenever the neighbour list changes):
+
+```python
+out = calc.evaluate_batch(replicas, trace=True)   # per-step in the ensemble loop
+```
+
+At small per-system sizes the eager batched forward is host-dispatch-bound below saturation, so the trace lets a *modest* ensemble reach near-peak throughput: measured on one p150 (uma-s-1, 9-atom molecules) K=4 gives 4.2x (59→246 systems/s), K=16 2.6x (207→528 sys/s) — approaching the K≥128 eager device-bound plateau (~700 sys/s) at a fraction of the batch size. Leave it `False` for one-shot screening, where a fresh batch each call would re-capture every time.
+
 ## Compared to fairchem
 
 TT-Atom is an inference runtime, not a rewrite of fairchem. It reuses the released weights and matches them.

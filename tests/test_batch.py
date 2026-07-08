@@ -147,6 +147,30 @@ def test_batched_identical_copies(golden, device):
     assert (E_batch - E_batch[0]).abs().max() < 1e-3, f"copies disagree: {E_batch}"
 
 
+def test_traced_batch_matches_eager(golden, device):
+    """The trace-replayed batched forward (``evaluate_batch(trace=True)`` engine) must be BIT-EXACT
+    vs the eager batched forward: a trace only removes host dispatch, it is the same device op
+    stream (and both use the K>1 linear scatter + segment-sum readout). Also exercises replay: a
+    second call on the same topology must match too. Guards the batched-MD throughput path."""
+    from tt_atom.trace import TracedEngine
+
+    bb, geo, w, cfg = _build(golden, device)
+    systems = _systems(golden, 4, jitter=0.03)
+    bg = disjoint.assemble(systems, cfg["cutoff"], w, cfg["sphere_channels"],
+                           task=cfg.get("task", "omat"))
+    E_eager, F_eager = forces.energy_and_forces_batch(bb, geo, bg)
+
+    eng = TracedEngine(bb, geo, bg.Z, bg.edge_index, bg.sys_emb, edge_cell_shift=bg.cell_shift,
+                       seg=bg.segment_matrix(), linear_scatter=True)
+    E_cap, F_cap = eng(bg.pos)          # capture step (records + replays)
+    E_replay, F_replay = eng(bg.pos)    # pure replay
+    eng.close()
+
+    assert (E_cap - E_eager).abs().max() == 0, f"traced E != eager: {E_cap} vs {E_eager}"
+    assert (F_cap - F_eager).abs().max() == 0, "traced forces != eager"
+    assert torch.equal(E_cap, E_replay) and torch.equal(F_cap, F_replay), "replay not deterministic"
+
+
 @pytest.mark.skipif(not (pathlib.Path(BUNDLE).exists() and pathlib.Path(BATCH_GOLDEN).exists()),
                     reason="real merged bundle or fairchem batched golden not present")
 def test_batched_vs_fairchem(device):
