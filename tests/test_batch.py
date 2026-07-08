@@ -201,3 +201,27 @@ def test_batched_vs_fairchem(device):
     fp = pcc(F, F_ref)
     assert e_rel < 1e-3, f"batched energy rel err {e_rel:.2e} (E={E[:3]} vs {E_ref[:3]})"
     assert fp > 0.99, f"batched force PCC {fp:.4f}"
+
+
+real_bundle = pytest.mark.skipif(
+    not pathlib.Path(BUNDLE).exists(),
+    reason=f"real uma-s-1 bundle not found at {BUNDLE}")
+
+
+@real_bundle
+def test_evaluate_batch_rejects_composition_charge_spin_mismatch(device):
+    """A merged bundle bakes the MoLE routing for one (composition, charge, spin); evaluate_batch
+    must reject a batch that mixes them rather than silently returning wrong energies. The bundle
+    is ethanol (C2H6O), merged at charge=0, spin=1."""
+    from ase.build import molecule
+
+    from tt_atom import TTAtomCalculator
+
+    calc = TTAtomCalculator(BUNDLE, device=device)
+    good = molecule("CH3CH2OH"); good.info.update(charge=0, spin=1)   # matches the bundle
+    water = molecule("H2O"); water.info.update(charge=0, spin=1)      # wrong composition
+    with pytest.raises(ValueError, match="reduced composition"):
+        calc.evaluate_batch([good, water])
+    bad_cs = molecule("CH3CH2OH"); bad_cs.info.update(charge=0, spin=0)  # wrong spin
+    with pytest.raises(ValueError, match="merged for"):
+        calc.evaluate_batch([good, bad_cs])

@@ -223,6 +223,33 @@ class TTAtomCalculator(Calculator):
         each call would re-capture every time, wasting the capture cost)."""
         from . import disjoint
 
+        # A merged uma-s-1 bundle bakes the MoLE expert routing for ONE (reduced composition,
+        # charge, spin), so a batch that mixes compositions/charge/spin is silently wrong. When the
+        # bundle carries a reference (its merge inputs), validate every system against it up front
+        # with a clear error rather than returning a plausible-but-wrong energy. (Reference-less
+        # random-weight bundles — the mechanism tests — skip this and stay composition-agnostic.)
+        ref = self.bundle.reference
+        if ref is not None:
+            from .bundle_cache import reduced_composition
+
+            want_comp = reduced_composition(ref["atomic_numbers"])
+            want_cs = (float(ref["charge"]), float(ref["spin"]))
+            for k, system in enumerate(systems):
+                _, Z_k, chg_k, spin_k, _, _ = disjoint._as_atoms_fields(system)
+                if reduced_composition(Z_k.tolist()) != want_comp:
+                    raise ValueError(
+                        f"batched system {k} has a different reduced composition than this bundle. "
+                        "A merged uma-s-1 bundle bakes the MoLE routing for one reduced composition, "
+                        "so every system in a batch must share it (e.g. conformers / an MD ensemble "
+                        "of one molecule); evaluate other compositions with their own bundle."
+                    )
+                if (chg_k, spin_k) != want_cs:
+                    raise ValueError(
+                        f"batched system {k} has (charge, spin)=({chg_k}, {spin_k}) but this bundle "
+                        f"was merged for {want_cs}. The MoLE routing bakes one charge/spin; every "
+                        "system in a batch must share it."
+                    )
+
         bg = disjoint.assemble(systems, self.cfg["cutoff"], self._w, self.C, task=self.task)
         want_forces = "forces" in properties
         if trace and want_forces:
