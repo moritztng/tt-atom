@@ -10,7 +10,8 @@ But ``W`` has a FIXED sparsity pattern -- the same ``(i,j)`` nonzeros for every 
 diagonal in degree ``l``, permuted by the ``to_m`` reordering folded into ``W``). So the rotation
 runs as the custom fused ``ttnn.experimental.fused_rotate`` kernel: one launch reads x once, keeps
 all ``nnz`` multiply-accumulates in the dest registers (fp32 accumulate), writes out once --
-~14x faster than the ~35-dispatch addcmul MAC it replaces, at PCC 0.999995. tt-atom is the
+~4.3x faster than the ~35-dispatch addcmul MAC it replaces (7.01 -> 1.62 ms on the uma-s
+rotate shape E=46016), at PCC 0.999995. tt-atom is the
 custom-kernel-only uma-s build, so this kernel is the ALWAYS-ON path; a shape the kernel cannot
 run (the rectangular reduced-m uma-m rotation) raises rather than silently falling back.
 
