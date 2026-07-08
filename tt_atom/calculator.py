@@ -17,6 +17,23 @@ from .model import Backbone
 from .weights import WeightBundle
 
 
+def _eval_rotation():
+    """A fixed, generic 3x3 rotation used to evaluate molecules OFF the coordinate axes.
+
+    The device backbone runs bf16. At an exactly axis-aligned / high-symmetry geometry the edge
+    frame's roll-gauge derivative is large; its cancellation in the analytic force is exact in fp32
+    (fairchem) but leaks in bf16, giving a wrong force at the *exact* symmetric point (a ~0.03 A
+    rattle already removes it — the quaternion frame fixed most cases, this closes the residual for
+    molecules whose symmetry axis lands on a coordinate plane, e.g. planar molecules in the yz/xy
+    plane). The model is rotationally equivariant, so evaluating in a generic orientation and
+    rotating the force back is exact and deterministic, and moves every edge off the frame's special
+    directions. Applied to molecules only (periodic forces already match; rotating a cell is left
+    out to keep PBC/stress untouched)."""
+    ax = np.array([0.3, 0.5, 0.81]); ax = ax / np.linalg.norm(ax); th = 0.7
+    K = np.array([[0.0, -ax[2], ax[1]], [ax[2], 0.0, -ax[0]], [-ax[1], ax[0], 0.0]])
+    return np.eye(3) + np.sin(th) * K + (1.0 - np.cos(th)) * (K @ K)
+
+
 def UMA(atoms, task=None, model="uma-s-1", charge=0, spin=1, refenv=None, checkpoint=None,
         cache_dir=None, device=None, device_id=0, fast=False, trace=False, **kwargs):
     """Zero-config entry point — the face of the library.
@@ -65,6 +82,8 @@ class TTAtomCalculator(Calculator):
         self.C = self.cfg["sphere_channels"]
         self.fast = fast
         self.trace = trace
+        # evaluate molecules off the coordinate axes (bf16 exact-symmetry force fix; see _eval_rotation)
+        self._eval_rot = torch.tensor(_eval_rotation(), dtype=torch.float32)
         if task_name is not None and task_name != bundle.task:
             raise ValueError(
                 f"task_name={task_name!r} does not match this bundle's task {bundle.task!r}. "
@@ -161,6 +180,11 @@ class TTAtomCalculator(Calculator):
 
         pbc = np.asarray(atoms.get_pbc())
         cell = torch.tensor(np.asarray(atoms.get_cell()), dtype=torch.float32) if pbc.any() else None
+        # evaluate molecules in a generic orientation so no edge lands on the frame's bf16-sensitive
+        # axis (exact-symmetry force fix); equivariant, so the force is rotated back below.
+        rotate = cell is None
+        if rotate:
+            pos = pos @ self._eval_rot.T
         edge_index, edge_cell_shift = radius_graph(pos, self.cfg["cutoff"], cell=cell, pbc=pbc)
         if edge_index.shape[1] == 0:
             raise ValueError("no edges within cutoff — system too sparse for this model")
@@ -189,6 +213,8 @@ class TTAtomCalculator(Calculator):
         if self.elem_refs is not None:
             E += float(self.elem_refs[Z].sum())
         F = self.scale_rmsd * F
+        if rotate:
+            F = F @ self._eval_rot                # rotate the force back into the input frame
         self.results["energy"] = E
         self.results["free_energy"] = E
         self.results["energies"] = np.full(len(atoms), E / len(atoms), dtype=np.float64)
