@@ -5,7 +5,12 @@ Public API is populated as modules land (model, calculator, weights, ...). Submo
 import ttnn lazily so that ``import tt_atom`` is cheap and never opens a device.
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import PackageNotFoundError, version as _version
+
+try:
+    __version__ = _version("tt-atom")
+except PackageNotFoundError:  # running from a source tree, not an installed dist
+    __version__ = "0+unknown"
 
 __all__ = ["UMA", "TTAtomCalculator", "WeightBundle", "Backbone", "HostGeometry", "MultiCard"]
 
