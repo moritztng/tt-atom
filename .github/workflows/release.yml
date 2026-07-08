@@ -59,19 +59,7 @@ jobs:
             gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
           fi
 
-  pypi-publish:
-    needs: build
-    runs-on: ubuntu-latest
-    # Publishes via PyPI Trusted Publishing (no stored token). Needs a one-time PyPI
-    # Trusted Publisher for this repo + the "pypi" environment (see RELEASING.md); set it
-    # up before the first tag. Until it exists this job fails harmlessly — the GitHub
-    # Release above still publishes.
-    environment: pypi
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist
-      - uses: pypa/gh-action-pypi-publish@release/v1
+  # NOTE: tt-atom is distributed via GitHub Releases only, NOT PyPI. It is the
+  # custom-kernel-only build and requires a source tt-metal/ttnn build (see RELEASING.md
+  # / README Install), so a `pip install tt-atom` wheel can't run standalone — publishing
+  # to PyPI would be misleading. (tt-bio, which is genuinely pip-installable, keeps PyPI.)
