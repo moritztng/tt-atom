@@ -22,21 +22,43 @@ import sys
 import numpy as np
 
 
-def _atoms(args):
+def _resolve_charge_spin(args, bundle):
+    """CLI charge/spin for a bundle-based command: an explicit --charge/--spin wins; otherwise
+    default to the (charge, spin) the bundle was merged for (its embedded reference), NOT a fixed
+    literal. A merged bundle bakes one charge/spin into the MoLE routing, so evaluating it with a
+    mismatched runtime value silently disagrees — an omol bundle is merged at spin=1, so the old
+    ``--spin`` default of 0 was wrong. Falls back to 0/0 for a reference-less bundle."""
+    ref = bundle.reference
+    charge = args.charge
+    spin = args.spin
+    if charge is None:
+        charge = float(ref["charge"]) if ref is not None else 0.0
+    if spin is None:
+        spin = float(ref["spin"]) if ref is not None else 0.0
+    return charge, spin
+
+
+def _atoms(args, bundle=None):
     from ase.build import molecule
     if args.input:
         from ase.io import read
         atoms = read(args.input)
     else:
         atoms = molecule(args.molecule)
-    atoms.info.setdefault("charge", args.charge)
-    atoms.info.setdefault("spin", args.spin)
+    if bundle is not None:
+        charge, spin = _resolve_charge_spin(args, bundle)
+    else:
+        charge = 0.0 if args.charge is None else args.charge
+        spin = 0.0 if args.spin is None else args.spin
+    atoms.info.setdefault("charge", charge)
+    atoms.info.setdefault("spin", spin)
     return atoms
 
 
-def _calc(args):
+def _calc(args, bundle=None):
     from .calculator import TTAtomCalculator
-    return TTAtomCalculator(args.bundle, device_id=args.device_id, fast=args.fast,
+    return TTAtomCalculator(bundle if bundle is not None else args.bundle,
+                            device_id=args.device_id, fast=args.fast,
                             trace=getattr(args, "trace", False))
 
 
@@ -89,8 +111,11 @@ def cmd_verify(args):
 
 def cmd_relax(args):
     from ase.optimize import FIRE
-    atoms = _atoms(args)
-    calc = _calc(args)
+
+    from .weights import WeightBundle
+    bundle = WeightBundle.load(args.bundle) if isinstance(args.bundle, str) else args.bundle
+    atoms = _atoms(args, bundle)
+    calc = _calc(args, bundle)
     atoms.calc = calc
     try:
         e0 = atoms.get_potential_energy()
@@ -112,8 +137,11 @@ def cmd_md(args):
     from ase import units
     from ase.md.langevin import Langevin
     from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
-    atoms = _atoms(args)
-    calc = _calc(args)
+
+    from .weights import WeightBundle
+    bundle = WeightBundle.load(args.bundle) if isinstance(args.bundle, str) else args.bundle
+    atoms = _atoms(args, bundle)
+    calc = _calc(args, bundle)
     atoms.calc = calc
     try:
         MaxwellBoltzmannDistribution(atoms, temperature_K=args.temp)
@@ -261,8 +289,10 @@ def main(argv=None):
         p.add_argument("bundle")
         p.add_argument("--input", help="ASE-readable geometry file (.xyz/.cif/...)")
         p.add_argument("--molecule", default="CH3CH2OH", help="ASE builtin molecule if no --input")
-        p.add_argument("--charge", type=float, default=0.0)
-        p.add_argument("--spin", type=float, default=0.0)
+        p.add_argument("--charge", type=float, default=None,
+                       help="net charge (default: the value the bundle was merged for)")
+        p.add_argument("--spin", type=float, default=None,
+                       help="spin multiplicity (default: the value the bundle was merged for)")
         p.add_argument("--trace", action="store_true", help="trace-captured device loop (~2x)")
         p.add_argument("--out", help="write final geometry here")
 
