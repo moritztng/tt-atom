@@ -39,17 +39,57 @@ def _to_dev(t, device, dtype, layout=None):
     return ttnn.from_torch(t, dtype=dtype, layout=layout, device=device)
 
 
+def balance_l0(ttnn, x, mean_op, cs, ce, add_scalar, kcfg):
+    """Charge/spin channel balancing (fairchem ``eSCNMDBackbone.balance_channels``): shift the
+    l=0 scalar part of channels ``[cs:ce]`` so each system's per-channel sum equals its target
+    (charge). ``mean_op`` is the [N,N] per-system mean operator (block-diagonal ``1/natoms``);
+    ``add_scalar = target/natoms`` (uniform per system — a bundle is one composition/charge, and
+    a same-composition batch shares natoms). The map is a projection ``I - mean`` on those
+    channels, hence self-adjoint: the identical call with ``add_scalar=0`` is its own VJP."""
+    N, nsph, C = x.shape
+    l0 = ttnn.reshape(ttnn.slice(x, [0, 0, 0], [N, 1, C]), (N, C))
+    ch = ttnn.slice(l0, [0, cs], [N, ce])                                   # [N, nch]
+    ch = ttnn.subtract(ch, ttnn.matmul(mean_op, ch, compute_kernel_config=kcfg))
+    if add_scalar != 0.0:
+        ch = ttnn.add(ch, add_scalar)
+    parts = []
+    if cs > 0:
+        parts.append(ttnn.slice(l0, [0, 0], [N, cs]))
+    parts.append(ch)
+    if ce < C:
+        parts.append(ttnn.slice(l0, [0, ce], [N, C]))
+    l0n = ttnn.reshape(parts[0] if len(parts) == 1 else ttnn.concat(parts, dim=1), (N, 1, C))
+    rest = ttnn.slice(x, [0, 1, 0], [N, nsph, C])
+    return ttnn.concat([l0n, rest], dim=1)
+
+
 class GraphContext:
     """Host-precomputed, device-resident geometric terms for one fixed topology."""
 
     def __init__(self, device, *, edge_index, wigner, wigner_inv, x_edge, edge_envelope,
-                 num_nodes, fast=False, linear_scatter=None):
+                 num_nodes, fast=False, linear_scatter=None, system_natoms=None,
+                 build_mean_op=False):
         import ttnn
 
         wdtype = ttnn.bfloat16
         E = edge_index.shape[1]
         self.E = E
         self.N = num_nodes
+        # per-system mean operator for charge/spin channel balancing: M[i,j] = 1/natoms(sys i)
+        # iff atoms i,j share a system, else 0. One system -> (1/N) ones[N,N]; a disjoint-union
+        # batch -> block-diagonal. Built on host per topology (so it is captured once in a trace),
+        # and only when a bundle actually balances channels (uma-s-1.2); None otherwise.
+        self.node_meanM = None
+        if build_mean_op:
+            if system_natoms is None:
+                M = torch.full((num_nodes, num_nodes), 1.0 / num_nodes)
+            else:
+                M = torch.zeros(num_nodes, num_nodes)
+                off = 0
+                for n in system_natoms:
+                    M[off:off + n, off:off + n] = 1.0 / int(n)
+                    off += int(n)
+            self.node_meanM = _to_dev(M, device, wdtype)
         src = edge_index[0].to(torch.int32)
         tgt = edge_index[1].to(torch.int32)
         self.src_idx = _to_dev(src, device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
@@ -182,6 +222,11 @@ class Backbone:
         self.device = device
         self.cfg = cfg
         self.C = cfg["sphere_channels"]
+        # charge-balanced channels (fairchem charge_balanced_channels): l=0 scalar channels [cs:ce]
+        # are shifted after every block so their per-system sum equals the charge. cs==ce disables
+        # it (uma-s-1 / random-weight bundles); uma-s-1.2 uses [0:3].
+        self.cs = int(cfg.get("charge_channel_start", 0))
+        self.ce = int(cfg.get("charge_channel_end", 0))
         self.kcfg = compute_kernel_config()
         wdtype = ttnn.bfloat16
         self.blocks = [
@@ -207,17 +252,24 @@ class Backbone:
         self.eh_b = [_to_dev(weights[f"energy_block.{i}.bias"], device, wdtype)
                      for i in (0, 2, 4)]
 
-    def node_embedding(self, x_init, graph, sys_node_embedding):
+    def node_embedding(self, x_init, graph, sys_node_embedding, balance_add=0.0):
         """Run the backbone; returns device node embedding ``[N, nsph, C]``.
 
         When the device edge-degree embedding is active, ``x_init`` is the constant l0 node init
-        and the full node init is built on device from the graph's geometric terms."""
+        and the full node init is built on device from the graph's geometric terms.
+
+        ``balance_add`` is the per-atom charge target ``charge/natoms`` (0 for neutral or when
+        balancing is disabled); when ``cs<ce`` the l=0 charge channels are re-balanced after every
+        block to mirror fairchem's ``eSCNMDBackbone``."""
         graph.materialize_envelope()   # tilize (+bf8 cast) the RM envelope on device, once per fwd
         if self.edge_degree is not None:
             x_init = self.edge_degree(graph, x_init)
         x = x_init
+        do_bal = self.ce > self.cs
         for blk in self.blocks:
             x = blk(x, graph, sys_node_embedding)
+            if do_bal:
+                x = balance_l0(self.ttnn, x, graph.node_meanM, self.cs, self.ce, balance_add, self.kcfg)
         return self.final_norm(x)
 
     def node_energy(self, node_emb):
@@ -228,10 +280,15 @@ class Backbone:
         h = ttnn.reshape(h, (N, self.C))
         h = ttnn.silu(ttnn.linear(h, self.eh_w[0], bias=self.eh_b[0], compute_kernel_config=self.kcfg))
         h = ttnn.silu(ttnn.linear(h, self.eh_w[1], bias=self.eh_b[1], compute_kernel_config=self.kcfg))
-        return ttnn.linear(h, self.eh_w[2], bias=self.eh_b[2], compute_kernel_config=self.kcfg)  # [N,1]
+        # fp32 output: the per-node energy (~1-2 eV once element references are subtracted) would
+        # otherwise be re-quantized to bf16 (~2^-8 rel), which is the dominant device energy error
+        # for large-|raw| systems (MgO, radicals). Does NOT affect forces — their VJP (energy_bw)
+        # seeds from the head weights, not this value.
+        return ttnn.linear(h, self.eh_w[2], bias=self.eh_b[2], compute_kernel_config=self.kcfg,
+                           dtype=ttnn.float32)  # [N,1] fp32
 
     def energy(self, node_emb):
-        """Total energy of a single system: sum of the per-node energy."""
+        """Total energy of a single system: sum of the per-node energy (fp32)."""
         return self.ttnn.sum(self.node_energy(node_emb), dim=0)
 
     def energy_batch(self, node_emb, seg):
@@ -239,9 +296,10 @@ class Backbone:
         the one-hot segment matrix ``seg`` [K, N] (``seg[k, n] = 1`` iff atom n is in system k),
         expressed as the tile-friendly matmul ``seg @ node_energy`` -> ``[K, 1]``. Block-diagonal
         batching leaves every backbone op within-system, so this reduction is the only change."""
-        return self.ttnn.matmul(seg, self.node_energy(node_emb),
-                                compute_kernel_config=self.kcfg)
+        ttnn = self.ttnn
+        ne = self.node_energy(node_emb)                              # [N,1] fp32
+        return ttnn.matmul(ttnn.typecast(seg, ttnn.float32), ne, compute_kernel_config=self.kcfg)
 
-    def __call__(self, x_init, graph, sys_node_embedding):
-        node_emb = self.node_embedding(x_init, graph, sys_node_embedding)
+    def __call__(self, x_init, graph, sys_node_embedding, balance_add=0.0):
+        node_emb = self.node_embedding(x_init, graph, sys_node_embedding, balance_add)
         return node_emb, self.energy(node_emb)
