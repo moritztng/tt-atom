@@ -493,8 +493,9 @@ def backbone_bw(bb, graph, node_emb):
     # with a captured device pass -- only a single [E, x_edge] readback remains on host.
     g_xe = None
     for conv, g_rad in acc["g_rad"]:
-        # radial backward runs bf16 (small hidden=128; the fused_ln_bw kernel is bf16-only and the
-        # x_edge adjoint feeds forces -> keep precision). Cast the bf8-edge g_rad back to bf16 here.
+        # radial backward: rad.bw runs in fp32 by default (small hidden=128; a bf16 radial VJP
+        # mis-directs forces on OOD compressed heavy cells, so it upcasts internally). The opt-in
+        # fused_ln_bw kernel path stays bf16. Cast the bf8-edge g_rad back to bf16 for rad.bw's input.
         if g_rad.dtype == ttnn.bfloat8_b:
             g_rad = ttnn.typecast(g_rad, ttnn.bfloat16)
         gc = conv.rad.bw(g_rad)
