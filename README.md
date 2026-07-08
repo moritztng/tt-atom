@@ -100,7 +100,7 @@ steps; see [`custom_kernels/README.md`](custom_kernels/README.md) for measured p
 
 ## What it supports
 
-- Models: UMA's `uma-s-1` and all four Orb-v3/OrbMol checkpoints (`orb-v3-{conservative,direct}-{omat,omol}`).
+- Models: UMA's `uma-s-1` and `uma-s-1.2`, and all four Orb-v3/OrbMol checkpoints (`orb-v3-{conservative,direct}-{omat,omol}`).
   See [Model coverage](#model-coverage) for what else exists upstream and why this build doesn't run it.
 - Tasks: UMA: `omol`, `omat`, `oc20`, `odac`, `omc`. Orb-v3/OrbMol: `omat`, `omol`.
 - Systems: isolated molecules and periodic cells, both model families. Charge and spin: `Calculator(
@@ -125,8 +125,8 @@ Meta has released two UMA sizes: `uma-s-1` (`.1`/`.2`) and `uma-m-1p1` (there is
 small and medium models rather than shipping a third dense tier, and
 [facebook/UMA](https://huggingface.co/facebook/UMA) carries checkpoints for only those two.
 
-Only `uma-s-1` runs on this build; `uma-m-1p1` raises a clear `RuntimeError` naming the shape
-rather than silently running slow or wrong (`tests/test_umam.py` anchors this contract). See
+`uma-s-1` and `uma-s-1.2` run on this build; `uma-m-1p1` raises a clear `RuntimeError` naming the
+shape rather than silently running slow or wrong (`tests/test_umam.py` anchors this contract). See
 [`custom_kernels/README.md`](custom_kernels/README.md) for why.
 
 ### Orb-v3 / OrbMol
@@ -148,6 +148,16 @@ Orb caps each atom's neighbour count per the checkpoint (20 for the `-20` checkp
 otherwise). A structure that exceeds it raises a clear error rather than silently returning a
 different neighbour list; use the `-inf`/`omol` checkpoints (cap 120) or a smaller cell for denser
 systems.
+
+### uma-s-1.2
+
+`uma-s-1.2` adds fairchem's charge-balanced channels: the `l=0` charge channels are re-balanced to the system charge after every block. TT-Atom applies this automatically — point `Calculator` at the checkpoint (gated; bring your own):
+
+```python
+atoms.calc = Calculator(atoms, checkpoint="uma-s-1p2.pt")
+```
+
+Parity with fairchem — forces, energy, and stress across 757 molecular and periodic systems, plus a CPU throughput comparison — is written up in [`docs/uma-s-1p2-validation.md`](docs/uma-s-1p2-validation.md).
 
 ## Accuracy
 
@@ -177,7 +187,7 @@ weights and matches them.
 | Energy, forces, stress | ✅ | ✅ (Orb: `conservative` via autograd+virial, `direct` via dedicated MLP heads) |
 | Molecules, periodic (PBC) | ✅ | ✅ |
 | Charge/spin conditioning | ✅ (UMA, all tasks; OrbMol only for Orb) | ✅ (`charge=`/`spin=` kwargs, same shape for both models) |
-| Tasks / checkpoints | UMA: omol/omat/oc20/odac/omc; Orb-v3/OrbMol: omat/omol | `uma-s-1`; all 4 public Orb-v3/OrbMol checkpoints |
+| Tasks / checkpoints | UMA: omol/omat/oc20/odac/omc; Orb-v3/OrbMol: omat/omol | `uma-s-1`, `uma-s-1.2`; all 4 public Orb-v3/OrbMol checkpoints |
 | ASE relax and MD | ✅ | ✅ (plus a traced loop, both models) |
 | Batched inference | ✅ | ✅ both models: UMA (one composition per batch), Orb (any mix of compositions/charge/spin), `calc.evaluate_batch` |
 | Multi-card batch relax/MD | ❌ | ✅ `MultiCardSim` / `tt-atom run --devices 0,1,2,...` (data-parallel, bit-exact per structure) |
