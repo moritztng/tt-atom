@@ -500,7 +500,7 @@ def backbone_bw(bb, graph, node_emb):
 
 
 def _forward(bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding, edge_cell_shift,
-             requires_grad, compute_stress=False):
+             requires_grad, compute_stress=False, force_linear_scatter=None):
     """Shared forward: host geometry -> device-resident GraphContext + backbone node embedding.
     Returns ``(node_emb, graph, t, pos_leaf, strain_leaf)``; ``pos_leaf`` tracks grad when
     ``requires_grad``. ``strain_leaf`` is a zero symmetric 3x3 leaf (else None) that is applied to
@@ -530,7 +530,8 @@ def _forward(bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding, edge_
     # the transpose-matmul adjoints); ``fast`` (bf8) is for the energy-throughput path.
     graph = GraphContext(device, edge_index=edge_index, wigner=t["wigner"].detach(),
                          wigner_inv=t["wigner_inv"].detach(), x_edge=t["x_edge"].detach(),
-                         edge_envelope=t["edge_envelope"].detach(), num_nodes=N)
+                         edge_envelope=t["edge_envelope"].detach(), num_nodes=N,
+                         linear_scatter=force_linear_scatter)
     se3 = ttnn.from_torch(sys_node_embedding.reshape(N, 1, C), dtype=ttnn.bfloat16,
                           layout=ttnn.TILE_LAYOUT, device=device)
     # with the device edge-degree embedding on, the backbone builds x_init on device and this
@@ -623,8 +624,13 @@ def energy_and_forces_batch(bb, geo, bg, *, compute_forces=True):
     applies the per-system energy normalizer)."""
     import ttnn
 
+    # A disjoint-union batch is block-diagonal: the dense one-hot scatter S[Ntot,Etot] wastes
+    # O(K^2) on off-diagonal zeros, so force the linear O(Etot) gather+reduce for K>1 (measured
+    # +60% peak throughput at K=128 ethanol; see benchmarks/bench_batch.py). K=1 keeps the
+    # single-system node-count threshold (dense is ~5x faster at small N).
     node_emb, graph, t, pos, _ = _forward(bb, geo, bg.pos, bg.Z, bg.edge_index, bg.sys_emb,
-                                          bg.cell_shift, requires_grad=compute_forces)
+                                          bg.cell_shift, requires_grad=compute_forces,
+                                          force_linear_scatter=(bg.K > 1 or None))
     seg = ttnn.from_torch(bg.segment_matrix(), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
                           device=bb.device)
     E = ttnn.to_torch(bb.energy_batch(node_emb, seg)).float().reshape(-1)[:bg.K]
