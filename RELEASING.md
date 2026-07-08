@@ -32,15 +32,12 @@ If any of the three fails, it does not ship — fix it or hold the release.
    git push origin master --tags
    ```
 4. CI (`.github/workflows/release.yml`) builds the sdist + wheel, checks the tag matches the
-   `pyproject` version, and publishes a **GitHub Release** with the changelog notes + wheel. If
-   PyPI is enabled (below), it also publishes there.
+   `pyproject` version, and publishes a **GitHub Release** with the changelog notes + wheel.
 
-## Enabling PyPI (one-time, maintainer)
+## Distribution: GitHub Releases only (NOT PyPI)
 
-Do this once, before the first tag. Until it exists, releases go to GitHub only (the
-`pypi-publish` job fails harmlessly and the GitHub Release still publishes).
-
-On <https://pypi.org/manage/account/publishing/> add a **pending Trusted Publisher** for
-project `tt-atom`: owner `moritztng`, repository `tt-atom`, workflow `release.yml`, environment
-`pypi`. (No API token is created or stored — GitHub authenticates via OIDC.) The next `v*` tag
-then publishes to PyPI automatically.
+tt-atom is the **custom-kernel-only** build and **requires a source tt-metal/ttnn build** with
+the `fused_rotate` op (see the README "Install"). A `pip install tt-atom` wheel therefore can't
+run standalone, so publishing to PyPI would be misleading — tt-atom ships via **GitHub Releases**
+(source + build instructions + tagged versions). There is intentionally no `pypi-publish` job.
+(tt-bio, which *is* pip-installable, does publish to PyPI.)
