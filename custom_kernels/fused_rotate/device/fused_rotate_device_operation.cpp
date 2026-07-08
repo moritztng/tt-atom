@@ -21,9 +21,12 @@ void FusedRotateDeviceOperation::validate_on_program_cache_miss(
         x.storage_type() == StorageType::DEVICE && coef.storage_type() == StorageType::DEVICE,
         "fused_rotate operands must be on device");
     TT_FATAL(x.layout() == Layout::TILE && coef.layout() == Layout::TILE, "fused_rotate requires TILE layout");
+    // bf16 or bf8_b; x and coef must share a format (the program factory derives one tile size
+    // from x.dtype() for both CBs). bf8_b coef is parity-safe (orthogonal basis change, O(1) coefs)
+    // and halves the [E,W] edge-activation DRAM traffic that dominates the bandwidth-bound replay.
     TT_FATAL(
-        x.dtype() == DataType::BFLOAT16 && coef.dtype() == DataType::BFLOAT16,
-        "fused_rotate requires BFLOAT16 inputs");
+        (x.dtype() == DataType::BFLOAT16 || x.dtype() == DataType::BFLOAT8_B) && coef.dtype() == x.dtype(),
+        "fused_rotate requires bf16 or bf8_b inputs (x and coef same dtype)");
 
     const auto& xs = x.padded_shape();
     const auto& cs = coef.padded_shape();

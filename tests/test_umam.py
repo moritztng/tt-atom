@@ -1,11 +1,12 @@
-"""Parity for the larger uma-m-1p1 checkpoint (lmax=4, mmax=2, 10 layers).
+"""uma-m is UNSUPPORTED in this build: it must raise a clear error, not silently fall back.
 
-uma-m uses spherical-harmonic coefficient subselection: the 25 SH coefficients of the node
-representation are reduced to a 19-dim ``|m|<=mmax`` m-space inside the edgewise SO(2) block
-(fairchem's ``prepare_wigner`` — an ``index_select`` by ``coefficient_index`` + the ``to_m``
-map). The Wigner rotation is therefore rectangular (node SH 25 <-> reduced m-space 19), unlike
-uma-s (square 9<->9). This test is the anchor that TT-Atom's rectangular reduced-m-space path
-reproduces the released uma-m inference. uma-s-1 remains the default; uma-m is validated here.
+tt-atom is the custom-kernel-only, highest-performance build for uma-s. uma-m uses spherical-
+harmonic coefficient subselection: the 25 SH coefficients of the node representation are reduced
+to a 19-dim ``|m|<=mmax`` m-space inside the edgewise SO(2) block, so its Wigner rotation is
+RECTANGULAR (node SH 25 <-> reduced m-space 19, W=256), unlike uma-s (square 9<->9). That shape
+overflows the fused_rotate kernel's L1 CB budget, and this build has no slow MAC fallback -- so
+the rotation raises a clear ``RuntimeError`` naming the unsupported shape. This test anchors that
+contract (uma-s is the validated target; uma-m is explicitly out of scope here).
 
 Golden (gated, uncommitted; the checkpoint is 11 GB so the generator loads a single merged unit):
 
@@ -35,9 +36,9 @@ def _pcc(a, b):
     return float(np.corrcoef(a, b)[0, 1])
 
 
-def test_umam_energy_forces(device):
-    """End-to-end uma-m-1p1 (lmax=4/mmax=2/10 layers) energy + analytic forces vs the fairchem
-    oracle on ethanol — exercises the rectangular reduced-m-space Wigner rotation."""
+def test_umam_unsupported_raises(device):
+    """uma-m-1p1 (lmax=4/mmax=2) must raise a clear RuntimeError: its rectangular reduced-m Wigner
+    rotation (25<->19, W=256) overflows the fused kernel's L1 budget and this build has no fallback."""
     if not GOLDEN.exists():
         pytest.skip(f"uma-m golden {GOLDEN} not found (checkpoint not available)")
     from tt_atom import forces as Fmod
@@ -63,14 +64,6 @@ def test_umam_energy_forces(device):
                             dataset=b.task)[torch.zeros(Z.shape[0], dtype=torch.long)]
     bb = Backbone(w, device, rcfg, b.to_grid_mat, b.from_grid_mat)
 
-    E_raw, F_raw = Fmod.energy_and_forces(bb, geo, pos, Z, edge_index, sys_emb,
-                                          edge_cell_shift=edge_cell_shift)
-    E = b.scale_rmsd * E_raw + b.scale_mean + float(b.elem_refs[Z].sum())
-    F = b.scale_rmsd * F_raw
-
-    E_oracle = float(rg["out@energy_oracle"][0])
-    F_oracle = torch.from_numpy(rg["out@forces_oracle"].copy()).float()
-    rel = abs(E - E_oracle) / abs(E_oracle)
-    fpcc = _pcc(F, F_oracle)
-    assert rel < 1e-3, f"uma-m energy rel err {rel} (E={E}, oracle={E_oracle})"
-    assert fpcc > 0.99, f"uma-m force PCC {fpcc}"
+    with pytest.raises(RuntimeError, match="unsupported in this build"):
+        Fmod.energy_and_forces(bb, geo, pos, Z, edge_index, sys_emb,
+                               edge_cell_shift=edge_cell_shift)
