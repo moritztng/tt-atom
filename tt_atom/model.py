@@ -43,7 +43,7 @@ class GraphContext:
     """Host-precomputed, device-resident geometric terms for one fixed topology."""
 
     def __init__(self, device, *, edge_index, wigner, wigner_inv, x_edge, edge_envelope,
-                 num_nodes, fast=False):
+                 num_nodes, fast=False, linear_scatter=None):
         import ttnn
 
         wdtype = ttnn.bfloat16
@@ -59,7 +59,12 @@ class GraphContext:
         # the golden mirror tests. Large systems: linear O(E) gather+reduce (scatter.py) — the dense
         # matmul is O(N^2) compute+memory (S alone is 92 MB at N=1000) and is why large-N scaling blew
         # up; fairchem/PyG scatter_add is linear. See SCATTER_LINEAR_THRESHOLD.
-        self.linear_scatter = num_nodes > SCATTER_LINEAR_THRESHOLD
+        # ``linear_scatter`` override: a disjoint-union BATCH is block-diagonal, so the dense
+        # one-hot S[Ntot,Etot] is mostly off-diagonal zeros — its cost is O(Ntot*Etot) ~ O(K^2)
+        # in the batch size while the linear gather+reduce stays O(Etot). So batches force the
+        # linear path (see energy_and_forces_batch); single systems keep the node-count threshold.
+        self.linear_scatter = (num_nodes > SCATTER_LINEAR_THRESHOLD if linear_scatter is None
+                               else linear_scatter)
         if self.linear_scatter:
             from . import scatter as _sc
 

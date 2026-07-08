@@ -92,15 +92,49 @@ def test_batched_equals_separate(golden, device):
     F_sep = torch.cat(F_sep, dim=0)
 
     # Block-diagonal batching leaves every backbone op within-system, so batched == separate up
-    # to bf16 rounding only: the concatenated graph makes the dense scatter matmul (S[N,E] @ m)
-    # and the energy readout accumulate over a larger E, so the tile/accumulation order — and
-    # thus the last bf16 bit — differs. On the tiny random-weight model energies are O(1), where
+    # to bf16 rounding only: the batched forward uses the linear O(E) gather+reduce scatter (a
+    # K>1 batch is block-diagonal, so the dense one-hot S[N,E] would be O(K^2) off-diagonal zeros)
+    # while the separate baseline keeps the dense matmul, and the energy readout accumulates over a
+    # larger E — so the tile/accumulation order, and thus the last bf16 bit, differs. On the tiny
+    # random-weight model energies are O(1), where
     # one bf16 ULP is ~8e-3; agreement at that level is exact-to-precision. (PCC>0.999 / rel<1e-3
     # is asserted on the real, large-magnitude energies vs fairchem in test_realweight.py.)
     assert (E_batch - E_sep).abs().max() < 2e-2, f"energy maxdiff {(E_batch - E_sep).abs().max()}"
     assert pcc(F_batch, F_sep) > 0.99, f"force PCC {pcc(F_batch, F_sep)}"
     f_err = (F_batch - F_sep).abs().max()
     assert f_err < 2e-2, f"force max abs diff {f_err}"
+
+
+def test_batch_forces_linear_scatter(golden, device):
+    """A K>1 disjoint-union batch must use the linear O(E) scatter regardless of node count (the
+    block-diagonal dense one-hot is O(K^2) off-diagonal zeros); a 1-system batch keeps the
+    single-system node-count threshold. Guards the batched-throughput optimization."""
+    from tt_atom.model import GraphContext, SCATTER_LINEAR_THRESHOLD
+
+    bb, geo, w, cfg = _build(golden, device)
+    cutoff, C = cfg["cutoff"], cfg["sphere_channels"]
+    task = cfg.get("task", "omat")
+
+    captured = {}
+    orig_init = GraphContext.__init__
+
+    def spy(self, *a, **kw):
+        orig_init(self, *a, **kw)
+        captured["linear"] = self.linear_scatter
+        captured["N"] = self.N
+
+    GraphContext.__init__ = spy
+    try:
+        bg2 = disjoint.assemble(_systems(golden, 2, jitter=0.03), cutoff, w, C, task=task)
+        forces.energy_and_forces_batch(bb, geo, bg2, compute_forces=False)
+        assert captured["N"] <= SCATTER_LINEAR_THRESHOLD, "test premise: batch below threshold"
+        assert captured["linear"] is True, "K>1 batch must force the linear scatter"
+
+        bg1 = disjoint.assemble(_systems(golden, 1, jitter=0.0), cutoff, w, C, task=task)
+        forces.energy_and_forces_batch(bb, geo, bg1, compute_forces=False)
+        assert captured["linear"] is False, "K=1 batch (below threshold) keeps the dense scatter"
+    finally:
+        GraphContext.__init__ = orig_init
 
 
 def test_batched_identical_copies(golden, device):
