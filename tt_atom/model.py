@@ -98,8 +98,8 @@ class GraphContext:
         self.rot_inv_ij, ci = rotation.pack(wigner_inv)    # reduced m-space (nred) -> node SH (nsph)
         # coef stored ROW_MAJOR: the per-step refresh's from_torch of a [E, nnz] TILE tensor pays a
         # tile-pad host tilize (~1.7-3.9 ms each; nnz pads to 32) vs ~0.04 ms RM. Consumers
-        # (rotation._coef_exp for the fused kernel; the non-fused MAC split) to_layout to TILE on
-        # device. Only affects the pos-dependent refresh cost -- topology buffers are unchanged.
+        # (rotation._coef_exp for the fused kernel) to_layout to TILE on device. Only affects the
+        # pos-dependent refresh cost -- topology buffers are unchanged.
         self.rot_fwd_coef = _to_dev(cf, device, wig_dtype, ttnn.ROW_MAJOR_LAYOUT)
         self.rot_inv_coef = _to_dev(ci, device, wig_dtype, ttnn.ROW_MAJOR_LAYOUT)
         # x_edge is stored ROW_MAJOR: the per-step trace refresh's from_torch of a wide [E,320] TILE

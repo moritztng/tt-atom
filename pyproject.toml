@@ -12,12 +12,13 @@ license = { text = "MIT" }
 authors = [{ name = "Moritz Thüning" }]
 keywords = ["tenstorrent", "ttnn", "machine-learning-potential", "eSEN", "eSCN", "UMA", "equivariant", "MLIP"]
 
-# Core runtime deps. ttnn is the Tenstorrent runtime (Apache-2.0); numpy is pinned <2 because
-# the ttnn wheel is built against the numpy 1.x C ABI; torch is CPU-only (the model runs on the
-# card). The installed ttnn version should match your tt-kmd driver / firmware; pin it if needed.
+# Core runtime deps. ttnn is NOT a pip dependency: this build routes the rotation through custom
+# tt-metal kernels (ttnn.experimental.fused_rotate) that the pip wheel does not carry, so ttnn must
+# come from a source tt-metal build that includes the op (see README "Install"). numpy is pinned <2
+# to match the source-ttnn numpy 1.x C ABI; torch is CPU-only (the model runs on the card).
 # `import tt_atom` never imports ttnn, so it imports fine on a machine without a card.
 dependencies = [
-    "ttnn==0.68.0",  # the validated version (see Accuracy). Override only if your driver needs it, then run `tt-atom verify`.
+    # ttnn is provided by the source tt-metal build with the custom op -- see README "Install".
     "numpy<2",
     "torch>=2.0,<3",
     "ase>=3.26",

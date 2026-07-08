@@ -6,20 +6,40 @@ Run Meta's [UMA](https://huggingface.co/facebook/UMA) interatomic potential on [
 
 ## Install
 
-```bash
-pip install "tt-atom @ git+https://github.com/moritztng/tt-atom.git@v0.1.0"
-```
+TT-Atom is the custom-kernel-only, highest-performance build for `uma-s`. Its per-edge Wigner rotation runs as a custom tt-metal kernel that the pip `ttnn` wheel does not carry, so `ttnn` comes from a **source tt-metal build** that includes the op. You need a Tenstorrent card and its driver.
 
-Install a tagged [release](https://github.com/moritztng/tt-atom/releases) (`@v0.1.0` above — see Releases for the latest), not `master`: `master` is the development branch and may contain experimental work. You need a Tenstorrent card to run it.
-
-<details><summary>Nightly / from source</summary>
+**1. Build tt-metal with the custom op** (validated at commit `b5522097b39`):
 
 ```bash
-pip install "tt-atom @ git+https://github.com/moritztng/tt-atom.git@master"   # nightly (may be untested)
-# or an editable clone:
-git clone https://github.com/moritztng/tt-atom.git && cd tt-atom && pip install -e .
+git clone --recursive https://github.com/tenstorrent/tt-metal.git
+cd tt-metal && git checkout b5522097b39 && git submodule update --init --recursive
+export TT_METAL_HOME=$PWD
+
+# add the fused-rotation op: copy the source + apply 3 registration edits
+cp -r /path/to/tt-atom/custom_kernels/fused_rotate ttnn/cpp/ttnn/operations/experimental/fused_rotate
+#   -> edit ttnn/CMakeLists.txt, ttnn/sources.cmake, experimental_nanobind.cpp
+
+./build_metal.sh --build-type Release          # full build (tens of minutes)
+cp build/lib/_ttnn.so ttnn/ttnn/_ttnn.so       # stage the built ttnn
 ```
-</details>
+
+The three edits and the op contract are in [`custom_kernels/README.md`](custom_kernels/README.md).
+
+**2. Install TT-Atom and put the source ttnn on the path:**
+
+```bash
+git clone https://github.com/moritztng/tt-atom.git
+pip install -e ./tt-atom                        # numpy<2, torch (CPU), ase — NOT ttnn
+export PYTHONPATH=$TT_METAL_HOME/ttnn:$PWD/tt-atom
+```
+
+**3. Verify the op is loaded:**
+
+```bash
+python -c "import ttnn; e=ttnn._ttnn.operations.experimental; print(hasattr(e,'fused_rotate'), hasattr(e,'fused_rotate_gc'))"   # -> True True
+```
+
+`uma-s` (lmax=mmax=2) is the validated target; other checkpoints (e.g. uma-m) raise a clear error. `import tt_atom` never imports ttnn, so it imports fine on a machine without a card.
 
 ## Quickstart
 
