@@ -131,6 +131,10 @@ class TracedEngine:
 
         body()                                  # warmup: compile all kernels before capture
         ttnn.synchronize_device(self.dev)
+        # Drop the warmup's expanded-coef cache so the capture below records the on-device coef
+        # expansion INTO the trace (refreshed from the compact coef on every replay) rather than
+        # freezing it at the capture step's values. See rotation.reset_expand_cache.
+        rotation.reset_expand_cache()
         self.tid = ttnn.begin_trace_capture(self.dev, cq_id=0)
         self.energy_t, self.acc = body()
         ttnn.end_trace_capture(self.dev, self.tid, cq_id=0)
