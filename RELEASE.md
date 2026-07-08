@@ -98,9 +98,9 @@ device roundtrip against a fairchem reference embedded in the bundle at convert 
 > materials (omol / omat / oc20): energy to ≤3e-4, force PCC ≥ 0.9996 vs the fairchem oracle.
 > The SO(2)-convolution trick makes it ~90 % dense GEMM, so it maps beautifully: a trace-captured
 > MD loop runs **2.3× faster**, device compute up to **5.3× over CPU** (gap grows with size), and
-> **~4× linear scaling across 4 Blackhole cards**. Apache-2.0, bring your own checkpoint. 🧪⚡
+> **~4× linear scaling across 4 Blackhole cards**. MIT, bring your own checkpoint. 🧪⚡
 
 ## Status
 
-Apache-2.0 (our code). Tests pass (`pytest tests/ -q`). Benchmarks reproducible. Nothing pushed
+MIT (our code). Tests pass (`pytest tests/ -q`). Benchmarks reproducible. Nothing pushed
 or posted — ready for your review.
