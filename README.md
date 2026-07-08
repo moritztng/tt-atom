@@ -7,10 +7,19 @@ Run Meta's [UMA](https://huggingface.co/facebook/UMA) interatomic potential on [
 ## Install
 
 ```bash
-pip install git+https://github.com/moritztng/tt-atom.git
+pip install "tt-atom @ git+https://github.com/moritztng/tt-atom.git@v0.1.0"
 ```
 
-You need a Tenstorrent card to run it.
+Install a tagged [release](https://github.com/moritztng/tt-atom/releases) (`@v0.1.0` above — see Releases for the latest), not `master`: `master` is the development branch and may contain experimental work. You need a Tenstorrent card to run it.
+
+<details><summary>Nightly / from source</summary>
+
+```bash
+pip install "tt-atom @ git+https://github.com/moritztng/tt-atom.git@master"   # nightly (may be untested)
+# or an editable clone:
+git clone https://github.com/moritztng/tt-atom.git && cd tt-atom && pip install -e .
+```
+</details>
 
 ## Quickstart
 
