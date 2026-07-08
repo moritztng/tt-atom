@@ -75,6 +75,8 @@ class TTAtomCalculator(Calculator):
             device_id, trace_region_size=trace_region_size if trace else 0)
         self._engine = None
         self._engine_edges = None
+        self._batch_engine = None
+        self._batch_edges = None
         w = bundle.weights
         self.backbone = Backbone(w, self.device, self.cfg, bundle.to_grid_mat,
                                  bundle.from_grid_mat, fast=fast)
@@ -132,6 +134,9 @@ class TTAtomCalculator(Calculator):
         if self._engine is not None:
             self._engine.close()
             self._engine = None
+        if self._batch_engine is not None:
+            self._batch_engine.close()
+            self._batch_engine = None
         if self._owns_device and self.device is not None:
             import ttnn
 
@@ -182,7 +187,7 @@ class TTAtomCalculator(Calculator):
             stress = self.scale_rmsd * virial.detach().numpy().astype(np.float64) / atoms.get_volume()
             self.results["stress"] = full_3x3_to_voigt_6_stress(stress)
 
-    def evaluate_batch(self, systems, properties=("energy", "forces")):
+    def evaluate_batch(self, systems, properties=("energy", "forces"), trace=False):
         """Disjoint-union batched evaluation — K systems in ONE device forward (fairchem/PyG style).
 
         ``systems`` is a list of ASE ``Atoms`` (or ``(positions, atomic_numbers)`` / dicts). The
@@ -196,13 +201,23 @@ class TTAtomCalculator(Calculator):
 
         All systems must share this bundle's reduced composition: a merged uma-s-1 bundle bakes the
         MoLE expert routing for one composition (fairchem's merged batched inference requires the
-        same), so the batch is e.g. conformers / an MD ensemble of one molecule."""
+        same), so the batch is e.g. conformers / an MD ensemble of one molecule.
+
+        ``trace=True`` captures the batched device forward+backward once and replays it while the
+        batch topology (edge set) is unchanged — the throughput path for a *batched MD ensemble /
+        relaxation* of K fixed-composition replicas, where the sub-saturation batch forward is
+        host-dispatch-bound (measured ~2.5-3x for modest K). It re-captures whenever the neighbour
+        list changes, so results stay correct; leave it False for one-shot screening (a fresh batch
+        each call would re-capture every time, wasting the capture cost)."""
         from . import disjoint
 
         bg = disjoint.assemble(systems, self.cfg["cutoff"], self._w, self.C, task=self.task)
         want_forces = "forces" in properties
-        E_raw, F = Fmod.energy_and_forces_batch(self.backbone, self.geo, bg,
-                                                 compute_forces=want_forces)
+        if trace and want_forces:
+            E_raw, F = self._traced_batch(bg)
+        else:
+            E_raw, F = Fmod.energy_and_forces_batch(self.backbone, self.geo, bg,
+                                                     compute_forces=want_forces)
         energies, forces_out, off = [], [], 0
         for k, n in enumerate(bg.natoms):
             Ek = self.scale_rmsd * float(E_raw[k]) + self.scale_mean
@@ -214,6 +229,24 @@ class TTAtomCalculator(Calculator):
                 forces_out.append(Fk)
             off += n
         return dict(energy=np.array(energies), forces=forces_out if want_forces else None)
+
+    def _traced_batch(self, bg):
+        """Trace-replayed batched energy+forces; (re)captures on neighbour-list change. Returns
+        ``(E_raw: torch[K], F: torch[Ntot, 3])`` matching ``energy_and_forces_batch``."""
+        from .trace import TracedEngine
+
+        changed = (self._batch_engine is None
+                   or self._batch_edges is None
+                   or self._batch_edges.shape != bg.edge_index.shape
+                   or not torch.equal(self._batch_edges, bg.edge_index))
+        if changed:
+            if self._batch_engine is not None:
+                self._batch_engine.close()
+            self._batch_engine = TracedEngine(
+                self.backbone, self.geo, bg.Z, bg.edge_index, bg.sys_emb,
+                edge_cell_shift=bg.cell_shift, seg=bg.segment_matrix(), linear_scatter=True)
+            self._batch_edges = bg.edge_index.clone()
+        return self._batch_engine(bg.pos)
 
     def _traced(self, pos, Z, edge_index, edge_cell_shift, sys_emb):
         """Trace-replayed energy+forces; (re)captures when the neighbour list changes."""

@@ -46,7 +46,7 @@ class TracedEngine:
     successive positions. The first call captures the trace; later calls refresh + replay."""
 
     def __init__(self, bb, geo, atomic_numbers, edge_index, sys_node_embedding,
-                 edge_cell_shift=None):
+                 edge_cell_shift=None, seg=None, linear_scatter=None):
         import ttnn
 
         self.ttnn = ttnn
@@ -61,6 +61,12 @@ class TracedEngine:
         self.N = atomic_numbers.shape[0]
         self.tid = None
         self._device_ede = bb.edge_degree is not None
+        # disjoint-union batch: ``seg`` [K, N] one-hot -> per-system energy readout inside the
+        # trace (block-diagonal, so forces are unchanged). ``linear_scatter`` forces the O(E)
+        # gather+reduce (the dense S[N,E] is O(K^2) for a block-diagonal batch). None => single.
+        self.seg = seg
+        self.K = seg.shape[0] if seg is not None else 1
+        self._linear_scatter = linear_scatter
 
     # ------------------------------------------------------------------ capture / refresh
 
@@ -100,9 +106,13 @@ class TracedEngine:
         self.graph = GraphContext(
             self.dev, edge_index=self.edge_index, wigner=t["wigner"].detach(),
             wigner_inv=t["wigner_inv"].detach(), x_edge=t["x_edge"].detach(),
-            edge_envelope=t["edge_envelope"].detach(), num_nodes=N)
+            edge_envelope=t["edge_envelope"].detach(), num_nodes=N,
+            linear_scatter=self._linear_scatter)
         self.se3 = ttnn.from_torch(self.se.reshape(N, 1, C), dtype=ttnn.bfloat16,
                                    layout=ttnn.TILE_LAYOUT, device=self.dev)
+        if self.seg is not None:
+            self.seg_dev = ttnn.from_torch(self.seg, dtype=ttnn.bfloat16,
+                                           layout=ttnn.TILE_LAYOUT, device=self.dev)
         # x_init operand is the constant l0 node init (device edge-degree on) or the full host
         # x_init (off). l0 is pos-independent so it is uploaded once here and never refreshed.
         init = t["l0"] if self._device_ede else t["x_init"]
@@ -111,7 +121,11 @@ class TracedEngine:
         from . import forces as Fmod
 
         def body():
-            node_emb, energy = self.bb(self.x_init, self.graph, self.se3)
+            if self.seg is None:
+                node_emb, energy = self.bb(self.x_init, self.graph, self.se3)
+            else:
+                node_emb = self.bb.node_embedding(self.x_init, self.graph, self.se3)
+                energy = self.bb.energy_batch(node_emb, self.seg_dev)   # [K, 1]
             acc = Fmod.backbone_bw(self.bb, self.graph, node_emb)
             return energy, acc
 
@@ -138,7 +152,8 @@ class TracedEngine:
         # on the capture step too (the inputs already hold this ``t``'s data after _capture).
         ttnn.execute_trace(self.dev, self.tid, cq_id=0, blocking=True)
 
-        E = float(ttnn.to_torch(self.energy_t).reshape(-1)[0])
+        E_flat = ttnn.to_torch(self.energy_t).float().reshape(-1)
+        E = E_flat[:self.K].clone() if self.seg is not None else float(E_flat[0])
         acc = self.acc
         nsph = self.graph.nsph
         g_wig = rotation.scatter_coef(ttnn.to_torch(acc["rot_fwd"]).float(),
