@@ -4,8 +4,9 @@ name: release
 # (accuracy parity, no OOM across the supported size range, no perf regression — see
 # RELEASING.md):
 #   git tag v0.1.0 && git push origin master --tags
-# This builds the artifacts, publishes a GitHub Release with notes + wheel, and (once
-# enabled) publishes to PyPI via Trusted Publishing.
+# This builds the artifacts and publishes a GitHub Release with notes + wheel. No PyPI
+# job: tt-atom requires a source tt-metal/ttnn build, so a pip wheel can't run standalone
+# (see the NOTE below and RELEASING.md).
 
 on:
   push:
