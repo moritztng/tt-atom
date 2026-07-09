@@ -6,24 +6,19 @@ Run Meta's [UMA](https://huggingface.co/facebook/UMA) interatomic potential on [
 
 ## Install
 
-TT-Atom is the custom-kernel-only, highest-performance build for `uma-s`. Its per-edge Wigner rotation runs as a custom tt-metal kernel that the pip `ttnn` wheel does not carry, so `ttnn` comes from a **source tt-metal build** that includes the op. You need a Tenstorrent card and its driver.
+TT-Atom is the custom-kernel-only, highest-performance build for `uma-s`. Its per-edge Wigner rotation runs as a custom tt-metal kernel that the pip `ttnn` wheel does not carry, so `ttnn` comes from a **source tt-metal build**. The op is pre-integrated on the [`moritztng/tt-atom-kernels`](https://github.com/tenstorrent/tt-metal/tree/moritztng/tt-atom-kernels) branch of tt-metal, so the build is a plain clone-and-build — no patching. You need a Tenstorrent card and its driver.
 
-**1. Build tt-metal with the custom op** (validated at commit `b5522097b39`):
+**1. Build tt-metal with the op** (branch `moritztng/tt-atom-kernels`):
 
 ```bash
-git clone --recursive https://github.com/tenstorrent/tt-metal.git
-cd tt-metal && git checkout b5522097b39 && git submodule update --init --recursive
+git clone --recursive -b moritztng/tt-atom-kernels https://github.com/tenstorrent/tt-metal.git
+cd tt-metal
 export TT_METAL_HOME=$PWD
-
-# add the fused-rotation op: copy the source + apply 3 registration edits
-cp -r /path/to/tt-atom/custom_kernels/fused_rotate ttnn/cpp/ttnn/operations/experimental/fused_rotate
-#   -> edit ttnn/CMakeLists.txt, ttnn/sources.cmake, experimental_nanobind.cpp
-
 ./build_metal.sh --build-type Release          # full build (tens of minutes)
 cp build/lib/_ttnn.so ttnn/ttnn/_ttnn.so       # stage the built ttnn
 ```
 
-The three edits and the op contract are in [`custom_kernels/README.md`](custom_kernels/README.md).
+The branch is the validated base `b5522097b39` plus the `fused_rotate` op library — nothing else. Its source and contract are mirrored in [`custom_kernels/README.md`](custom_kernels/README.md) as the authoritative backup (and for re-integrating onto a newer tt-metal commit).
 
 **2. Install TT-Atom and put the source ttnn on the path:**
 

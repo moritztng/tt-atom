@@ -2,8 +2,11 @@
 
 `tt_atom/rotation.py` routes the per-edge Wigner rotation through custom tt-metal compute kernels
 that the pip `ttnn` wheel does not carry, so TT-Atom needs a **source tt-metal build** that
-includes this op. This directory is the authoritative backup of that op source; copy it into a
-tt-metal checkout, apply the 3 registration edits below, and build `_ttnn.so`.
+includes this op. The op is pre-integrated on the
+[`moritztng/tt-atom-kernels`](https://github.com/tenstorrent/tt-metal/tree/moritztng/tt-atom-kernels)
+branch of tt-metal, so the normal install just clones and builds that branch (see the top-level
+README). This directory is the authoritative backup of the op source and the recipe for
+re-integrating it onto a newer tt-metal commit.
 
 ## What the op provides
 One tt-metal experimental op library (`TTNN::Ops::Experimental::FusedRotate`) exposing four kernels
@@ -33,10 +36,12 @@ must fit the fp32 DST register file (`dst_full_sync_en` -> 8 slots) and the per-
 L1 (~1.5 MB). uma-s (square 9x9, W=128/256) fits; uma-m (rectangular 19x25, W=256) overflows and is
 unsupported — `rotation.rotate` raises rather than falling back.
 
-## Build (source tt-metal)
+## Re-integrating onto a newer tt-metal commit
 
-Built and validated against upstream tt-metal commit **`b5522097b39`** (`Migrate experimental/ssm
-leftovers to ProgramDescriptor`, #44403).
+The `moritztng/tt-atom-kernels` branch already carries this op on top of validated commit
+**`b5522097b39`** (`Migrate experimental/ssm leftovers to ProgramDescriptor`, #44403), so you only
+need the steps below to rebase the op onto a *different* tt-metal commit. They are exactly how that
+branch was produced.
 
 1. Copy this op into the tt-metal tree:
    ```
