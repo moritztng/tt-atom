@@ -22,6 +22,8 @@ The branch is the validated base `b5522097b39` plus the `fused_rotate` op librar
 
 `TT_METAL_HOME` must stay exported at **runtime** too — the JIT-compiled kernels load from `$TT_METAL_HOME/build_Release`, so don't delete that directory after installing.
 
+On some boards/firmware this base commit's UMD misreads the board ID as a dual-chip P300 (`Board ... has 1 chips, but expected 2 chips for board type p300` -> `TT_FATAL: Custom fabric mesh graph descriptor path must be specified for CUSTOM cluster type`), which blocks opening *any* device, single-card included. If you hit that, export `TT_MESH_GRAPH_DESC_PATH=$TT_METAL_HOME/tt_metal/fabric/mesh_graph_descriptors/p150_mesh_graph_descriptor.textproto` before opening a device — this also needs to be set in the parent process before constructing `tt_atom.batch.MultiCard`, since its per-card worker processes inherit it.
+
 **2. Install TT-Atom into the same venv:**
 
 ```bash
