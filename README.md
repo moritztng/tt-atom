@@ -8,24 +8,25 @@ Run Meta's [UMA](https://huggingface.co/facebook/UMA) interatomic potential on [
 
 TT-Atom is the custom-kernel-only, highest-performance build for `uma-s`. Its per-edge Wigner rotation runs as a custom tt-metal kernel that the pip `ttnn` wheel does not carry, so `ttnn` comes from a **source tt-metal build**. The op is pre-integrated on the [`moritztng/tt-atom`](https://github.com/tenstorrent/tt-metal/tree/moritztng/tt-atom) branch of tt-metal, so the build is a plain clone-and-build — no patching. You need a Tenstorrent card and its driver.
 
-**1. Build tt-metal with the op** (branch `moritztng/tt-atom`):
+**1. Build and install tt-metal with the op** (branch `moritztng/tt-atom`):
 
 ```bash
 git clone --recursive -b moritztng/tt-atom https://github.com/tenstorrent/tt-metal.git
 cd tt-metal
 export TT_METAL_HOME=$PWD
 ./build_metal.sh --build-type Release          # full build (tens of minutes)
-cp build/lib/_ttnn.so ttnn/ttnn/_ttnn.so       # stage the built ttnn
+pip install -e .                               # tt-metal's own dev-install path
 ```
 
 The branch is the validated base `b5522097b39` plus the `fused_rotate` op library — nothing else. Its source and contract are mirrored in [`custom_kernels/README.md`](custom_kernels/README.md) as the authoritative backup (and for re-integrating onto a newer tt-metal commit).
 
-**2. Install TT-Atom and put the source ttnn on the path:**
+`TT_METAL_HOME` must stay exported at **runtime** too — the JIT-compiled kernels load from `$TT_METAL_HOME/build_Release`, so don't delete that directory after installing.
+
+**2. Install TT-Atom into the same venv:**
 
 ```bash
 git clone https://github.com/moritztng/tt-atom.git
 pip install -e ./tt-atom                        # numpy<2, torch (CPU), ase — NOT ttnn
-export PYTHONPATH=$TT_METAL_HOME/ttnn:$PWD/tt-atom
 ```
 
 **3. Verify the op is loaded:**
