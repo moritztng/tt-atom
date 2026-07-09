@@ -66,10 +66,27 @@ Add `--trace` (or `UMA(atoms, trace=True)`) to replay the captured device graph 
 
 ## What it supports
 
-- Models: `uma-s-1` (default), `uma-m-1p1`.
+- Models: `uma-s-1` (default). See [Model coverage](#model-coverage) for what else exists upstream
+  and why this build doesn't run it.
 - Tasks: `omol`, `omat`, `oc20`, `odac`, `omc`.
 - Systems: isolated molecules and periodic cells. Charge and spin via `UMA(atoms, charge=-1, spin=2)`.
 - Properties: energy, conservative analytic forces, and stress, so variable-cell relaxation works (see [`examples/relax_cell.py`](examples/relax_cell.py)).
+
+## Model coverage
+
+Meta has released two UMA sizes: `uma-s-1` (`.1`/`.2`) and `uma-m-1p1` — there is no `uma-l`. The
+[paper](https://arxiv.org/abs/2506.23971) scales capacity via mixture-of-linear-experts on the
+small and medium models rather than shipping a third, larger dense tier, and
+[facebook/UMA](https://huggingface.co/facebook/UMA) carries checkpoints for only those two.
+
+Of the two that exist, only `uma-s-1` runs on this build. `uma-s` is square (lmax=mmax=2), so its
+per-edge Wigner rotation is a 9x9 tile that fits the fused kernel's L1 CB budget. `uma-m-1p1` uses
+mmax<lmax spherical-harmonic subselection, so its rotation is rectangular (25<->19, W=256) — that
+overflows the kernel's L1 budget, and this build has no MAC fallback, so it raises a clear
+`RuntimeError` naming the shape rather than silently running slow or wrong
+(`tests/test_umam.py` anchors this contract). A hypothetical `uma-l`, sized above `uma-m`, would
+need L1 headroom `uma-m` already overflows, so it isn't a new question, just a bigger version of
+the one above — and moot, since the checkpoint doesn't exist to test it against.
 
 ## Accuracy
 
@@ -83,7 +100,7 @@ Every task is checked on-device against the released `uma-s-1` checkpoint run th
 | odac | MgO framework   | 2e-4 | 0.99999 |     |
 | omc  | solid CO2       | 8e-5 | 1.0000  |     |
 
-`uma-m-1p1` matches too (ethanol: energy rel. err 2e-8, force PCC 0.9999). Dynamics are stable: NVE energy drift is about 1 meV/atom/ps. These numbers are from `ttnn` 0.68.0. Op numerics can shift slightly between `ttnn` versions, so confirm parity on the version you actually run:
+Dynamics are stable: NVE energy drift is about 1 meV/atom/ps. These numbers are from `ttnn` 0.68.0. Op numerics can shift slightly between `ttnn` versions, so confirm parity on the version you actually run:
 
 Reproduce it yourself. Every bundle embeds the fairchem reference energy and forces from build time, so:
 
@@ -120,7 +137,7 @@ TT-Atom is an inference runtime, not a rewrite of fairchem. It reuses the releas
 | Energy, forces, stress | ✅ | ✅ |
 | Molecules, periodic (PBC) | ✅ | ✅ |
 | Tasks (omol/omat/oc20/odac/omc) | ✅ | ✅ |
-| Models | uma-s, uma-m, uma-l | uma-s-1, uma-m-1p1 |
+| Models | uma-s, uma-m | uma-s-1 |
 | ASE relax and MD | ✅ | ✅ (plus a traced loop) |
 | Batched inference | ✅ | ✅ (one composition per batch) |
 | LAMMPS interface | ✅ | ❌ |
