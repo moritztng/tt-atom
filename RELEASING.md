@@ -31,7 +31,7 @@ If any of the three fails, it does not ship — fix it or hold the release.
    git tag v0.1.0
    git push origin master --tags
    ```
-4. CI (`.github/workflows/release.yml`) builds the sdist + wheel, checks the tag matches the
+4. CI (`.github/workflows/release.yaml`) builds the sdist + wheel, checks the tag matches the
    `pyproject` version, and publishes a **GitHub Release** with the changelog notes + wheel.
 
 ## Distribution: GitHub Releases only (NOT PyPI)
