@@ -58,17 +58,19 @@ branch was produced.
    - `ttnn/sources.cmake`: add
      `cpp/ttnn/operations/experimental/fused_rotate/fused_rotate_nanobind.cpp` to `TTNN_SRC_PYBIND`
      (omitting this links but leaves the Python symbols undefined — the classic trap).
-3. Build and stage the shared object:
+3. Rebuild and re-stage the shared object (the `install` target both compiles and copies
+   `_ttnn.so` into `ttnn/ttnn/` — this is what `build_metal.sh` itself runs):
    ```
-   ninja -C $TT_METAL_HOME/build ttnn
-   cp $TT_METAL_HOME/build/lib/_ttnn.so $TT_METAL_HOME/ttnn/ttnn/_ttnn.so
+   cmake --build $TT_METAL_HOME/build_Release --target install
    ```
+   `pip install -e .` (top-level README) only needs to run once per venv — it's a packaging step,
+   not a build step, so re-running it after this rebuild is unnecessary.
 4. Verify:
    ```
-   TT_METAL_HOME=$TT_METAL_HOME PYTHONPATH=$TT_METAL_HOME/ttnn python3 -c \
+   TT_METAL_HOME=$TT_METAL_HOME python3 -c \
      "import ttnn; e=ttnn._ttnn.operations.experimental; \
       print(hasattr(e,'fused_rotate'), hasattr(e,'fused_rotate_gc'))"   # -> True True
    ```
 
-Run TT-Atom with the source ttnn on the path:
-`TT_METAL_HOME=$TT_METAL_HOME PYTHONPATH=$TT_METAL_HOME/ttnn:/path/to/TT-Atom python ...`
+Run TT-Atom (both `ttnn` and `tt-atom` are `pip install -e`'d into the active venv):
+`TT_METAL_HOME=$TT_METAL_HOME python ...`
