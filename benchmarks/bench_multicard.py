@@ -1,8 +1,8 @@
 """Multi-card throughput scaling for TT-Atom.
 
-Evaluates a fixed pool of independent systems on 1 card and on all 4 cards (one worker process
-per card, weights resident) and reports aggregate Medges/s and the scaling factor. All numbers
-are measured here; nothing is hardcoded. Results -> benchmarks/results/multicard.json.
+Evaluates a fixed pool of independent systems on 1..N cards (one worker process per card,
+weights resident) and reports aggregate Medges/s and the scaling factor at each card count.
+All numbers are measured here; nothing is hardcoded. Results -> benchmarks/results/multicard.json.
 
 Run:  ~/.ttatom_run/env/bin/python benchmarks/bench_multicard.py --weights /tmp/tt_full.npz
 """
@@ -48,12 +48,14 @@ def main():
     ap.add_argument("--cells", type=int, default=4)            # ~128 atoms / ~2200 edges each
     ap.add_argument("--systems", type=int, default=64)
     ap.add_argument("--fast", action="store_true")
+    ap.add_argument("--max-cards", type=int, default=4)
     args = ap.parse_args()
 
     systems = make_systems(args.systems, args.cells)
     natoms, nedges = len(systems[0][1]), None
     rows = []
-    for ids in ([0], [0, 1, 2, 3]):
+    for n in range(1, args.max_cards + 1):
+        ids = list(range(n))
         medges, dt = measure(args.weights, ids, systems, args.fast)
         rows.append(dict(cards=len(ids), device_ids=ids, medges_per_s=medges, wall_s=dt))
         print(f"{len(ids)} card(s): {medges:6.3f} Medges/s  ({args.systems} systems x ~{natoms} atoms in {dt:.2f}s)")
@@ -61,7 +63,7 @@ def main():
     base = rows[0]["medges_per_s"]
     for r in rows:
         r["scaling_vs_1card"] = r["medges_per_s"] / base
-    print(f"4-card scaling: {rows[-1]['scaling_vs_1card']:.2f}x")
+    print(f"{args.max_cards}-card scaling: {rows[-1]['scaling_vs_1card']:.2f}x")
     RESULTS.mkdir(exist_ok=True)
     out = RESULTS / ("multicard_fast.json" if args.fast else "multicard.json")
     out.write_text(json.dumps(dict(systems=args.systems, cells=args.cells, natoms=natoms,
