@@ -3,7 +3,7 @@
 `tt_atom/rotation.py` routes the per-edge Wigner rotation through custom tt-metal compute kernels
 that the pip `ttnn` wheel does not carry, so TT-Atom needs a **source tt-metal build** that
 includes this op. The op is pre-integrated on the
-[`moritztng/tt-atom-kernels`](https://github.com/tenstorrent/tt-metal/tree/moritztng/tt-atom-kernels)
+[`moritztng/tt-atom`](https://github.com/tenstorrent/tt-metal/tree/moritztng/tt-atom)
 branch of tt-metal, so the normal install just clones and builds that branch (see the top-level
 README). This directory is the authoritative backup of the op source and the recipe for
 re-integrating it onto a newer tt-metal commit.
@@ -38,7 +38,7 @@ unsupported — `rotation.rotate` raises rather than falling back.
 
 ## Re-integrating onto a newer tt-metal commit
 
-The `moritztng/tt-atom-kernels` branch already carries this op on top of validated commit
+The `moritztng/tt-atom` branch already carries this op on top of validated commit
 **`b5522097b39`** (`Migrate experimental/ssm leftovers to ProgramDescriptor`, #44403), so you only
 need the steps below to rebase the op onto a *different* tt-metal commit. They are exactly how that
 branch was produced.
