@@ -64,18 +64,30 @@ def spherical_harmonics_l3(unit_vec: torch.Tensor) -> torch.Tensor:
 
 
 def host_edge_features(pos: torch.Tensor, senders: torch.Tensor, receivers: torch.Tensor,
-                       cell_shift: torch.Tensor | None, *, r_max: float = 6.0, num_bases: int = 8):
+                       cell_shift: torch.Tensor | None, *, r_max: float = 6.0, num_bases: int = 8,
+                       strain: torch.Tensor | None = None):
     """Differentiable ``pos -> (edge_feat, cutoff, vectors)``.
 
     ``edge_feat`` [E, num_bases*16] is the ``outer_product_with_cutoff`` encoder input;
     ``cutoff`` [E, 1] is the identical polynomial envelope also used to gate attention
     (``orb_model.AttentionInteractionLayer``) -- both quantities depend on ``pos`` only through
-    the same edge vectors, so a single ``torch.autograd.grad`` call finishes both adjoints."""
+    the same edge vectors, so a single ``torch.autograd.grad`` call finishes both adjoints.
+
+    ``strain`` (optional, symmetric 3x3, see ``tt_atom/forces.py``'s ``_forward``) scales the edge
+    vectors as ``r' = r (I + sym(strain))`` -- identical convention to both UMA's ``geometry.py``
+    and Orb's own ``base.create_and_apply_stress_displacement`` (both fold the same fairchem-style
+    displacement trick into positions *and* cell before differencing, which is algebraically
+    equivalent to scaling the already-formed, cell-shift-inclusive vector this way). Since ALL
+    pos/cell dependence of the energy flows through the edge vectors, ``dE/dstrain`` is exactly
+    the (unsymmetrized) virial the caller divides by the cell volume for the stress tensor."""
     from .orb_model import host_cutoff
 
     vectors = pos[receivers] - pos[senders]
     if cell_shift is not None:
         vectors = vectors + cell_shift
+    if strain is not None:
+        sym = 0.5 * (strain + strain.transpose(0, 1))
+        vectors = vectors + vectors @ sym
     lengths = vectors.norm(dim=-1)
     rbf = bessel_basis(lengths, r_max=r_max, num_bases=num_bases)
     unit = F.normalize(vectors, dim=-1)

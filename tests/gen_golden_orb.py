@@ -162,6 +162,9 @@ def main():
     if "forces" in orbff.heads:
         for k, v in orbff.heads["forces"].state_dict().items():
             saved[f"w@forces_head.{k}"] = npy(v)
+    if "stress" in orbff.heads:
+        for k, v in orbff.heads["stress"].state_dict().items():
+            saved[f"w@stress_head.{k}"] = npy(v)
     if orbff.pair_repulsion:
         for k, v in orbff.pair_repulsion_fn.state_dict().items():
             saved[f"w@pair_repulsion.{k}"] = npy(v)

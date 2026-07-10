@@ -150,7 +150,7 @@ def backbone_bw(encoder, layers, ehead, graph):
 
 
 def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers, atomic_numbers,
-                      node_feat, cell_shift=None, r_max=6.0, num_bases=8):
+                      node_feat, cell_shift=None, r_max=6.0, num_bases=8, compute_stress=False):
     """Conservative energy + analytic forces ``F = -dE/dpos`` for one system
     (``orb-v3-conservative-inf-omat``). One device forward at the current geometry, one device
     reverse VJP, and a host ``torch.autograd.grad`` finish through the differentiable edge
@@ -160,7 +160,10 @@ def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers
     independent) encoder node input. Returns ``(energy_raw: float, forces: torch.Tensor[N,3])``
     in normalized (pre-``host_energy_denormalize``) space -- same convention as ``EnergyHead``'s
     device output, so the caller finishes with the same host denormalize + ZBL add used by the
-    energy-only path.
+    energy-only path. When ``compute_stress`` is set, also returns ``virial: torch.Tensor[3,3]``
+    (``dE/dstrain`` in the same raw/normalized space as ``forces``) -- the caller divides by the
+    cell volume and applies the same denormalize scale as forces (see
+    ``host_conservative_force_denormalize``) to get the physical stress tensor.
     """
     import ttnn
 
@@ -168,8 +171,9 @@ def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers
     from .orb_model import OrbGraphContext, _to_dev, host_cutoff
 
     pos = pos.detach().clone().requires_grad_(True)
+    strain = torch.zeros(3, 3, dtype=pos.dtype, requires_grad=True) if compute_stress else None
     edge_feat, cutoff, vectors = host_edge_features(pos, senders, receivers, cell_shift,
-                                                    r_max=r_max, num_bases=num_bases)
+                                                    r_max=r_max, num_bases=num_bases, strain=strain)
 
     N = atomic_numbers.shape[0]
     graph = OrbGraphContext(device, senders=senders, receivers=receivers,
@@ -186,6 +190,9 @@ def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers
     g_edge_feat = ttnn.to_torch(g_edge_feat_dev).float()
     g_cutoff = ttnn.to_torch(g_cutoff_dev).float()
 
-    grads = torch.autograd.grad([edge_feat, cutoff], [pos], grad_outputs=[g_edge_feat, g_cutoff])
+    inputs = [pos] if strain is None else [pos, strain]
+    grads = torch.autograd.grad([edge_feat, cutoff], inputs, grad_outputs=[g_edge_feat, g_cutoff])
     forces = -grads[0]
-    return float(raw_pred), forces
+    if strain is None:
+        return float(raw_pred), forces
+    return float(raw_pred), forces, grads[1]
