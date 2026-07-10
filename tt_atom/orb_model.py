@@ -268,11 +268,55 @@ class ForceHead:
         return ttnn.subtract(pred, mean)
 
 
+class StressHead:
+    """``forcefield_heads.StressHead``'s device-resident MLP path (used by
+    ``orb-v3-direct-20-omat``): mean-aggregate the final node embedding over the system (same
+    shape/pattern as ``EnergyHead``), then a 2-layer MLP (Linear-SiLU-Linear) to a 6-vector
+    (Voigt notation: ``[xx, yy, zz, yz, xz, xy]``) raw prediction. Single-system only.
+
+    Unlike ``EnergyHead``'s single scalar normalizer, the diagonal and off-diagonal components
+    have their own ``ScalarNormalizer``s (``host_stress_denormalize`` applies both) -- direct's
+    stress has no explicit volume division (unlike the conservative virial): the normalizer
+    stats were fit directly against the target's own eV/Å^3 units."""
+
+    def __init__(self, weights, device, *, latent_dim, hidden_dim):
+        import ttnn
+
+        self.ttnn = ttnn
+        self.kcfg = compute_kernel_config()
+        self.w0 = _to_dev(weights["stress_head.mlp.NN-0.weight"].T.contiguous(), device, ttnn.bfloat16)
+        self.b0 = _to_dev(weights["stress_head.mlp.NN-0.bias"], device, ttnn.bfloat16)
+        self.w1 = _to_dev(weights["stress_head.mlp.NN-1.weight"].T.contiguous(), device, ttnn.bfloat16)
+        self.b1 = _to_dev(weights["stress_head.mlp.NN-1.bias"], device, ttnn.bfloat16)
+
+    def __call__(self, node_features):
+        """``node_features``: ttnn ``[N, latent_dim]`` (single system) -> ttnn ``[1, 6]`` raw
+        (normalized-space) Voigt-6 stress prediction."""
+        ttnn = self.ttnn
+        mean = ttnn.mean(node_features, dim=0, keepdim=True)
+        h = ttnn.silu(ttnn.linear(mean, self.w0, bias=self.b0, compute_kernel_config=self.kcfg))
+        return ttnn.linear(h, self.w1, bias=self.b1, compute_kernel_config=self.kcfg)
+
+
 def host_force_denormalize(raw_pred: torch.Tensor, *, running_mean: torch.Tensor,
                            running_var: torch.Tensor) -> torch.Tensor:
     """``ForceHead``'s ``ScalarNormalizer.inverse``: ``x * sigma + mu`` (two learned scalars)."""
     sigma = running_var.double().sqrt()
     return raw_pred.double() * sigma + running_mean.double()
+
+
+def host_stress_denormalize(raw_pred: torch.Tensor, *, diag_mean: torch.Tensor,
+                            diag_var: torch.Tensor, offdiag_mean: torch.Tensor,
+                            offdiag_var: torch.Tensor) -> torch.Tensor:
+    """``StressHead``'s ``denormalize``: the diagonal (``raw_pred[..., :3]``) and off-diagonal
+    (``raw_pred[..., 3:]``) Voigt components each go through their own ``ScalarNormalizer``
+    (``x * sigma + mu``), concatenated back into one Voigt-6 vector -- no volume division (unlike
+    the conservative virial), since these normalizer stats were fit directly against the eV/Å^3
+    target."""
+    raw = raw_pred.double().reshape(-1, 6)
+    diag = raw[:, :3] * diag_var.double().sqrt() + diag_mean.double()
+    offdiag = raw[:, 3:] * offdiag_var.double().sqrt() + offdiag_mean.double()
+    return torch.cat([diag, offdiag], dim=-1).reshape(raw_pred.shape)
 
 
 def host_conservative_force_denormalize(raw_forces: torch.Tensor, n_node: int, *,
@@ -286,6 +330,25 @@ def host_conservative_force_denormalize(raw_forces: torch.Tensor, n_node: int, *
     ``host_energy_denormalize`` uses."""
     sigma = running_var.double().sqrt()
     return raw_forces.double() * sigma * n_node
+
+
+def host_conservative_stress(virial: torch.Tensor, n_node: int, cell: torch.Tensor, *,
+                             running_var: torch.Tensor) -> torch.Tensor:
+    """``orb-v3-conservative-inf-omat``'s stress tensor from the raw virial
+    (``dE_raw/dstrain``, ``tt_atom/orb_forces.py``'s ``energy_and_forces(..., compute_stress=True)``):
+    the same ``sigma * n_node`` chain-rule scale as ``host_conservative_force_denormalize`` (the
+    additive ``mu``/``ref_sum`` terms vanish under differentiation regardless of whether the
+    derivative is wrt position or strain), then ``stress = virial / volume`` -- Orb's own
+    convention (``forcefield_utils.compute_gradient_forces_and_stress``, no extra sign flip,
+    unlike forces) -- converted to Voigt-6 ``[xx, yy, zz, yz, xz, yx]`` (off-diagonal terms
+    averaged, matching ``torch_full_3x3_to_voigt_6_stress``)."""
+    sigma = running_var.double().sqrt()
+    volume = torch.linalg.det(cell.double()).abs()
+    stress = virial.double() * sigma * n_node / volume
+    s01 = 0.5 * (stress[0, 1] + stress[1, 0])
+    s02 = 0.5 * (stress[0, 2] + stress[2, 0])
+    s12 = 0.5 * (stress[1, 2] + stress[2, 1])
+    return torch.stack([stress[0, 0], stress[1, 1], stress[2, 2], s12, s02, s01])
 
 
 def host_zbl_energy(atomic_numbers: torch.Tensor, senders: torch.Tensor, receivers: torch.Tensor,
