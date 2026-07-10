@@ -68,6 +68,7 @@ class RMSNorm:
         ttnn = self.ttnn
         ms = ttnn.mean(ttnn.multiply(x, x), dim=-1, keepdim=True)
         inv = ttnn.rsqrt(ttnn.add(ms, self.eps))
+        self._cache_x, self._cache_inv = x, inv          # reused by orb_forces.rmsnorm_bw
         return ttnn.multiply(ttnn.multiply(x, inv), self.w)
 
 
@@ -92,10 +93,13 @@ class MLPNorm:
 
     def __call__(self, x):
         ttnn = self.ttnn
-        h = ttnn.silu(ttnn.linear(x, self.w[0], bias=self.b[0], compute_kernel_config=self.kcfg))
-        h = ttnn.silu(ttnn.linear(h, self.w[1], bias=self.b[1], compute_kernel_config=self.kcfg))
-        h = ttnn.linear(h, self.w[2], bias=self.b[2], compute_kernel_config=self.kcfg)
-        return self.norm(h)
+        a0 = ttnn.linear(x, self.w[0], bias=self.b[0], compute_kernel_config=self.kcfg)
+        h0 = ttnn.silu(a0)
+        a1 = ttnn.linear(h0, self.w[1], bias=self.b[1], compute_kernel_config=self.kcfg)
+        h1 = ttnn.silu(a1)
+        h2 = ttnn.linear(h1, self.w[2], bias=self.b[2], compute_kernel_config=self.kcfg)
+        self._cache_a0, self._cache_a1 = a0, a1           # pre-SiLU activations, for orb_forces.mlpnorm_bw
+        return self.norm(h2)
 
 
 class Encoder:
@@ -136,12 +140,14 @@ class AttentionInteractionLayer:
 
         E, N, C = graph.E, graph.N, self.C
 
-        receive_attn = ttnn.sigmoid(ttnn.linear(edges, self.receive_attn_w, bias=self.receive_attn_b,
-                                                compute_kernel_config=self.kcfg))
-        send_attn = ttnn.sigmoid(ttnn.linear(edges, self.send_attn_w, bias=self.send_attn_b,
-                                             compute_kernel_config=self.kcfg))
-        receive_attn = ttnn.multiply(receive_attn, graph.cutoff)
-        send_attn = ttnn.multiply(send_attn, graph.cutoff)
+        ra_lin = ttnn.linear(edges, self.receive_attn_w, bias=self.receive_attn_b,
+                             compute_kernel_config=self.kcfg)
+        sa_lin = ttnn.linear(edges, self.send_attn_w, bias=self.send_attn_b,
+                             compute_kernel_config=self.kcfg)
+        ra_sig = ttnn.sigmoid(ra_lin)
+        sa_sig = ttnn.sigmoid(sa_lin)
+        receive_attn = ttnn.multiply(ra_sig, graph.cutoff)
+        send_attn = ttnn.multiply(sa_sig, graph.cutoff)
 
         nodes_rm = ttnn.to_layout(nodes, ttnn.ROW_MAJOR_LAYOUT)
         sent_attrs = ttnn.to_layout(ttnn.embedding(graph.senders_idx, nodes_rm), ttnn.TILE_LAYOUT)
@@ -157,6 +163,10 @@ class AttentionInteractionLayer:
         node_in = ttnn.concat([nodes, recv_agg, sent_agg], dim=1)
         updated_nodes = self.node_mlp(node_in)
 
+        # cached forward tensors, reused 1:1 by orb_forces.attn_layer_bw
+        self._cache = dict(ra_lin=ra_lin, sa_lin=sa_lin, ra_sig=ra_sig, sa_sig=sa_sig,
+                           receive_attn=receive_attn, send_attn=send_attn,
+                           updated_edges=updated_edges)
         return ttnn.add(nodes, updated_nodes), ttnn.add(edges, updated_edges)
 
 
@@ -195,6 +205,7 @@ class EnergyHead:
         import ttnn
 
         self.ttnn = ttnn
+        self.device = device
         self.kcfg = compute_kernel_config()
         self.w0 = _to_dev(weights["energy_head.mlp.NN-0.weight"].T.contiguous(), device, ttnn.bfloat16)
         self.b0 = _to_dev(weights["energy_head.mlp.NN-0.bias"], device, ttnn.bfloat16)
@@ -205,7 +216,22 @@ class EnergyHead:
         """``node_features``: ttnn ``[N, latent_dim]`` (single system) -> ttnn ``[1, 1]`` raw
         (normalized-space) energy prediction."""
         ttnn = self.ttnn
+        N = node_features.shape[0]
         mean = ttnn.mean(node_features, dim=0, keepdim=True)
+        a0 = ttnn.linear(mean, self.w0, bias=self.b0, compute_kernel_config=self.kcfg)
+        h = ttnn.silu(a0)
+        self._cache_a0, self._cache_N = a0, N             # for orb_forces.energy_bw
+        return ttnn.linear(h, self.w1, bias=self.b1, compute_kernel_config=self.kcfg)
+
+    def batch(self, node_features, seg_mean):
+        """Disjoint-union batched readout: ``seg_mean`` [K, Ntot] is a *row-normalized* segment
+        matrix (``seg_mean[k, n] = 1/count_k`` iff atom n is in system k, else 0) -- unlike UMA's
+        ``Backbone.energy_batch`` (a per-node scalar energy, segment-*summed* per system), Orb's
+        ``EnergyHead`` means the node *features* first and only then runs the 2-layer MLP, so the
+        adapter is a per-system mean (matmul against ``seg_mean``) feeding the same MLP, batched
+        over the K systems -> ``[K, 1]`` raw (normalized-space) energy predictions."""
+        ttnn = self.ttnn
+        mean = ttnn.matmul(seg_mean, node_features, compute_kernel_config=self.kcfg)  # [K, C]
         h = ttnn.silu(ttnn.linear(mean, self.w0, bias=self.b0, compute_kernel_config=self.kcfg))
         return ttnn.linear(h, self.w1, bias=self.b1, compute_kernel_config=self.kcfg)
 
@@ -242,11 +268,87 @@ class ForceHead:
         return ttnn.subtract(pred, mean)
 
 
+class StressHead:
+    """``forcefield_heads.StressHead``'s device-resident MLP path (used by
+    ``orb-v3-direct-20-omat``): mean-aggregate the final node embedding over the system (same
+    shape/pattern as ``EnergyHead``), then a 2-layer MLP (Linear-SiLU-Linear) to a 6-vector
+    (Voigt notation: ``[xx, yy, zz, yz, xz, xy]``) raw prediction. Single-system only.
+
+    Unlike ``EnergyHead``'s single scalar normalizer, the diagonal and off-diagonal components
+    have their own ``ScalarNormalizer``s (``host_stress_denormalize`` applies both) -- direct's
+    stress has no explicit volume division (unlike the conservative virial): the normalizer
+    stats were fit directly against the target's own eV/Å^3 units."""
+
+    def __init__(self, weights, device, *, latent_dim, hidden_dim):
+        import ttnn
+
+        self.ttnn = ttnn
+        self.kcfg = compute_kernel_config()
+        self.w0 = _to_dev(weights["stress_head.mlp.NN-0.weight"].T.contiguous(), device, ttnn.bfloat16)
+        self.b0 = _to_dev(weights["stress_head.mlp.NN-0.bias"], device, ttnn.bfloat16)
+        self.w1 = _to_dev(weights["stress_head.mlp.NN-1.weight"].T.contiguous(), device, ttnn.bfloat16)
+        self.b1 = _to_dev(weights["stress_head.mlp.NN-1.bias"], device, ttnn.bfloat16)
+
+    def __call__(self, node_features):
+        """``node_features``: ttnn ``[N, latent_dim]`` (single system) -> ttnn ``[1, 6]`` raw
+        (normalized-space) Voigt-6 stress prediction."""
+        ttnn = self.ttnn
+        mean = ttnn.mean(node_features, dim=0, keepdim=True)
+        h = ttnn.silu(ttnn.linear(mean, self.w0, bias=self.b0, compute_kernel_config=self.kcfg))
+        return ttnn.linear(h, self.w1, bias=self.b1, compute_kernel_config=self.kcfg)
+
+
 def host_force_denormalize(raw_pred: torch.Tensor, *, running_mean: torch.Tensor,
                            running_var: torch.Tensor) -> torch.Tensor:
     """``ForceHead``'s ``ScalarNormalizer.inverse``: ``x * sigma + mu`` (two learned scalars)."""
     sigma = running_var.double().sqrt()
     return raw_pred.double() * sigma + running_mean.double()
+
+
+def host_stress_denormalize(raw_pred: torch.Tensor, *, diag_mean: torch.Tensor,
+                            diag_var: torch.Tensor, offdiag_mean: torch.Tensor,
+                            offdiag_var: torch.Tensor) -> torch.Tensor:
+    """``StressHead``'s ``denormalize``: the diagonal (``raw_pred[..., :3]``) and off-diagonal
+    (``raw_pred[..., 3:]``) Voigt components each go through their own ``ScalarNormalizer``
+    (``x * sigma + mu``), concatenated back into one Voigt-6 vector -- no volume division (unlike
+    the conservative virial), since these normalizer stats were fit directly against the eV/Å^3
+    target."""
+    raw = raw_pred.double().reshape(-1, 6)
+    diag = raw[:, :3] * diag_var.double().sqrt() + diag_mean.double()
+    offdiag = raw[:, 3:] * offdiag_var.double().sqrt() + offdiag_mean.double()
+    return torch.cat([diag, offdiag], dim=-1).reshape(raw_pred.shape)
+
+
+def host_conservative_force_denormalize(raw_forces: torch.Tensor, n_node: int, *,
+                                        running_var: torch.Tensor) -> torch.Tensor:
+    """Chain-rule scale for ``orb-v3-conservative-inf-omat``'s analytic forces
+    (``tt_atom/orb_forces.py``): since ``E_real = (raw_pred*sigma + mu) * n_node + ref_sum`` and
+    ``forces = -dE_real/dpos``, the additive ``mu``/``ref_sum`` terms (pos-independent) vanish
+    under differentiation and only the multiplicative ``sigma * n_node`` factor survives -- unlike
+    ``host_force_denormalize`` (direct-20's ``ForceHead``, its own additive per-component
+    normalizer), this reuses the *energy* head's normalizer, the same one
+    ``host_energy_denormalize`` uses."""
+    sigma = running_var.double().sqrt()
+    return raw_forces.double() * sigma * n_node
+
+
+def host_conservative_stress(virial: torch.Tensor, n_node: int, cell: torch.Tensor, *,
+                             running_var: torch.Tensor) -> torch.Tensor:
+    """``orb-v3-conservative-inf-omat``'s stress tensor from the raw virial
+    (``dE_raw/dstrain``, ``tt_atom/orb_forces.py``'s ``energy_and_forces(..., compute_stress=True)``):
+    the same ``sigma * n_node`` chain-rule scale as ``host_conservative_force_denormalize`` (the
+    additive ``mu``/``ref_sum`` terms vanish under differentiation regardless of whether the
+    derivative is wrt position or strain), then ``stress = virial / volume`` -- Orb's own
+    convention (``forcefield_utils.compute_gradient_forces_and_stress``, no extra sign flip,
+    unlike forces) -- converted to Voigt-6 ``[xx, yy, zz, yz, xz, yx]`` (off-diagonal terms
+    averaged, matching ``torch_full_3x3_to_voigt_6_stress``)."""
+    sigma = running_var.double().sqrt()
+    volume = torch.linalg.det(cell.double()).abs()
+    stress = virial.double() * sigma * n_node / volume
+    s01 = 0.5 * (stress[0, 1] + stress[1, 0])
+    s02 = 0.5 * (stress[0, 2] + stress[2, 0])
+    s12 = 0.5 * (stress[1, 2] + stress[2, 1])
+    return torch.stack([stress[0, 0], stress[1, 1], stress[2, 2], s12, s02, s01])
 
 
 def host_zbl_energy(atomic_numbers: torch.Tensor, senders: torch.Tensor, receivers: torch.Tensor,
@@ -291,6 +393,23 @@ def host_zbl_energy(atomic_numbers: torch.Tensor, senders: torch.Tensor, receive
     N = atomic_numbers.shape[0]
     V_ZBL = torch.zeros(N, dtype=torch.float64).index_add_(0, senders, v_edges)
     return V_ZBL.mean()
+
+
+def host_zbl_forces(atomic_numbers: torch.Tensor, senders: torch.Tensor, receivers: torch.Tensor,
+                    pos: torch.Tensor, cell_shift: torch.Tensor | None = None) -> torch.Tensor:
+    """``dV_ZBL/dr`` via host ``torch.autograd`` on the same closed-form ``host_zbl_energy`` --
+    ZBL has zero learned parameters, so (unlike the GNN backbone's device VJP,
+    ``tt_atom/orb_forces.py``) there is no device backward to write here at all; this is the
+    "straightforward" alternative flagged in ``docs/orb-port.md`` (vs. hand-deriving the closed-
+    form ``pair_repulsion.ZBLBasis._polynomial_cutoff_with_derivative``). Needed for
+    ``orb-v3-direct-20-omat``'s *total* force whenever ZBL is non-negligible (short contacts,
+    surface defects) -- its ``ForceHead`` MLP prediction has no ZBL contribution baked in."""
+    pos = pos.detach().clone().double().requires_grad_(True)
+    vectors = pos[receivers] - pos[senders]
+    if cell_shift is not None:
+        vectors = vectors + cell_shift
+    energy = host_zbl_energy(atomic_numbers, senders, receivers, vectors)
+    return -torch.autograd.grad(energy, pos)[0]
 
 
 def host_energy_denormalize(raw_pred: torch.Tensor, atomic_numbers: torch.Tensor, n_node: int, *,
