@@ -1,0 +1,308 @@
+"""Orb-v3 backbone (attention-augmented MPNN), device-resident on Tenstorrent.
+
+Orb is explicitly NON-equivariant (see ``docs/orb-port.md``): no SO(3)/E(3) hidden
+representations, no per-edge Wigner rotation. Spherical harmonics are used only once, as a
+fixed per-edge scalar descriptor (like the Bessel RBF), concatenated into ordinary latent
+vectors. The whole network -- encoder, message passing, decoder -- therefore operates on
+plain ``[rows, latent_dim]`` tensors: Linear/SiLU/RMSNorm/segment-sum, no SO(2) convolution,
+no equivariant gate, no Wigner rotate. None of ``tt_atom``'s equivariant kernels
+(``fused_rotate``, ``fused_gate``, ``fused_ln_bw``, ``so2.py``, ``rotation.py``, ``norm.py``'s
+``RMSNormSH``, ``grid.py``/``spectral.py``) apply here; this module reuses only the
+architecture-agnostic infra (``device.py``'s compute-kernel policy, ``scatter.py``'s linear
+edge->node segment-sum).
+
+The fixed, non-learned per-edge terms (Bessel RBF, spherical-harmonic angular embedding, the
+polynomial distance-cutoff envelope used to gate attention) are computed on host exactly like
+UMA's wigner/gaussian/envelope buffers, and uploaded once as part of the graph context -- they
+are <1% of the compute. Every learned op (the two encoder MLPs, and each interaction layer's
+edge/node MLPs + attention gates) runs on device.
+
+Reference: ``orb_models.forcefield.gns.py`` (``Encoder`` / ``AttentionInteractionNetwork``).
+"""
+from __future__ import annotations
+
+import torch
+
+from .device import compute_kernel_config
+
+
+def host_cutoff(r: torch.Tensor, r_max: float = 6.0) -> torch.Tensor:
+    """Fixed polynomial attention-cutoff envelope (``orb_models...nn_util.get_cutoff``).
+
+    A closed-form function of edge length only (no learned parameters) -- computed on host and
+    uploaded as a constant, exactly like UMA's envelope/wigner buffers.
+    """
+    p = 4
+    envelope = (
+        1.0
+        - ((p + 1.0) * (p + 2.0) / 2.0) * torch.pow(r / r_max, p)
+        + p * (p + 2.0) * torch.pow(r / r_max, p + 1)
+        - (p * (p + 1.0) / 2) * torch.pow(r / r_max, p + 2)
+    )
+    return (envelope * (r < r_max)).unsqueeze(-1)
+
+
+def _to_dev(t, device, dtype, layout=None):
+    import ttnn
+
+    layout = layout or ttnn.TILE_LAYOUT
+    return ttnn.from_torch(t, dtype=dtype, layout=layout, device=device)
+
+
+class RMSNorm:
+    """Plain ``torch.nn.RMSNorm`` (elementwise-affine, no bias) over the last dim.
+
+    Unlike ``tt_atom.norm.RMSNormSH``, there is no spherical-harmonic degree structure to
+    balance -- this is the ordinary transformer-style RMSNorm.
+    """
+
+    def __init__(self, weights, prefix, device, dim, eps=1e-6):
+        import ttnn
+
+        self.ttnn = ttnn
+        self.eps = eps
+        self.dim = dim
+        self.w = _to_dev(weights[f"{prefix}.weight"].view(1, dim).contiguous(), device, ttnn.bfloat16)
+
+    def __call__(self, x):
+        ttnn = self.ttnn
+        ms = ttnn.mean(ttnn.multiply(x, x), dim=-1, keepdim=True)
+        inv = ttnn.rsqrt(ttnn.add(ms, self.eps))
+        return ttnn.multiply(ttnn.multiply(x, inv), self.w)
+
+
+class MLPNorm:
+    """``orb_models...nn_util.mlp_and_layer_norm`` with ``num_mlp_layers=2``: 3 Linears
+    (in->hidden->hidden->out, SiLU after the first two, none after the third) + RMSNorm.
+    Weight keys ``{prefix}.mlp.NN-{0,1,2}.{weight,bias}`` + ``{prefix}.layer_norm.weight``.
+    """
+
+    def __init__(self, weights, prefix, device, in_dim, hidden_dim, out_dim):
+        import ttnn
+
+        self.ttnn = ttnn
+        self.kcfg = compute_kernel_config()
+        self.w = []
+        self.b = []
+        for i in range(3):
+            self.w.append(_to_dev(weights[f"{prefix}.mlp.NN-{i}.weight"].T.contiguous(),
+                                  device, ttnn.bfloat16))
+            self.b.append(_to_dev(weights[f"{prefix}.mlp.NN-{i}.bias"], device, ttnn.bfloat16))
+        self.norm = RMSNorm(weights, f"{prefix}.layer_norm", device, out_dim)
+
+    def __call__(self, x):
+        ttnn = self.ttnn
+        h = ttnn.silu(ttnn.linear(x, self.w[0], bias=self.b[0], compute_kernel_config=self.kcfg))
+        h = ttnn.silu(ttnn.linear(h, self.w[1], bias=self.b[1], compute_kernel_config=self.kcfg))
+        h = ttnn.linear(h, self.w[2], bias=self.b[2], compute_kernel_config=self.kcfg)
+        return self.norm(h)
+
+
+class Encoder:
+    """``gns.Encoder``: separate node/edge MLPNorm blocks, no interaction between them."""
+
+    def __init__(self, weights, device, *, node_in, edge_in, latent_dim, hidden_dim):
+        self.node_fn = MLPNorm(weights, "_encoder._node_fn", device, node_in, hidden_dim, latent_dim)
+        self.edge_fn = MLPNorm(weights, "_encoder._edge_fn", device, edge_in, hidden_dim, latent_dim)
+
+    def __call__(self, node_features, edge_features):
+        return self.node_fn(node_features), self.edge_fn(edge_features)
+
+
+class AttentionInteractionLayer:
+    """``gns.AttentionInteractionNetwork`` for the omat config: no conditioning, sigmoid
+    attention gate (not softmax), distance-cutoff-scaled attention. One message-passing step.
+    """
+
+    def __init__(self, weights, prefix, device, *, latent_dim, hidden_dim):
+        import ttnn
+
+        self.ttnn = ttnn
+        self.kcfg = compute_kernel_config()
+        self.C = latent_dim
+        self.edge_mlp = MLPNorm(weights, f"{prefix}._edge_mlp", device, 3 * latent_dim, hidden_dim, latent_dim)
+        self.node_mlp = MLPNorm(weights, f"{prefix}._node_mlp", device, 3 * latent_dim, hidden_dim, latent_dim)
+        self.receive_attn_w = _to_dev(weights[f"{prefix}._receive_attn.weight"].T.contiguous(), device, ttnn.bfloat16)
+        self.receive_attn_b = _to_dev(weights[f"{prefix}._receive_attn.bias"], device, ttnn.bfloat16)
+        self.send_attn_w = _to_dev(weights[f"{prefix}._send_attn.weight"].T.contiguous(), device, ttnn.bfloat16)
+        self.send_attn_b = _to_dev(weights[f"{prefix}._send_attn.bias"], device, ttnn.bfloat16)
+
+    def __call__(self, nodes, edges, graph):
+        """``graph`` supplies ``senders``/``receivers`` gather tables (ttnn embedding-ready,
+        [E] row-major uint32) and ``cutoff`` ([E,1] tile, host-precomputed envelope), plus the
+        scatter-add gather tables for the node update (``tt_atom.scatter``)."""
+        ttnn = self.ttnn
+        from . import scatter as _sc
+
+        E, N, C = graph.E, graph.N, self.C
+
+        receive_attn = ttnn.sigmoid(ttnn.linear(edges, self.receive_attn_w, bias=self.receive_attn_b,
+                                                compute_kernel_config=self.kcfg))
+        send_attn = ttnn.sigmoid(ttnn.linear(edges, self.send_attn_w, bias=self.send_attn_b,
+                                             compute_kernel_config=self.kcfg))
+        receive_attn = ttnn.multiply(receive_attn, graph.cutoff)
+        send_attn = ttnn.multiply(send_attn, graph.cutoff)
+
+        nodes_rm = ttnn.to_layout(nodes, ttnn.ROW_MAJOR_LAYOUT)
+        sent_attrs = ttnn.to_layout(ttnn.embedding(graph.senders_idx, nodes_rm), ttnn.TILE_LAYOUT)
+        recv_attrs = ttnn.to_layout(ttnn.embedding(graph.receivers_idx, nodes_rm), ttnn.TILE_LAYOUT)
+        edge_in = ttnn.concat([edges, sent_attrs, recv_attrs], dim=1)
+        updated_edges = self.edge_mlp(edge_in)
+
+        sent_msg = ttnn.multiply(updated_edges, send_attn)
+        recv_msg = ttnn.multiply(updated_edges, receive_attn)
+        sent_agg = _sc.segment_sum(ttnn, sent_msg, graph.src_gather, graph.Dmax_s, N, C)
+        recv_agg = _sc.segment_sum(ttnn, recv_msg, graph.tgt_gather, graph.Dmax_t, N, C)
+
+        node_in = ttnn.concat([nodes, recv_agg, sent_agg], dim=1)
+        updated_nodes = self.node_mlp(node_in)
+
+        return ttnn.add(nodes, updated_nodes), ttnn.add(edges, updated_edges)
+
+
+class OrbGraphContext:
+    """Host-precomputed, device-resident geometric terms for one fixed topology (mirrors
+    ``tt_atom.model.GraphContext``, but for Orb's plain scatter -- no Wigner rotation buffers).
+    """
+
+    def __init__(self, device, *, senders, receivers, cutoff, num_nodes):
+        import ttnn
+        from . import scatter as _sc
+
+        E = senders.shape[0]
+        self.E, self.N = E, num_nodes
+        self.senders_idx = _to_dev(senders.to(torch.int32), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
+        self.receivers_idx = _to_dev(receivers.to(torch.int32), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
+        self.cutoff = _to_dev(cutoff, device, ttnn.bfloat16)
+
+        tgt_g, self.Dmax_t = _sc.build_gather(receivers, num_nodes, E)
+        src_g, self.Dmax_s = _sc.build_gather(senders, num_nodes, E)
+        self.tgt_gather = _to_dev(torch.from_numpy(tgt_g), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
+        self.src_gather = _to_dev(torch.from_numpy(src_g), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
+
+
+class EnergyHead:
+    """``forcefield_heads.EnergyHead``'s device-resident MLP path: mean-aggregate the final
+    node embedding over the system, then a 2-layer MLP (Linear-SiLU-Linear) to one
+    normalized-space scalar per system. Single-system only (no disjoint-union batch dim yet).
+
+    The normalize/denormalize affine + per-element reference-energy lookup are a handful of
+    fixed scalars / a 118-row table -- computed on host, see ``host_energy_denormalize``,
+    exactly like UMA's ``scale_rmsd``/``scale_mean``/``elem_refs`` (``tt_atom/weights.py``).
+    """
+
+    def __init__(self, weights, device, *, latent_dim, hidden_dim):
+        import ttnn
+
+        self.ttnn = ttnn
+        self.kcfg = compute_kernel_config()
+        self.w0 = _to_dev(weights["energy_head.mlp.NN-0.weight"].T.contiguous(), device, ttnn.bfloat16)
+        self.b0 = _to_dev(weights["energy_head.mlp.NN-0.bias"], device, ttnn.bfloat16)
+        self.w1 = _to_dev(weights["energy_head.mlp.NN-1.weight"].T.contiguous(), device, ttnn.bfloat16)
+        self.b1 = _to_dev(weights["energy_head.mlp.NN-1.bias"], device, ttnn.bfloat16)
+
+    def __call__(self, node_features):
+        """``node_features``: ttnn ``[N, latent_dim]`` (single system) -> ttnn ``[1, 1]`` raw
+        (normalized-space) energy prediction."""
+        ttnn = self.ttnn
+        mean = ttnn.mean(node_features, dim=0, keepdim=True)
+        h = ttnn.silu(ttnn.linear(mean, self.w0, bias=self.b0, compute_kernel_config=self.kcfg))
+        return ttnn.linear(h, self.w1, bias=self.b1, compute_kernel_config=self.kcfg)
+
+
+class ForceHead:
+    """``forcefield_heads.ForceHead``'s device-resident MLP path (used by
+    ``orb-v3-direct-20-omat``, which predicts forces directly with no energy-autograd VJP):
+    a per-node 2-layer MLP (Linear-SiLU-Linear) on the final node embedding -> ``[N, 3]``, then
+    net-force removal (subtract the per-system mean predicted force across all nodes -- a fixed
+    geometric correction, no learned params). The scalar normalizer inverse (``* sigma + mu``)
+    is applied on host, mirroring ``EnergyHead``/UMA's scale convention.
+
+    Single-system only; ``remove_torque_for_nonpbc_systems`` is skipped since it only fires for
+    non-periodic (zero-cell) systems -- the ported Si golden is fully periodic.
+    """
+
+    def __init__(self, weights, device, *, latent_dim, hidden_dim):
+        import ttnn
+
+        self.ttnn = ttnn
+        self.kcfg = compute_kernel_config()
+        self.w0 = _to_dev(weights["forces_head.mlp.NN-0.weight"].T.contiguous(), device, ttnn.bfloat16)
+        self.b0 = _to_dev(weights["forces_head.mlp.NN-0.bias"], device, ttnn.bfloat16)
+        self.w1 = _to_dev(weights["forces_head.mlp.NN-1.weight"].T.contiguous(), device, ttnn.bfloat16)
+        self.b1 = _to_dev(weights["forces_head.mlp.NN-1.bias"], device, ttnn.bfloat16)
+
+    def __call__(self, node_features):
+        """``node_features``: ttnn ``[N, latent_dim]`` -> ttnn ``[N, 3]`` raw (normalized-space,
+        mean-removed) per-atom force prediction."""
+        ttnn = self.ttnn
+        h = ttnn.silu(ttnn.linear(node_features, self.w0, bias=self.b0, compute_kernel_config=self.kcfg))
+        pred = ttnn.linear(h, self.w1, bias=self.b1, compute_kernel_config=self.kcfg)
+        mean = ttnn.mean(pred, dim=0, keepdim=True)
+        return ttnn.subtract(pred, mean)
+
+
+def host_force_denormalize(raw_pred: torch.Tensor, *, running_mean: torch.Tensor,
+                           running_var: torch.Tensor) -> torch.Tensor:
+    """``ForceHead``'s ``ScalarNormalizer.inverse``: ``x * sigma + mu`` (two learned scalars)."""
+    sigma = running_var.double().sqrt()
+    return raw_pred.double() * sigma + running_mean.double()
+
+
+def host_zbl_energy(atomic_numbers: torch.Tensor, senders: torch.Tensor, receivers: torch.Tensor,
+                    vectors: torch.Tensor, *, p: int = 6) -> torch.Tensor:
+    """Ziegler-Biersack-Littmark pair-repulsion energy (``pair_repulsion.ZBLBasis``) -- a fixed
+    physical potential (6 universal constants, no learned weights) computed on host directly
+    from real atomic numbers + edge vectors, exactly like the attention cutoff envelope.
+    Single-system only; returns the mean-aggregated (BC override, see ``pretrained.py``'s
+    ``pair_repulsion_fn.node_aggregation = "mean"``) scalar energy to add to the GNN energy.
+    """
+    import ase.data
+
+    c = torch.tensor([0.1818, 0.5099, 0.2802, 0.02817], dtype=torch.float64).unsqueeze(1)
+    d = torch.tensor([3.2, 0.9423, 0.4028, 0.2016], dtype=torch.float64).unsqueeze(1)
+    a_exp, a_prefactor = 0.300, 0.4543
+    covalent_radii = torch.tensor(ase.data.covalent_radii, dtype=torch.float64)
+
+    Z_u = atomic_numbers[senders].double() + 1
+    Z_v = atomic_numbers[receivers].double() + 1
+    a = a_prefactor * 0.529 / (Z_u.pow(a_exp) + Z_v.pow(a_exp))
+
+    x = vectors.double().norm(dim=1)
+    r_over_a = x / a
+    exp_term = torch.exp(-d * r_over_a.unsqueeze(0))
+    phi = (c * exp_term).sum(dim=0)
+
+    coulomb_term = 14.3996 * Z_u * Z_v / x
+    v_edges_raw = coulomb_term * phi
+
+    r_max = (covalent_radii[atomic_numbers[senders].long()]
+             + covalent_radii[atomic_numbers[receivers].long()])
+    r_ratio = x / r_max
+    mask = (x < r_max).double()
+    envelope = (
+        1.0
+        - ((p + 1.0) * (p + 2.0) / 2.0) * r_ratio.pow(p)
+        + p * (p + 2.0) * r_ratio.pow(p + 1)
+        - (p * (p + 1.0) / 2.0) * r_ratio.pow(p + 2)
+    ) * mask
+
+    v_edges = 0.5 * v_edges_raw * envelope
+    N = atomic_numbers.shape[0]
+    V_ZBL = torch.zeros(N, dtype=torch.float64).index_add_(0, senders, v_edges)
+    return V_ZBL.mean()
+
+
+def host_energy_denormalize(raw_pred: torch.Tensor, atomic_numbers: torch.Tensor, n_node: int, *,
+                            running_mean: torch.Tensor, running_var: torch.Tensor,
+                            ref_weight: torch.Tensor) -> torch.Tensor:
+    """``EnergyHead.denormalize``: undo the learned scalar-normalizer affine, undo the
+    atom-average, add the per-element linear reference energy. All fixed/tiny (a handful of
+    scalars + a 118-length lookup table) -- computed on host, exactly like UMA's
+    ``scale_rmsd``/``scale_mean``/``elem_refs`` normalizer (``tt_atom/weights.py``).
+    """
+    sigma = running_var.double().sqrt()
+    x = raw_pred.double() * sigma + running_mean.double()
+    x = x * n_node
+    ref = ref_weight.double()[atomic_numbers.long()].sum()
+    return x + ref
