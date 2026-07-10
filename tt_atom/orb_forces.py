@@ -117,29 +117,44 @@ def attn_layer_bw(layer, graph, g_nodes_out, g_edges_out):
 
 def energy_bw(ehead):
     """VJP of ``EnergyHead``'s device MLP path (``dE/dE = 1`` seed) -> ``g wrt node_features``
-    ``[N, C]`` (broadcasting the ``mean``-backward's ``1/N`` term back out to every node)."""
+    ``[N, C]`` (broadcasting the ``mean``-backward's ``1/N`` term back out to every node).
+
+    The two constants (the seed and the ``N``-row broadcast-ones column) are created once and
+    cached on ``ehead`` so that no device buffer is allocated inside a captured trace region --
+    the ttnn trace machinery forbids allocations during capture (it hangs), exactly like
+    ``tt_atom/forces.py``'s ``energy_bw`` caches ``bb._bw_seed``/``bb._bw_zeros`` for UMA."""
     ttnn = ehead.ttnn
     kcfg = ehead.kcfg
     N = ehead._cache_N
-    ones_11 = ttnn.ones((1, 1), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=ehead.device)
-    g_h = _mm(ttnn, ones_11, ehead.w1, kcfg)                  # [1, hidden]
+    if getattr(ehead, "_bw_ones11", None) is None:
+        ehead._bw_ones11 = ttnn.ones((1, 1), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+                                     device=ehead.device)
+    if getattr(ehead, "_bw_onesN1", None) is None or tuple(ehead._bw_onesN1.shape) != (N, 1):
+        ehead._bw_onesN1 = ttnn.ones((N, 1), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+                                     device=ehead.device)
+    g_h = _mm(ttnn, ehead._bw_ones11, ehead.w1, kcfg)         # [1, hidden]
     g_a0 = silu_bw(ttnn, g_h, ehead._cache_a0)
     g_mean = _mm(ttnn, g_a0, ehead.w0, kcfg)                  # [1, C]
     g_mean = ttnn.multiply(g_mean, 1.0 / N)
-    ones_N1 = ttnn.ones((N, 1), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=ehead.device)
-    return ttnn.matmul(ones_N1, g_mean, compute_kernel_config=kcfg)   # [N, C], every row identical
+    return ttnn.matmul(ehead._bw_onesN1, g_mean, compute_kernel_config=kcfg)  # [N, C], every row identical
 
 
 def backbone_bw(encoder, layers, ehead, graph):
     """Full reverse pass: energy head -> all interaction layers (reversed) -> encoder's edge MLP.
     Returns ``(g_edge_feat, g_cutoff)``, the device adjoints at the two pos-dependent uploaded
     inputs. ``node_feat`` has no ``pos`` dependence (atomic-number embedding only), so its
-    adjoint is discarded -- the encoder's node path is never differentiated further."""
+    adjoint is discarded -- the encoder's node path is never differentiated further.
+
+    The zero-seed edge gradient is cached on ``ehead`` (guarded by ``(E, C)``) for the same
+    trace-capture-allocation reason as ``energy_bw``'s cached constants."""
     ttnn = ehead.ttnn
 
     g_nodes = energy_bw(ehead)
     E, C = graph.E, layers[0].C
-    g_edges = ttnn.zeros((E, C), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=ehead.device)
+    if getattr(ehead, "_bw_edges_zero", None) is None or tuple(ehead._bw_edges_zero.shape) != (E, C):
+        ehead._bw_edges_zero = ttnn.zeros((E, C), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+                                          device=ehead.device)
+    g_edges = ehead._bw_edges_zero
     g_cutoff = None
     for layer in reversed(layers):
         g_nodes, g_edges, g_c = attn_layer_bw(layer, graph, g_nodes, g_edges)
