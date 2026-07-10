@@ -191,8 +191,9 @@ trace capture as the answer.
 
 ## Still open
 
-- **`--fast` (bf8) mode** for Orb — untested; UMA's bf8-edge policy (`tt_atom/device.py`) should
-  apply the same way but hasn't been measured here.
+- A real, verified Orb `TracedEngine`-equivalent (see the trace-capture proof-of-concept below) —
+  the one lever this pass's profiling shows would actually help.
+
 ## Profiling re-measurement at production scale
 
 Re-measured warm eager forward (`benchmarks/bench_orb_profile.py`) at the toy 4-atom golden vs
@@ -221,6 +222,47 @@ direction is directionally promising (and UMA's own trace path measured ~2.6x fo
 someone should port `tt_atom/trace.py`'s pattern properly (a `refresh()` that overwrites
 `edge_feat`/`cutoff` in place per MD step, mirroring `orb_forces.energy_and_forces`'s inputs)
 rather than trust this quick, broken proof of concept.
+
+## `--fast` (bf8) mode: accuracy-safe, but a measured dead end (branch `wk/tt-atom-orb-bf8-mode`)
+
+Applied UMA's existing weight-dtype policy as-is (`fast=True` -> `ttnn.bfloat8_b` for the
+persistent Linear/attention weights in `tt_atom/orb_model.py`'s `MLPNorm`/`AttentionInteractionLayer`/
+`EnergyHead`/`ForceHead`/`StressHead`; `compute_kernel_config`'s HiFi4 + fp32 dest-accumulate is
+unchanged either way — same split as UMA's `grid.py`/`so2.py`). No new policy invented.
+
+**Accuracy** (`tests/test_orb_bf8_fast.py`, real weights, both checkpoints) holds comfortably
+inside UMA's own `--fast` bar (commit `836af75`: "PCC 0.99997, no accuracy loss") and this port's
+existing bf16 real-weight thresholds:
+
+| checkpoint | quantity | bf16 (existing) | bf8 weights (`fast=True`) |
+|---|---|---|---|
+| conservative | energy rel err | 1.19e-4 | 1.03e-3 |
+| conservative | forces PCC / MAE | 0.999975 / 0.0089 eV/Å | 0.999963 / 0.0095 eV/Å |
+| conservative | stress PCC / max err | (untested at bf16 in isolation) | 0.999920 / 9.25e-4 |
+| direct-20 | energy rel err | 5.79e-4 | 5.79e-4 |
+| direct-20 | forces PCC / MAE | 0.999966 / 0.0079 eV/Å | 0.999974 / 0.0093 eV/Å |
+
+**Perf** (`benchmarks/bench_orb_profile.py`, warm eager forward, median of 30, real weights):
+
+| case | bf16 | bf8 weights | ratio |
+|---|---|---|---|
+| conservative toy (N=4, E=172) | 4.231 ms | 4.214 ms | 1.00x |
+| conservative production (N=24, E=1064) | 4.434 ms | 4.489 ms | 0.99x |
+| direct-20 toy (N=4, E=80) | 4.236 ms | 4.199 ms | 1.01x |
+
+**No measurable win — a dead end, not adopted.** This is exactly what the profiling section above
+predicts: the forward is dispatch-bound (fixed ~9 ops/layer regardless of graph size), not
+DRAM-bandwidth-bound, so halving the weight tensors' bytes does nothing (matches
+`tt_atom/device.py`'s own `bf8_edge()` docstring: "bf8 weights alone = 1.00x" is the exact same
+null result UMA itself measured for weight-only bf8). UMA's *real* bf8 win comes from a different,
+non-transferable axis — `TT_ATOM_BF8_EDGE`'s bandwidth-bound edge-activation dataflow through the
+custom `fused_rotate`/`fused_gate` kernels — and this port's own "Architecture verdict" section
+already established that none of those four custom kernels apply to Orb (no equivariant hidden
+representation to rotate or gate). So there is no analogous lever here at all, transferable or
+otherwise: **no `--fast` CLI flag added for Orb.** The `fast=` kwarg is left threaded through
+`tt_atom/orb_model.py` (default `False`, zero behavior change) purely so this null result stays
+cheaply reproducible; nothing calls it with `fast=True` outside `tests/test_orb_bf8_fast.py` and
+the benchmark.
 
 ## Reproducing
 
