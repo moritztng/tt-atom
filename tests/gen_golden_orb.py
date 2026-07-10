@@ -75,10 +75,16 @@ def main():
         handles.append(blk.register_forward_hook(save_out(f"gnn{i}")))
     handles.append(gns._decoder.register_forward_hook(save_out("decoder")))
 
+    is_direct = args.ckpt.startswith("direct")
     result = orbff.predict(graph, split=False)
-    E = float(result[orbff.energy_name].item())
-    F = npy(result[orbff.grad_forces_name])
-    S = npy(result[orbff.grad_stress_name]) if getattr(orbff, "grad_stress_name", None) else None
+    if is_direct:
+        E = float(result["energy"].item())
+        F = npy(result["forces"])
+        S = npy(result["stress"]) if "stress" in result else None
+    else:
+        E = float(result[orbff.energy_name].item())
+        F = npy(result[orbff.grad_forces_name])
+        S = npy(result[orbff.grad_stress_name]) if getattr(orbff, "grad_stress_name", None) else None
     print(f"orb-v3-{args.ckpt}: E={E:.6f} eV  |F|max={np.abs(F).max():.4f}")
 
     for h in handles:
@@ -121,11 +127,14 @@ def main():
     for k, v in acts.items():
         saved[f"a@{k}"] = v
 
-    # weights: full MoleculeGNS state dict + energy head
+    # weights: full MoleculeGNS state dict + heads
     for k, v in gns.state_dict().items():
         saved[f"w@{k}"] = npy(v)
     for k, v in orbff.heads["energy"].state_dict().items():
         saved[f"w@energy_head.{k}"] = npy(v)
+    if "forces" in orbff.heads:
+        for k, v in orbff.heads["forces"].state_dict().items():
+            saved[f"w@forces_head.{k}"] = npy(v)
     if orbff.pair_repulsion:
         for k, v in orbff.pair_repulsion_fn.state_dict().items():
             saved[f"w@pair_repulsion.{k}"] = npy(v)
