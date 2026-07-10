@@ -163,3 +163,56 @@ def test_full_backbone_5layers(gw, device):
     # (measured 0.976, vs 0.997 after 1 layer) -- expected precision compounding, not a bug.
     assert pcc_n > 0.99, pcc_n
     assert pcc_e > 0.97, pcc_e
+
+
+def test_end_to_end_energy(gw, device):
+    """Full device pipeline: encoder -> 5 interaction layers -> EnergyHead MLP (device) ->
+    host denormalize + host ZBL pair-repulsion -> total energy, vs the real orb-models oracle
+    on the same Si/omat structure used by the UMA real-weight golden."""
+    from tt_atom.orb_model import (Encoder, AttentionInteractionLayer, OrbGraphContext,
+                                   EnergyHead, host_cutoff, host_zbl_energy,
+                                   host_energy_denormalize, _to_dev)
+    import ttnn
+
+    cfg = gw.config
+    w = gw.weights
+    L = cfg["num_message_passing_steps"]
+    enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
+                 latent_dim=cfg["latent_dim"], hidden_dim=1024)
+    node_dev = _to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
+    edge_dev = _to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
+    nodes, edges = enc(node_dev, edge_dev)
+
+    senders = gw.inp("senders").long()
+    receivers = gw.inp("receivers").long()
+    vectors = gw.inp("vectors")
+    lengths = vectors.norm(dim=-1)
+    cutoff = host_cutoff(lengths, r_max=6.0)
+    atomic_numbers = gw.inp("atomic_numbers").long()
+    N = atomic_numbers.shape[0]
+    graph = OrbGraphContext(device, senders=senders, receivers=receivers, cutoff=cutoff, num_nodes=N)
+
+    layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
+                                        latent_dim=cfg["latent_dim"], hidden_dim=1024)
+              for i in range(L)]
+    for layer in layers:
+        nodes, edges = layer(nodes, edges, graph)
+
+    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"], hidden_dim=1024)
+    raw_pred = ttnn.to_torch(ehead(nodes)).double().view(())
+
+    gnn_energy = host_energy_denormalize(
+        raw_pred, atomic_numbers, N,
+        running_mean=w["energy_head.normalizer.bn.running_mean"],
+        running_var=w["energy_head.normalizer.bn.running_var"],
+        ref_weight=w["energy_head.reference.linear.weight"].view(-1),
+    )
+    zbl_energy = host_zbl_energy(atomic_numbers, senders, receivers, vectors)
+    total_energy = float(gnn_energy + zbl_energy)
+
+    gold_energy = float(gw.out("energy")[0])
+    rel_err = abs(total_energy - gold_energy) / abs(gold_energy)
+    print(f"\n[orb] end-to-end device energy: {total_energy:.6f} eV  "
+          f"(oracle {gold_energy:.6f} eV, rel err {rel_err:.2e}); "
+          f"GNN={float(gnn_energy):.6f} ZBL={float(zbl_energy):.6f}")
+    assert rel_err < 1e-2, rel_err
