@@ -320,6 +320,23 @@ def host_zbl_energy(atomic_numbers: torch.Tensor, senders: torch.Tensor, receive
     return V_ZBL.mean()
 
 
+def host_zbl_forces(atomic_numbers: torch.Tensor, senders: torch.Tensor, receivers: torch.Tensor,
+                    pos: torch.Tensor, cell_shift: torch.Tensor | None = None) -> torch.Tensor:
+    """``dV_ZBL/dr`` via host ``torch.autograd`` on the same closed-form ``host_zbl_energy`` --
+    ZBL has zero learned parameters, so (unlike the GNN backbone's device VJP,
+    ``tt_atom/orb_forces.py``) there is no device backward to write here at all; this is the
+    "straightforward" alternative flagged in ``docs/orb-port.md`` (vs. hand-deriving the closed-
+    form ``pair_repulsion.ZBLBasis._polynomial_cutoff_with_derivative``). Needed for
+    ``orb-v3-direct-20-omat``'s *total* force whenever ZBL is non-negligible (short contacts,
+    surface defects) -- its ``ForceHead`` MLP prediction has no ZBL contribution baked in."""
+    pos = pos.detach().clone().double().requires_grad_(True)
+    vectors = pos[receivers] - pos[senders]
+    if cell_shift is not None:
+        vectors = vectors + cell_shift
+    energy = host_zbl_energy(atomic_numbers, senders, receivers, vectors)
+    return -torch.autograd.grad(energy, pos)[0]
+
+
 def host_energy_denormalize(raw_pred: torch.Tensor, atomic_numbers: torch.Tensor, n_node: int, *,
                             running_mean: torch.Tensor, running_var: torch.Tensor,
                             ref_weight: torch.Tensor) -> torch.Tensor:

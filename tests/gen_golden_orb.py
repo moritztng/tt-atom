@@ -39,6 +39,20 @@ def build_si():
     return atoms
 
 
+def build_short_contact():
+    """A deliberately short Si-Si contact (1.4 A, well inside the ~2.2 A covalent-radii-sum ZBL
+    envelope cutoff) to exercise the ZBL pair-repulsion term non-negligibly -- the existing
+    ``build_si`` bulk golden's nearest-neighbor distance (2.20-2.35 A) sits just outside it (see
+    docs/orb-port.md). Non-periodic (a large vacuum box) so the short contact is unambiguous."""
+    from ase import Atoms
+
+    return Atoms("Si2", positions=[[0.0, 0.0, 0.0], [1.4, 0.0, 0.0]], cell=[20.0, 20.0, 20.0],
+                pbc=False)
+
+
+SYSTEMS = {"bulk": build_si, "short_contact": build_short_contact}
+
+
 CKPTS = {
     "conservative-inf-omat": pretrained.orb_v3_conservative_inf_omat,
     "direct-20-omat": pretrained.orb_v3_direct_20_omat,
@@ -48,13 +62,14 @@ CKPTS = {
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", default="conservative-inf-omat", choices=list(CKPTS))
+    ap.add_argument("--system", default="bulk", choices=list(SYSTEMS))
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
     device = "cpu"
     orbff = CKPTS[args.ckpt](device=device, precision="float32-highest")
     orbff.eval()
-    atoms = build_si()
+    atoms = SYSTEMS[args.system]()
     graph = ase_atoms_to_atom_graphs(atoms, orbff.system_config, device=torch.device(device))
 
     gns = orbff.model  # MoleculeGNS
