@@ -68,6 +68,7 @@ class RMSNorm:
         ttnn = self.ttnn
         ms = ttnn.mean(ttnn.multiply(x, x), dim=-1, keepdim=True)
         inv = ttnn.rsqrt(ttnn.add(ms, self.eps))
+        self._cache_x, self._cache_inv = x, inv          # reused by orb_forces.rmsnorm_bw
         return ttnn.multiply(ttnn.multiply(x, inv), self.w)
 
 
@@ -92,10 +93,13 @@ class MLPNorm:
 
     def __call__(self, x):
         ttnn = self.ttnn
-        h = ttnn.silu(ttnn.linear(x, self.w[0], bias=self.b[0], compute_kernel_config=self.kcfg))
-        h = ttnn.silu(ttnn.linear(h, self.w[1], bias=self.b[1], compute_kernel_config=self.kcfg))
-        h = ttnn.linear(h, self.w[2], bias=self.b[2], compute_kernel_config=self.kcfg)
-        return self.norm(h)
+        a0 = ttnn.linear(x, self.w[0], bias=self.b[0], compute_kernel_config=self.kcfg)
+        h0 = ttnn.silu(a0)
+        a1 = ttnn.linear(h0, self.w[1], bias=self.b[1], compute_kernel_config=self.kcfg)
+        h1 = ttnn.silu(a1)
+        h2 = ttnn.linear(h1, self.w[2], bias=self.b[2], compute_kernel_config=self.kcfg)
+        self._cache_a0, self._cache_a1 = a0, a1           # pre-SiLU activations, for orb_forces.mlpnorm_bw
+        return self.norm(h2)
 
 
 class Encoder:
@@ -136,12 +140,14 @@ class AttentionInteractionLayer:
 
         E, N, C = graph.E, graph.N, self.C
 
-        receive_attn = ttnn.sigmoid(ttnn.linear(edges, self.receive_attn_w, bias=self.receive_attn_b,
-                                                compute_kernel_config=self.kcfg))
-        send_attn = ttnn.sigmoid(ttnn.linear(edges, self.send_attn_w, bias=self.send_attn_b,
-                                             compute_kernel_config=self.kcfg))
-        receive_attn = ttnn.multiply(receive_attn, graph.cutoff)
-        send_attn = ttnn.multiply(send_attn, graph.cutoff)
+        ra_lin = ttnn.linear(edges, self.receive_attn_w, bias=self.receive_attn_b,
+                             compute_kernel_config=self.kcfg)
+        sa_lin = ttnn.linear(edges, self.send_attn_w, bias=self.send_attn_b,
+                             compute_kernel_config=self.kcfg)
+        ra_sig = ttnn.sigmoid(ra_lin)
+        sa_sig = ttnn.sigmoid(sa_lin)
+        receive_attn = ttnn.multiply(ra_sig, graph.cutoff)
+        send_attn = ttnn.multiply(sa_sig, graph.cutoff)
 
         nodes_rm = ttnn.to_layout(nodes, ttnn.ROW_MAJOR_LAYOUT)
         sent_attrs = ttnn.to_layout(ttnn.embedding(graph.senders_idx, nodes_rm), ttnn.TILE_LAYOUT)
@@ -157,6 +163,10 @@ class AttentionInteractionLayer:
         node_in = ttnn.concat([nodes, recv_agg, sent_agg], dim=1)
         updated_nodes = self.node_mlp(node_in)
 
+        # cached forward tensors, reused 1:1 by orb_forces.attn_layer_bw
+        self._cache = dict(ra_lin=ra_lin, sa_lin=sa_lin, ra_sig=ra_sig, sa_sig=sa_sig,
+                           receive_attn=receive_attn, send_attn=send_attn,
+                           updated_edges=updated_edges)
         return ttnn.add(nodes, updated_nodes), ttnn.add(edges, updated_edges)
 
 
@@ -195,6 +205,7 @@ class EnergyHead:
         import ttnn
 
         self.ttnn = ttnn
+        self.device = device
         self.kcfg = compute_kernel_config()
         self.w0 = _to_dev(weights["energy_head.mlp.NN-0.weight"].T.contiguous(), device, ttnn.bfloat16)
         self.b0 = _to_dev(weights["energy_head.mlp.NN-0.bias"], device, ttnn.bfloat16)
@@ -205,8 +216,11 @@ class EnergyHead:
         """``node_features``: ttnn ``[N, latent_dim]`` (single system) -> ttnn ``[1, 1]`` raw
         (normalized-space) energy prediction."""
         ttnn = self.ttnn
+        N = node_features.shape[0]
         mean = ttnn.mean(node_features, dim=0, keepdim=True)
-        h = ttnn.silu(ttnn.linear(mean, self.w0, bias=self.b0, compute_kernel_config=self.kcfg))
+        a0 = ttnn.linear(mean, self.w0, bias=self.b0, compute_kernel_config=self.kcfg)
+        h = ttnn.silu(a0)
+        self._cache_a0, self._cache_N = a0, N             # for orb_forces.energy_bw
         return ttnn.linear(h, self.w1, bias=self.b1, compute_kernel_config=self.kcfg)
 
 
@@ -247,6 +261,19 @@ def host_force_denormalize(raw_pred: torch.Tensor, *, running_mean: torch.Tensor
     """``ForceHead``'s ``ScalarNormalizer.inverse``: ``x * sigma + mu`` (two learned scalars)."""
     sigma = running_var.double().sqrt()
     return raw_pred.double() * sigma + running_mean.double()
+
+
+def host_conservative_force_denormalize(raw_forces: torch.Tensor, n_node: int, *,
+                                        running_var: torch.Tensor) -> torch.Tensor:
+    """Chain-rule scale for ``orb-v3-conservative-inf-omat``'s analytic forces
+    (``tt_atom/orb_forces.py``): since ``E_real = (raw_pred*sigma + mu) * n_node + ref_sum`` and
+    ``forces = -dE_real/dpos``, the additive ``mu``/``ref_sum`` terms (pos-independent) vanish
+    under differentiation and only the multiplicative ``sigma * n_node`` factor survives -- unlike
+    ``host_force_denormalize`` (direct-20's ``ForceHead``, its own additive per-component
+    normalizer), this reuses the *energy* head's normalizer, the same one
+    ``host_energy_denormalize`` uses."""
+    sigma = running_var.double().sqrt()
+    return raw_forces.double() * sigma * n_node
 
 
 def host_zbl_energy(atomic_numbers: torch.Tensor, senders: torch.Tensor, receivers: torch.Tensor,
