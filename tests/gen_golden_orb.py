@@ -1,0 +1,143 @@
+"""Generate REAL-weight golden tensors for the TT-Atom Orb-v3 port (refenv only).
+
+Run with the *reference* environment (fairchem's numpy>=2 env also has orb-models installed),
+NOT the ttnn env:
+
+    ~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py \
+        --ckpt conservative-inf-omat --system bulk --out ~/.ttatom_run/goldens_real/si_omat_orb.npz
+
+Uses the SAME Si system as tests/gen_golden_real.py's ``--system bulk`` (bulk("Si","diamond",
+a=5.43)*(2,1,1), rattled stdev=0.1 seed=1) so the golden is a genuine same-system, same-task
+(omat) comparison point against the already-ported UMA/eSEN backbone (si_omat.npz).
+
+Captures the real pretrained orb-v3-conservative-inf-omat weights (downloaded from Orbital
+Materials' public S3 bucket, no gating) plus per-module activations (encoder, each GNN layer,
+decoder) for bottom-up PCC verification of the ttnn port.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+
+import numpy as np
+import torch
+from ase.build import bulk
+
+from orb_models.forcefield import pretrained
+from orb_models.forcefield.atomic_system import ase_atoms_to_atom_graphs
+
+
+def npy(t):
+    return t.detach().to(torch.float32).cpu().numpy() if t.dtype.is_floating_point \
+        else t.detach().cpu().numpy()
+
+
+def build_si():
+    atoms = bulk("Si", "diamond", a=5.43) * (2, 1, 1)
+    atoms.rattle(stdev=0.1, seed=1)
+    return atoms
+
+
+CKPTS = {
+    "conservative-inf-omat": pretrained.orb_v3_conservative_inf_omat,
+    "direct-20-omat": pretrained.orb_v3_direct_20_omat,
+}
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--ckpt", default="conservative-inf-omat", choices=list(CKPTS))
+    ap.add_argument("--out", required=True)
+    args = ap.parse_args()
+
+    device = "cpu"
+    orbff = CKPTS[args.ckpt](device=device, precision="float32-highest")
+    orbff.eval()
+    atoms = build_si()
+    graph = ase_atoms_to_atom_graphs(atoms, orbff.system_config, device=torch.device(device))
+
+    gns = orbff.model  # MoleculeGNS
+    acts: dict[str, np.ndarray] = {}
+
+    def save_out(name):
+        def hook(mod, inp, out):
+            if isinstance(out, tuple):
+                for i, t in enumerate(out):
+                    if torch.is_tensor(t):
+                        acts[f"{name}.out{i}"] = npy(t)
+            elif torch.is_tensor(out):
+                acts[f"{name}.out0"] = npy(out)
+        return hook
+
+    handles = [gns._encoder.register_forward_hook(save_out("encoder"))]
+    for i, blk in enumerate(gns.gnn_stacks):
+        handles.append(blk.register_forward_hook(save_out(f"gnn{i}")))
+    handles.append(gns._decoder.register_forward_hook(save_out("decoder")))
+
+    result = orbff.predict(graph, split=False)
+    E = float(result[orbff.energy_name].item())
+    F = npy(result[orbff.grad_forces_name])
+    S = npy(result[orbff.grad_stress_name]) if getattr(orbff, "grad_stress_name", None) else None
+    print(f"orb-v3-{args.ckpt}: E={E:.6f} eV  |F|max={np.abs(F).max():.4f}")
+
+    for h in handles:
+        h.remove()
+
+    # raw node/edge featurization (encoder inputs), for verifying the RBF+SH edge embed on device
+    node_feat = gns.featurize_nodes(graph)
+    edge_feat = gns.featurize_edges(graph)
+
+    saved: dict[str, np.ndarray] = {}
+    latent_dim = int(acts["encoder.out0"].shape[-1])
+    cfg = dict(
+        latent_dim=latent_dim,
+        num_message_passing_steps=gns.num_message_passing_steps,
+        edge_embed_size=gns.edge_embed_size,
+        node_embed_size=gns.node_embed_size,
+        lmax=gns.angular_transform._lmax,
+        num_bases=gns.rbf_transform.num_bases,
+        outer_product_with_cutoff=gns.outer_product_with_cutoff,
+        checkpoint=args.ckpt,
+        task="omat",
+    )
+    saved["config"] = np.frombuffer(json.dumps(cfg).encode(), dtype=np.uint8)
+
+    saved["in@atomic_numbers"] = npy(graph.node_features["atomic_numbers"])
+    saved["in@pos"] = npy(graph.node_features["positions"])
+    saved["in@senders"] = npy(graph.senders)
+    saved["in@receivers"] = npy(graph.receivers)
+    saved["in@vectors"] = npy(graph.edge_features["vectors"])
+    saved["in@cell"] = npy(graph.system_features["cell"])
+
+    saved["host@node_feat"] = npy(node_feat)
+    saved["host@edge_feat"] = npy(edge_feat)
+
+    saved["out@energy"] = np.array([E], dtype=np.float64)
+    saved["out@forces"] = F
+    if S is not None:
+        saved["out@stress"] = S
+
+    for k, v in acts.items():
+        saved[f"a@{k}"] = v
+
+    # weights: full MoleculeGNS state dict + energy head
+    for k, v in gns.state_dict().items():
+        saved[f"w@{k}"] = npy(v)
+    for k, v in orbff.heads["energy"].state_dict().items():
+        saved[f"w@energy_head.{k}"] = npy(v)
+    if orbff.pair_repulsion:
+        for k, v in orbff.pair_repulsion_fn.state_dict().items():
+            saved[f"w@pair_repulsion.{k}"] = npy(v)
+
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    np.savez(args.out, **saved)
+    print(f"wrote {args.out}")
+    print(f"  config: {cfg}")
+    print(f"  natoms={graph.senders.new_tensor(graph.node_features['atomic_numbers'].shape[0]).item()} "
+          f"nedges={graph.senders.shape[0]}")
+    print(f"  n weight tensors={sum(1 for k in saved if k.startswith('w@'))} n activations={len(acts)}")
+
+
+if __name__ == "__main__":
+    main()
