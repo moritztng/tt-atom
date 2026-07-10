@@ -223,6 +223,18 @@ class EnergyHead:
         self._cache_a0, self._cache_N = a0, N             # for orb_forces.energy_bw
         return ttnn.linear(h, self.w1, bias=self.b1, compute_kernel_config=self.kcfg)
 
+    def batch(self, node_features, seg_mean):
+        """Disjoint-union batched readout: ``seg_mean`` [K, Ntot] is a *row-normalized* segment
+        matrix (``seg_mean[k, n] = 1/count_k`` iff atom n is in system k, else 0) -- unlike UMA's
+        ``Backbone.energy_batch`` (a per-node scalar energy, segment-*summed* per system), Orb's
+        ``EnergyHead`` means the node *features* first and only then runs the 2-layer MLP, so the
+        adapter is a per-system mean (matmul against ``seg_mean``) feeding the same MLP, batched
+        over the K systems -> ``[K, 1]`` raw (normalized-space) energy predictions."""
+        ttnn = self.ttnn
+        mean = ttnn.matmul(seg_mean, node_features, compute_kernel_config=self.kcfg)  # [K, C]
+        h = ttnn.silu(ttnn.linear(mean, self.w0, bias=self.b0, compute_kernel_config=self.kcfg))
+        return ttnn.linear(h, self.w1, bias=self.b1, compute_kernel_config=self.kcfg)
+
 
 class ForceHead:
     """``forcefield_heads.ForceHead``'s device-resident MLP path (used by
