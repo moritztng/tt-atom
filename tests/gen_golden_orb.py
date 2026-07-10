@@ -50,7 +50,19 @@ def build_short_contact():
                 pbc=False)
 
 
-SYSTEMS = {"bulk": build_si, "short_contact": build_short_contact}
+def build_si_supercell():
+    """A larger periodic cell (Si diamond, (3,2,2) => 32 atoms) at production scale, big enough
+    that periodic self-images (an atom connecting to its own image in a neighboring cell) occur
+    within Orb's 6.0 A cutoff -- unlike the tiny 4-atom golden used for the rest of the port,
+    where the ported ``tt_atom/geometry.py`` periodic graph construction (``radius_graph``) has
+    not yet been exercised against Orb's own neighbor-list sign convention (see docs/orb-port.md
+    Open item)."""
+    atoms = bulk("Si", "diamond", a=5.43) * (3, 2, 2)
+    atoms.rattle(stdev=0.05, seed=1)
+    return atoms
+
+
+SYSTEMS = {"bulk": build_si, "short_contact": build_short_contact, "supercell": build_si_supercell}
 
 
 CKPTS = {
