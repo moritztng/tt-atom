@@ -191,8 +191,7 @@ trace capture as the answer.
 
 ## Still open
 
-- A real, verified Orb `TracedEngine`-equivalent (see the trace-capture proof-of-concept below) —
-  the one lever this pass's profiling shows would actually help.
+Nothing — the trace-capture item below is done (branch `wk/tt-atom-orb-trace-capture`).
 
 ## Profiling re-measurement at production scale
 
@@ -222,6 +221,67 @@ direction is directionally promising (and UMA's own trace path measured ~2.6x fo
 someone should port `tt_atom/trace.py`'s pattern properly (a `refresh()` that overwrites
 `edge_feat`/`cutoff` in place per MD step, mirroring `orb_forces.energy_and_forces`'s inputs)
 rather than trust this quick, broken proof of concept.
+
+## Trace capture, done properly (branch `wk/tt-atom-orb-trace-capture`)
+
+Ported `tt_atom/trace.py`'s `TracedEngine` pattern to Orb as `tt_atom/orb_trace.py`'s
+`OrbTracedEngine` — the exact fix the section above called for. `TracedEngine` itself is not
+reusable as-is (its refresh path is Wigner-rotation/`GraphContext`-specific, none of which exists
+for Orb's plain non-equivariant backbone), so this is a from-scratch port of the same *idea*:
+capture the forward(+backward) op stream once for a fixed topology, refresh only the two
+pos-dependent device inputs in place each step (`edge_feat` and `cutoff`, both produced by
+`orb_geometry.host_edge_features` — the same two adjoint targets `orb_forces.energy_and_forces`
+differentiates through), then replay. `node_feat` (atomic-number embedding only) has no `pos`
+dependence and is uploaded once, never refreshed. Two modes: `ehead` alone captures the
+conservative checkpoint's analytic-VJP backward too; `ehead`+`fhead` is forward-only (direct-20
+has no device backward at all).
+
+**A real bug found along the way, fixed in `tt_atom/orb_forces.py`:** `energy_bw`/`backbone_bw`
+allocated fresh `ttnn.ones`/`ttnn.zeros` constants on *every* call — harmless eager, but exactly
+the "the ttnn trace machinery forbids allocations during capture (it hangs)" landmine
+`tt_atom/forces.py`'s own `energy_bw` docstring already warns about for UMA. Fixed the same way
+UMA does: cache the constants once (guarded by shape) on `ehead` instead of recreating them
+per call. Purely a capture-compatibility fix — values are constant, so eager callers see zero
+behavior change (all 21 existing Orb tests still pass unmodified).
+
+**Correctness (`tests/test_orb_trace.py`), verified BEFORE any perf number:** replayed output is
+BIT-EXACT vs eager (`max abs diff == 0`, not just within a PCC bar) for both checkpoints at both
+goldens, including a genuinely different (jittered) `pos` per call, not just a degenerate
+identical-input replay:
+
+| checkpoint | system | energy diff | force max abs diff |
+|---|---|---|---|
+| conservative-inf-omat | toy (N=4, E=172) | 0 | 0 |
+| conservative-inf-omat | production (N=24, E=1064) | 0 | 0 |
+| direct-20-omat | toy (N=4, E=80) | 0 | 0 |
+| direct-20-omat | production (N=24, E=480) | 0 | 0 |
+
+**Perf (`benchmarks/bench_orb_trace.py`, conservative-inf-omat, median of 20, jittered pos each
+step — a real MD-loop measurement, not the broken proof-of-concept's identical-input replay):**
+
+| scale | slice | eager | traced/replay | speedup |
+|---|---|---|---|---|
+| toy (N=4, E=172) | full step (host geometry + device fwd+bw + host force finish) | 13.3 ms | 8.8 ms | 1.51x |
+| toy (N=4, E=172) | device-only fwd+bw | 11.9 ms | 6.4 ms | 1.85x |
+| production (N=24, E=1064) | full step | 14.8 ms | 11.0 ms | 1.35x |
+| production (N=24, E=1064) | device-only fwd+bw | 12.3 ms | 9.4 ms | 1.30x |
+
+**Real, verified, but well short of UMA's own ~2.6x forward-only trace win, and the win shrinks
+(not grows) at production scale.** Why: tracing only removes the fixed per-op host *dispatch*
+overhead — it does nothing for the host geometry recompute (`host_edge_features`) or the
+`copy_host_to_device_tensor` refresh, both of which scale with edge count `E` and run every step
+regardless of tracing. At E=1064 that non-traced host work is a much bigger slice of the eager
+step than at E=172, so the traced fraction (and thus the speedup) shrinks as the graph grows —
+the opposite of what "dispatch-bound" might suggest, because dispatch-bound means the *device*
+time barely grows, not that the *host* time doesn't. UMA's own trace path enjoys a bigger win
+because its refresh is cheaper per edge (row-major bf16 writes only, see `tt_atom/trace.py`'s
+`_refresh` comments) and its equivariant geometry (Wigner coefficients) is a heavier fraction of
+eager time to begin with, so removing dispatch buys proportionally more. **Ship it anyway**: even
+the production-scale 1.30-1.35x is a real, bit-exact win for a fixed-topology MD/relaxation loop
+with no accuracy cost — there's no calculator/CLI surface for Orb yet (unlike UMA's
+`trace=`/`--trace`) to wire an opt-in flag into, so `OrbTracedEngine` is exposed the same way
+`orb_forces.energy_and_forces` already is: a direct, documented API a caller's own MD/relaxation
+loop constructs once per fixed topology and calls per step.
 
 ## `--fast` (bf8) mode: accuracy-safe, but a measured dead end (branch `wk/tt-atom-orb-bf8-mode`)
 
