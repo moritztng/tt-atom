@@ -1,9 +1,12 @@
-# Orb-v3 port (in progress)
+# Orb-v3 port
 
 Porting [Orbital Materials' Orb-v3](https://github.com/orbital-materials/orb-models)
 (`orb-v3-conservative-inf-omat`, `orb-v3-direct-20-omat`) onto Tenstorrent alongside the
-existing UMA/eSEN support. Branch-only (`wk/tt-atom-orb-port`), not merged: UMA code paths
-(`tt_atom/{model,norm,edgewise,so2,rotation,grid,spectral}.py`, `custom_kernels/`) are untouched.
+existing UMA/eSEN support. The initial pass (encoder + full 5-layer backbone + energy for both
+checkpoints, direct-20's forces) merged to `master`; this doc's "Completed since" / "Still open"
+sections track a follow-up completion pass (branch `wk/tt-atom-orb-completion`). Purely additive:
+UMA code paths (`tt_atom/{model,norm,edgewise,so2,rotation,grid,spectral}.py`, `custom_kernels/`)
+are untouched throughout.
 
 ## Architecture verdict: Orb is NOT equivariant — none of the SO(3) kernels transfer
 
@@ -146,32 +149,59 @@ not a new custom kernel. This is a real profiled measurement at a toy system siz
 production-scale conclusion — worth re-measuring at a production cell size before committing to
 trace capture as the answer.
 
-## Open (not done this pass)
+## Completed since (branch `wk/tt-atom-orb-completion`)
 
-- **Autograd forces for the conservative variant.** `orb-v3-conservative-inf-omat`'s forces come
-  from backprop through the energy (that's the entire point of "conservative" — physically exact
-  forces as `-dE/dx`). UMA's `tt_atom/forces.py` VJP machinery is written against the equivariant
-  backbone's ops (SO(2) conv, Wigner rotate, `RMSNormSH`); Orb's backward needs analogous VJPs for
-  plain `Linear`/`RMSNorm`/`sigmoid`-gate/`segment_sum` instead — conceptually simpler (no rotation
-  adjoint, no local-frame chain rule) but not yet written. `orb-v3-direct-20-omat`'s forces
-  (direct MLP prediction, no autograd) are already ported and PCC-verified — see above.
-- **ZBL pair-repulsion forces.** The ZBL *energy* is implemented and confirmed negligible for
-  this Si golden (see above); its analytic force contribution (`dV_ZBL/dr`, needed for
-  `direct-20-omat`'s total force whenever ZBL is non-negligible — short contacts, surface defects)
-  is unimplemented. Straightforward (either the closed-form derivative already written out in
-  `pair_repulsion.ZBLBasis._polynomial_cutoff_with_derivative`, or a host `torch.autograd.grad`
-  on the same closed-form host energy function) but untested since no available golden exercises
-  it.
-- **Periodic images / half-supercell edge construction** at production cell sizes (this pass's
-  4-atom cell has no periodic self-images within either cutoff to worry about); UMA's periodic
-  graph construction (`tt_atom/geometry.py`) should transfer directly since it's architecture-
-  agnostic, but hasn't been exercised against Orb's own neighbor-list conventions yet.
-- **Multicard fan-out, disjoint-union batching, `--fast` (bf8) mode** — all existing UMA infra
-  (`tt_atom/{disjoint,batch}.py`) is architecture-agnostic and should attach to Orb's `Encoder`/
-  `AttentionInteractionLayer` without modification, but untested here.
+- **Autograd forces for the conservative variant** (`tt_atom/orb_forces.py`): hand-written device
+  VJPs mirroring every forward op 1:1 (`Linear`'s transpose-matmul, `RMSNorm`'s ordinary — non-SH
+  — backward, SiLU/sigmoid via ttnn's fused `*_bw`, and `scatter.segment_sum`'s adjoint is exactly
+  a gather by the *same* sender/receiver index used to build its own forward gather table). A
+  differentiable host reimplementation of the Bessel RBF + lmax=3 spherical-harmonic + polynomial
+  cutoff edge featurization (`tt_atom/orb_geometry.py`, no `orb-models` dependency) supplies
+  `d(edge_feat, cutoff)/dpos` via `torch.autograd`. PCC 0.999975 / MAE 0.0089 eV/Å vs the real
+  `orb-models` `torch.autograd` oracle (`tests/test_orb_forces_realweight.py`) — matching
+  direct-20's ForceHead parity bar.
+- **ZBL pair-repulsion forces** (`host_zbl_forces`, `tt_atom/orb_model.py`): host
+  `torch.autograd.grad` on the existing closed-form `host_zbl_energy` (zero learned parameters, so
+  no device VJP needed). Verified bit-exact (1e-10) vs central finite differences, and against a
+  new dedicated short-contact golden (`tests/gen_golden_orb.py --system short_contact`, two Si
+  atoms 1.4 Å apart) where ZBL is ~1.3% of total energy — the original Si golden's ZBL contribution
+  is genuinely negligible there, so it never exercised this term. Adding it to direct-20's
+  `ForceHead` output improves total-force MAE 0.615→0.390 eV/Å vs the oracle
+  (`tests/test_orb_zbl_forces.py`).
+- **Periodic images at production scale**: `tt_atom/geometry.py`'s `radius_graph` (already proven
+  for UMA) transfers with no code change — only a sender/receiver swap, since Orb's own convention
+  (`vectors = pos[receivers] - pos[senders] + shift`) is the opposite of fairchem/UMA's
+  `edge_vec = pos[src] - pos[tgt] + shift`. Verified on a new 24-atom/1064-edge periodic Si
+  supercell golden (`--system supercell`): the reconstructed edge set exactly matches (symmetric
+  diff 0, order-independent) `orb-models`' own neighbor list, and feeding the device backbone with
+  this from-scratch topology reproduces the real oracle's final node embedding (PCC 0.9996,
+  `tests/test_orb_periodic_realweight.py`).
+- **Disjoint-union batching**: verified (bit-exact row-independence, same methodology as
+  `ttatom-batching`/`ttatom-qb2-multicard-fanout`) that `Encoder`/`AttentionInteractionLayer`
+  attach to a 2-system disjoint-union batch with **no adapter code** — both ops only ever touch
+  arbitrary global node indices and `scatter.segment_sum`'s per-edge-group reduction, neither of
+  which has a notion of system boundary. One place *does* need an adapter: `EnergyHead` means node
+  features first, then runs the MLP (unlike UMA's `Backbone.energy_batch`, a per-node-scalar
+  segment-*sum*) — added `EnergyHead.batch` (row-normalized segment-mean matmul), bit-exact vs the
+  single-system path (`tests/test_orb_disjoint_batch.py`). Wall-clock multi-card fan-out itself
+  (spawning workers across physical cards) was not separately re-benchmarked here — it reuses the
+  same card-count-agnostic scheduler already proven for UMA/BoltzGen once per-system independence
+  holds (see `predict-multicard-already-exists`/`gen-multicard-already-exists`), and that
+  independence is exactly what this test establishes.
+
+## Still open
+
 - **Stress** (both checkpoints) — not exercised; would follow the same displacement-gradient
-  pattern as forces for the conservative checkpoint, or a dedicated `StressHead` MLP (same shape
-  as `EnergyHead`) for the direct checkpoint.
+  (`strain` leaf, see `tt_atom/forces.py`'s `_forward`/`_forces`) pattern as forces for the
+  conservative checkpoint, or a dedicated `StressHead` MLP (same shape as `EnergyHead` — confirmed
+  present in `orb_v3_direct_architecture`, `node_aggregation="mean"`) for the direct checkpoint.
+  The current golden bundles don't capture `stress_head` weights (`gen_golden_orb.py` only saves
+  `energy_head`/`forces_head`/`pair_repulsion`); would need a small addition there.
+- **`--fast` (bf8) mode** for Orb — untested; UMA's bf8-edge policy (`tt_atom/device.py`) should
+  apply the same way but hasn't been measured here.
+- **Trace capture at production scale** — the profiling section below is a toy-system (N=4)
+  measurement; re-measuring at a production cell size (e.g. the new 24-atom supercell golden) to
+  confirm the "trace capture, not a custom kernel" conclusion still holds was not done this pass.
 
 ## Reproducing
 
@@ -182,7 +212,16 @@ trace capture as the answer.
 ~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py --ckpt direct-20-omat \
     --out ~/.ttatom_run/goldens_real/si_omat_orb_direct20.npz
 
+# 1b. goldens for the completion pass: a short-contact system (ZBL forces) and a bigger
+# periodic supercell (periodic-image reconstruction)
+~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py --ckpt direct-20-omat --system short_contact \
+    --out ~/.ttatom_run/goldens_real/si_short_contact_orb_direct20.npz
+~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py --ckpt conservative-inf-omat --system supercell \
+    --out ~/.ttatom_run/goldens_real/si_supercell_orb.npz
+
 # 2. on-device PCC verification -- ttnn env (numpy<2)
 TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python -m pytest \
-    tests/test_orb_realweight.py tests/test_orb_direct_realweight.py -q -s
+    tests/test_orb_realweight.py tests/test_orb_direct_realweight.py \
+    tests/test_orb_forces_realweight.py tests/test_orb_zbl_forces.py \
+    tests/test_orb_periodic_realweight.py tests/test_orb_disjoint_batch.py -q -s
 ```
