@@ -191,12 +191,6 @@ trace capture as the answer.
 
 ## Still open
 
-- **Stress** (both checkpoints) — not exercised; would follow the same displacement-gradient
-  (`strain` leaf, see `tt_atom/forces.py`'s `_forward`/`_forces`) pattern as forces for the
-  conservative checkpoint, or a dedicated `StressHead` MLP (same shape as `EnergyHead` — confirmed
-  present in `orb_v3_direct_architecture`, `node_aggregation="mean"`) for the direct checkpoint.
-  The current golden bundles don't capture `stress_head` weights (`gen_golden_orb.py` only saves
-  `energy_head`/`forces_head`/`pair_repulsion`); would need a small addition there.
 - **`--fast` (bf8) mode** for Orb — untested; UMA's bf8-edge policy (`tt_atom/device.py`) should
   apply the same way but hasn't been measured here.
 ## Profiling re-measurement at production scale
