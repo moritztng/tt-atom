@@ -199,9 +199,34 @@ trace capture as the answer.
   `energy_head`/`forces_head`/`pair_repulsion`); would need a small addition there.
 - **`--fast` (bf8) mode** for Orb — untested; UMA's bf8-edge policy (`tt_atom/device.py`) should
   apply the same way but hasn't been measured here.
-- **Trace capture at production scale** — the profiling section below is a toy-system (N=4)
-  measurement; re-measuring at a production cell size (e.g. the new 24-atom supercell golden) to
-  confirm the "trace capture, not a custom kernel" conclusion still holds was not done this pass.
+## Profiling re-measurement at production scale
+
+Re-measured warm eager forward (`benchmarks/bench_orb_profile.py`) at the toy 4-atom golden vs
+the new 24-atom/1064-edge periodic supercell golden (real weights, `conservative-inf-omat`):
+
+| system | N | E | warm forward |
+|---|---|---|---|
+| toy (bulk Si) | 4 | 172 | 4.167 ms |
+| production (supercell) | 24 | 1064 | 4.275 ms |
+
+**Edge count scaled 6.2x, latency scaled 1.03x** — confirms the "dispatch-bound, not compute-
+bound" conclusion holds (and strengthens) at production scale: the op count per forward is fixed
+(~9 ops/layer x 5 layers + encoder, independent of graph size), so latency barely moves while
+compute work grows 6x. Trace capture (eliminating that fixed per-op dispatch overhead) remains the
+applicable lever, not a custom kernel.
+
+A quick exploratory attempt to wire up ttnn trace capture for the Orb forward (raw
+`begin_trace_capture`/`execute_trace` around `Encoder`+backbone, no refresh logic yet) measured a
+1.28x replay speedup (4.29ms eager -> 3.35ms replay) but the replayed output did **not** match the
+eager output (max abs diff ~692, far outside bf16 noise) — almost certainly an output-buffer-
+identity issue in the naive wiring (UMA's `tt_atom/trace.py` `TracedEngine` handles this carefully
+via explicit captured-tensor handles + in-place `copy_host_to_device_tensor` refreshes; that
+care was not replicated here). Per this project's correctness bar, an unverified number doesn't
+ship: **a real, verified Orb `TracedEngine`-equivalent is not done this pass** — the speedup
+direction is directionally promising (and UMA's own trace path measured ~2.6x forward-only), but
+someone should port `tt_atom/trace.py`'s pattern properly (a `refresh()` that overwrites
+`edge_feat`/`cutoff` in place per MD step, mirroring `orb_forces.energy_and_forces`'s inputs)
+rather than trust this quick, broken proof of concept.
 
 ## Reproducing
 
