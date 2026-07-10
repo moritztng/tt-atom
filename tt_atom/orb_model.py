@@ -78,17 +78,18 @@ class MLPNorm:
     Weight keys ``{prefix}.mlp.NN-{0,1,2}.{weight,bias}`` + ``{prefix}.layer_norm.weight``.
     """
 
-    def __init__(self, weights, prefix, device, in_dim, hidden_dim, out_dim):
+    def __init__(self, weights, prefix, device, in_dim, hidden_dim, out_dim, *, fast=False):
         import ttnn
 
         self.ttnn = ttnn
         self.kcfg = compute_kernel_config()
+        wdtype = ttnn.bfloat8_b if fast else ttnn.bfloat16
         self.w = []
         self.b = []
         for i in range(3):
             self.w.append(_to_dev(weights[f"{prefix}.mlp.NN-{i}.weight"].T.contiguous(),
-                                  device, ttnn.bfloat16))
-            self.b.append(_to_dev(weights[f"{prefix}.mlp.NN-{i}.bias"], device, ttnn.bfloat16))
+                                  device, wdtype))
+            self.b.append(_to_dev(weights[f"{prefix}.mlp.NN-{i}.bias"], device, wdtype))
         self.norm = RMSNorm(weights, f"{prefix}.layer_norm", device, out_dim)
 
     def __call__(self, x):
@@ -105,9 +106,11 @@ class MLPNorm:
 class Encoder:
     """``gns.Encoder``: separate node/edge MLPNorm blocks, no interaction between them."""
 
-    def __init__(self, weights, device, *, node_in, edge_in, latent_dim, hidden_dim):
-        self.node_fn = MLPNorm(weights, "_encoder._node_fn", device, node_in, hidden_dim, latent_dim)
-        self.edge_fn = MLPNorm(weights, "_encoder._edge_fn", device, edge_in, hidden_dim, latent_dim)
+    def __init__(self, weights, device, *, node_in, edge_in, latent_dim, hidden_dim, fast=False):
+        self.node_fn = MLPNorm(weights, "_encoder._node_fn", device, node_in, hidden_dim, latent_dim,
+                               fast=fast)
+        self.edge_fn = MLPNorm(weights, "_encoder._edge_fn", device, edge_in, hidden_dim, latent_dim,
+                               fast=fast)
 
     def __call__(self, node_features, edge_features):
         return self.node_fn(node_features), self.edge_fn(edge_features)
@@ -118,18 +121,21 @@ class AttentionInteractionLayer:
     attention gate (not softmax), distance-cutoff-scaled attention. One message-passing step.
     """
 
-    def __init__(self, weights, prefix, device, *, latent_dim, hidden_dim):
+    def __init__(self, weights, prefix, device, *, latent_dim, hidden_dim, fast=False):
         import ttnn
 
         self.ttnn = ttnn
         self.kcfg = compute_kernel_config()
         self.C = latent_dim
-        self.edge_mlp = MLPNorm(weights, f"{prefix}._edge_mlp", device, 3 * latent_dim, hidden_dim, latent_dim)
-        self.node_mlp = MLPNorm(weights, f"{prefix}._node_mlp", device, 3 * latent_dim, hidden_dim, latent_dim)
-        self.receive_attn_w = _to_dev(weights[f"{prefix}._receive_attn.weight"].T.contiguous(), device, ttnn.bfloat16)
-        self.receive_attn_b = _to_dev(weights[f"{prefix}._receive_attn.bias"], device, ttnn.bfloat16)
-        self.send_attn_w = _to_dev(weights[f"{prefix}._send_attn.weight"].T.contiguous(), device, ttnn.bfloat16)
-        self.send_attn_b = _to_dev(weights[f"{prefix}._send_attn.bias"], device, ttnn.bfloat16)
+        wdtype = ttnn.bfloat8_b if fast else ttnn.bfloat16
+        self.edge_mlp = MLPNorm(weights, f"{prefix}._edge_mlp", device, 3 * latent_dim, hidden_dim,
+                                latent_dim, fast=fast)
+        self.node_mlp = MLPNorm(weights, f"{prefix}._node_mlp", device, 3 * latent_dim, hidden_dim,
+                                latent_dim, fast=fast)
+        self.receive_attn_w = _to_dev(weights[f"{prefix}._receive_attn.weight"].T.contiguous(), device, wdtype)
+        self.receive_attn_b = _to_dev(weights[f"{prefix}._receive_attn.bias"], device, wdtype)
+        self.send_attn_w = _to_dev(weights[f"{prefix}._send_attn.weight"].T.contiguous(), device, wdtype)
+        self.send_attn_b = _to_dev(weights[f"{prefix}._send_attn.bias"], device, wdtype)
 
     def __call__(self, nodes, edges, graph):
         """``graph`` supplies ``senders``/``receivers`` gather tables (ttnn embedding-ready,
@@ -201,16 +207,17 @@ class EnergyHead:
     exactly like UMA's ``scale_rmsd``/``scale_mean``/``elem_refs`` (``tt_atom/weights.py``).
     """
 
-    def __init__(self, weights, device, *, latent_dim, hidden_dim):
+    def __init__(self, weights, device, *, latent_dim, hidden_dim, fast=False):
         import ttnn
 
         self.ttnn = ttnn
         self.device = device
         self.kcfg = compute_kernel_config()
-        self.w0 = _to_dev(weights["energy_head.mlp.NN-0.weight"].T.contiguous(), device, ttnn.bfloat16)
-        self.b0 = _to_dev(weights["energy_head.mlp.NN-0.bias"], device, ttnn.bfloat16)
-        self.w1 = _to_dev(weights["energy_head.mlp.NN-1.weight"].T.contiguous(), device, ttnn.bfloat16)
-        self.b1 = _to_dev(weights["energy_head.mlp.NN-1.bias"], device, ttnn.bfloat16)
+        wdtype = ttnn.bfloat8_b if fast else ttnn.bfloat16
+        self.w0 = _to_dev(weights["energy_head.mlp.NN-0.weight"].T.contiguous(), device, wdtype)
+        self.b0 = _to_dev(weights["energy_head.mlp.NN-0.bias"], device, wdtype)
+        self.w1 = _to_dev(weights["energy_head.mlp.NN-1.weight"].T.contiguous(), device, wdtype)
+        self.b1 = _to_dev(weights["energy_head.mlp.NN-1.bias"], device, wdtype)
 
     def __call__(self, node_features):
         """``node_features``: ttnn ``[N, latent_dim]`` (single system) -> ttnn ``[1, 1]`` raw
@@ -248,15 +255,16 @@ class ForceHead:
     non-periodic (zero-cell) systems -- the ported Si golden is fully periodic.
     """
 
-    def __init__(self, weights, device, *, latent_dim, hidden_dim):
+    def __init__(self, weights, device, *, latent_dim, hidden_dim, fast=False):
         import ttnn
 
         self.ttnn = ttnn
         self.kcfg = compute_kernel_config()
-        self.w0 = _to_dev(weights["forces_head.mlp.NN-0.weight"].T.contiguous(), device, ttnn.bfloat16)
-        self.b0 = _to_dev(weights["forces_head.mlp.NN-0.bias"], device, ttnn.bfloat16)
-        self.w1 = _to_dev(weights["forces_head.mlp.NN-1.weight"].T.contiguous(), device, ttnn.bfloat16)
-        self.b1 = _to_dev(weights["forces_head.mlp.NN-1.bias"], device, ttnn.bfloat16)
+        wdtype = ttnn.bfloat8_b if fast else ttnn.bfloat16
+        self.w0 = _to_dev(weights["forces_head.mlp.NN-0.weight"].T.contiguous(), device, wdtype)
+        self.b0 = _to_dev(weights["forces_head.mlp.NN-0.bias"], device, wdtype)
+        self.w1 = _to_dev(weights["forces_head.mlp.NN-1.weight"].T.contiguous(), device, wdtype)
+        self.b1 = _to_dev(weights["forces_head.mlp.NN-1.bias"], device, wdtype)
 
     def __call__(self, node_features):
         """``node_features``: ttnn ``[N, latent_dim]`` -> ttnn ``[N, 3]`` raw (normalized-space,
@@ -279,15 +287,16 @@ class StressHead:
     stress has no explicit volume division (unlike the conservative virial): the normalizer
     stats were fit directly against the target's own eV/Å^3 units."""
 
-    def __init__(self, weights, device, *, latent_dim, hidden_dim):
+    def __init__(self, weights, device, *, latent_dim, hidden_dim, fast=False):
         import ttnn
 
         self.ttnn = ttnn
         self.kcfg = compute_kernel_config()
-        self.w0 = _to_dev(weights["stress_head.mlp.NN-0.weight"].T.contiguous(), device, ttnn.bfloat16)
-        self.b0 = _to_dev(weights["stress_head.mlp.NN-0.bias"], device, ttnn.bfloat16)
-        self.w1 = _to_dev(weights["stress_head.mlp.NN-1.weight"].T.contiguous(), device, ttnn.bfloat16)
-        self.b1 = _to_dev(weights["stress_head.mlp.NN-1.bias"], device, ttnn.bfloat16)
+        wdtype = ttnn.bfloat8_b if fast else ttnn.bfloat16
+        self.w0 = _to_dev(weights["stress_head.mlp.NN-0.weight"].T.contiguous(), device, wdtype)
+        self.b0 = _to_dev(weights["stress_head.mlp.NN-0.bias"], device, wdtype)
+        self.w1 = _to_dev(weights["stress_head.mlp.NN-1.weight"].T.contiguous(), device, wdtype)
+        self.b1 = _to_dev(weights["stress_head.mlp.NN-1.bias"], device, wdtype)
 
     def __call__(self, node_features):
         """``node_features``: ttnn ``[N, latent_dim]`` (single system) -> ttnn ``[1, 6]`` raw

@@ -31,7 +31,7 @@ def _median_ms(fn, n=30, warm=5):
     return float(np.median(ts))
 
 
-def _build_and_time(golden_path, device):
+def _build_and_time(golden_path, device, *, fast=False):
     from tt_atom.orb_model import Encoder, AttentionInteractionLayer, OrbGraphContext, host_cutoff, _to_dev
     from tt_atom.orb_weights import OrbWeights
     import ttnn
@@ -51,9 +51,9 @@ def _build_and_time(golden_path, device):
     E = senders.shape[0]
 
     enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                 latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                 latent_dim=cfg["latent_dim"], hidden_dim=1024, fast=fast)
     layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                        latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                                        latent_dim=cfg["latent_dim"], hidden_dim=1024, fast=fast)
               for i in range(L)]
     graph = OrbGraphContext(device, senders=senders, receivers=receivers, cutoff=cutoff,
                             num_nodes=N)
@@ -104,6 +104,20 @@ def main():
                   if scale_ms < scale_E * 0.5 else
                   "latency growth tracks edge count => compute-bound territory reached, "
                   "revisit the custom-kernel question at this scale.")
+
+        print("\n-- bf16 vs bf8 (--fast) weights --")
+        bf8_cases = [
+            ("conservative toy (4-atom)", GOLDENS / "si_omat_orb.npz"),
+            ("conservative production (24-atom)", GOLDENS / "si_supercell_orb.npz"),
+            ("direct-20 toy (4-atom)", GOLDENS / "si_omat_orb_direct20.npz"),
+        ]
+        for label, path in bf8_cases:
+            if not path.exists():
+                print(f"skip {label}: {path} not found")
+                continue
+            _, _, ms16 = _build_and_time(path, device, fast=False)
+            _, _, ms8 = _build_and_time(path, device, fast=True)
+            print(f"{label}: bf16={ms16:.3f} ms bf8={ms8:.3f} ms ({ms16/ms8:.2f}x)")
     finally:
         ttnn.close_device(device)
 
