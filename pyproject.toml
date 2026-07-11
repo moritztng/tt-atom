@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tt-atom"
-version = "0.1.0"
-description = "High-performance Tenstorrent inference for eSEN / eSCN-MD (UMA-family) ML interatomic potentials"
+version = "0.2.0"
+description = "High-performance Tenstorrent inference for UMA (eSEN / eSCN-MD) and Orb-v3 / OrbMol ML interatomic potentials"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Moritz Thüning" }]
-keywords = ["tenstorrent", "ttnn", "machine-learning-potential", "eSEN", "eSCN", "UMA", "equivariant", "MLIP"]
+keywords = ["tenstorrent", "ttnn", "machine-learning-potential", "eSEN", "eSCN", "UMA", "Orb", "OrbMol", "equivariant", "MLIP"]
 
 # Core runtime deps. ttnn is NOT a pip dependency: this build routes the rotation through custom
 # tt-metal kernels (ttnn.experimental.fused_rotate) that the pip wheel does not carry, so ttnn must

@@ -2,7 +2,7 @@
 
 ![Caffeine molecular dynamics, uma-s-1 on a Tenstorrent Blackhole card](assets/caffeine_md.gif)
 
-Run Meta's [UMA](https://huggingface.co/facebook/UMA) interatomic potential on [Tenstorrent](https://tenstorrent.com). Energy, forces and stress for molecules and periodic materials, behind an [ASE](https://wiki.fysik.dtu.dk/ase/) calculator. Bring your own UMA checkpoint.
+Run ML interatomic potentials on [Tenstorrent](https://tenstorrent.com): Meta's [UMA](https://huggingface.co/facebook/UMA), behind an [ASE](https://wiki.fysik.dtu.dk/ase/) calculator (bring your own checkpoint), and Orbital Materials' [Orb-v3 / OrbMol](#orb-v3-and-orbmol). Energy, forces and stress for molecules and periodic materials.
 
 ## Install
 
@@ -144,6 +144,65 @@ TT-Atom is an inference runtime, not a rewrite of fairchem. It reuses the releas
 | Batched inference | ✅ | ✅ (one composition per batch) |
 | LAMMPS interface | ✅ | ❌ |
 | Training, fine-tuning | ✅ | ❌ (inference only) |
+
+## Orb-v3 and OrbMol
+
+Alongside UMA, TT-Atom also runs [Orb-v3](https://github.com/orbital-materials/orb-models)
+(Orbital Materials) and **OrbMol**, its charge/spin-conditioned molecular variant:
+
+| checkpoint | family | notes |
+|---|---|---|
+| `orb-v3-conservative-inf-omat` | Orb-v3 | analytic forces (`F = -dE/dpos`), stress |
+| `orb-v3-direct-20-omat` | Orb-v3 | forces are a direct MLP head — no autograd, the fast checkpoint |
+| `orb-v3-conservative-omol` | OrbMol | aperiodic molecules, charge + spin conditioning, no stress head |
+| `orb-v3-direct-omol` | OrbMol | forces are a direct MLP head, charge + spin conditioning |
+
+**Orb-v3 is NOT equivariant** — it's a plain attention-MPNN over scalar features (real spherical
+harmonics are used only as a fixed per-edge descriptor, never carried as a rotated tensor
+representation). None of UMA's four custom kernels (`fused_rotate`/`fused_rotate_gc`/`fused_gate`/
+`fused_ln_bw`) apply, so **Orb-v3/OrbMol run on stock `ttnn` ops** — no source tt-metal build is
+needed if you only use these models (see `docs/orb-port.md`'s "Architecture verdict").
+
+Unlike UMA, there is no `Orb(atoms)` ASE one-liner yet — checkpoints load through the same
+golden/bundle export used for parity testing (`tests/gen_golden_orb.py`, run in the `fairchem`/
+`orb-models` reference env), then the device modules are called directly:
+
+```bash
+refenv/bin/python tests/gen_golden_orb.py --ckpt orb-v3-conservative-inf-omat \
+    --out model.npz   # --system for a custom structure; see the script's --help
+```
+
+```python
+from tt_atom.device import open_device
+from tt_atom.orb_weights import OrbWeights
+from tt_atom.orb_model import Encoder, AttentionInteractionLayer, EnergyHead, host_cutoff, _to_dev
+from tt_atom.orb_forces import energy_and_forces
+
+device = open_device(0)
+gw = OrbWeights.load("model.npz")
+cfg, w = gw.config, gw.weights
+L = cfg["num_message_passing_steps"]
+
+encoder = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
+                  latent_dim=cfg["latent_dim"], hidden_dim=1024)
+layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
+                                     latent_dim=cfg["latent_dim"], hidden_dim=1024) for i in range(L)]
+ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"], hidden_dim=1024)
+
+energy, forces = energy_and_forces(
+    encoder, layers, ehead, device,
+    pos=gw.inp("pos"), senders=gw.inp("senders").long(), receivers=gw.inp("receivers").long(),
+    atomic_numbers=gw.inp("atomic_numbers").long(), node_feat=gw.host("node_feat"),
+)
+```
+
+For a fixed-topology MD/relaxation loop, capture the graph once with `tt_atom.orb_trace`'s
+`OrbTracedEngine` and replay it per step (bit-exact vs eager, 1.3–4.8x measured depending on
+system size and environment — see `docs/orb-port.md` and `CHANGELOG.md`) instead of calling
+`energy_and_forces` fresh every step.
+
+Full accuracy tables, the non-equivariance analysis, and reproduction commands for both checkpoint
+families live in [`docs/orb-port.md`](docs/orb-port.md).
 
 ## Bundles and the reference environment
 
