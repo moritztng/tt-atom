@@ -55,6 +55,16 @@ def host_charge_spin_embedding(weights, charge: float, spin: float, n_node: int,
     return combined.unsqueeze(0).expand(n_node, -1).contiguous()
 
 
+def host_node_features(weights, atomic_numbers: torch.Tensor) -> torch.Tensor:
+    """The encoder's node input (``featurize_nodes``, every public checkpoint's
+    ``use_embedding=True, expects_atom_type_embedding=False``): a plain per-element lookup into
+    the learned ``atom_emb.embeddings.weight`` table (``[119, node_embed_size]``), indexed by
+    atomic number -- no one-hot bag, no host computation beyond the index. Pos-independent (used
+    verbatim by ``tt_atom/orb_forces.py``'s ``energy_and_forces``, which never differentiates it),
+    so unlike ``host_edge_features``/``host_cutoff`` this needs no ``pos`` argument at all."""
+    return weights["atom_emb.embeddings.weight"][atomic_numbers.long()]
+
+
 def host_cutoff(r: torch.Tensor, r_max: float = 6.0) -> torch.Tensor:
     """Fixed polynomial attention-cutoff envelope (``orb_models...nn_util.get_cutoff``).
 

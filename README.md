@@ -2,11 +2,13 @@
 
 ![Caffeine molecular dynamics, uma-s-1 on a Tenstorrent Blackhole card](assets/caffeine_md.gif)
 
-Run ML interatomic potentials on [Tenstorrent](https://tenstorrent.com): Meta's [UMA](https://huggingface.co/facebook/UMA), behind an [ASE](https://wiki.fysik.dtu.dk/ase/) calculator (bring your own checkpoint), and Orbital Materials' [Orb-v3 / OrbMol](#orb-v3-and-orbmol). Energy, forces and stress for molecules and periodic materials.
+Run ML interatomic potentials on [Tenstorrent](https://tenstorrent.com): Meta's [UMA](https://huggingface.co/facebook/UMA) and Orbital Materials' [Orb-v3 / OrbMol](https://github.com/orbital-materials/orb-models), both behind the same [ASE](https://wiki.fysik.dtu.dk/ase/) calculator interface (bring your own checkpoint). Energy, forces and stress for molecules and periodic materials.
 
 ## Install
 
 TT-Atom is the custom-kernel-only, highest-performance build for `uma-s`. Its per-edge Wigner rotation runs as a custom tt-metal kernel that the pip `ttnn` wheel does not carry, so `ttnn` comes from a **source tt-metal build**. The op is pre-integrated on the [`moritztng/tt-atom`](https://github.com/tenstorrent/tt-metal/tree/moritztng/tt-atom) branch of tt-metal, so the build is a plain clone-and-build — no patching. You need a Tenstorrent card and its driver.
+
+Orb-v3/OrbMol are non-equivariant (see [Model coverage](#model-coverage)) and run on stock `ttnn` ops — if you only use those models, skip step 1 and `pip install ttnn` from PyPI.
 
 **1. Build and install tt-metal with the op** (branch `moritztng/tt-atom`):
 
@@ -47,15 +49,15 @@ tt-atom run structure.xyz
 
 ```python
 from ase.io import read
-from tt_atom import UMA
+from tt_atom import UMA, Orb
 
 atoms = read("structure.xyz")
-atoms.calc = UMA(atoms)
+atoms.calc = UMA(atoms)                                    # or: Orb(atoms)
 atoms.get_potential_energy()
 atoms.get_forces()
 ```
 
-`UMA(atoms)` uses `uma-s-1`, infers the task (`omat` if the cell is periodic, else `omol`), and builds a device-resident model for that composition on first use. Later calls load it from cache. Everything downstream is plain ASE.
+`UMA(atoms)` uses `uma-s-1`, infers the task (`omat` if the cell is periodic, else `omol`), and builds a device-resident model for that composition on first use. Later calls load it from cache. `Orb(atoms)` is the symmetric one-liner for `orb-v3-conservative-inf-omat` (pass `checkpoint=` for one of the other three, see [Model coverage](#model-coverage)) — its weights aren't composition-specific, so the cache is per-checkpoint, not per-structure. Everything downstream is plain ASE either way.
 
 ## Relax and MD
 
@@ -68,13 +70,25 @@ Add `--trace` (or `UMA(atoms, trace=True)`) to replay the captured device graph 
 
 ## What it supports
 
-- Models: `uma-s-1` (default). See [Model coverage](#model-coverage) for what else exists upstream
-  and why this build doesn't run it.
-- Tasks: `omol`, `omat`, `oc20`, `odac`, `omc`.
-- Systems: isolated molecules and periodic cells. Charge and spin via `UMA(atoms, charge=-1, spin=2)`.
-- Properties: energy, conservative analytic forces, and stress, so variable-cell relaxation works (see [`examples/relax_cell.py`](examples/relax_cell.py)).
+- Models: UMA's `uma-s-1` and all four Orb-v3/OrbMol checkpoints (`orb-v3-{conservative,direct}-{omat,omol}`).
+  See [Model coverage](#model-coverage) for what else exists upstream and why this build doesn't run it.
+- Tasks: UMA — `omol`, `omat`, `oc20`, `odac`, `omc`. Orb-v3/OrbMol — `omat`, `omol`.
+- Systems: isolated molecules and periodic cells, both model families. Charge and spin: `UMA(atoms,
+  charge=-1, spin=2)` (all UMA tasks); `Orb(atoms, checkpoint="orb-v3-conservative-omol", charge=-1,
+  spin=2)` (OrbMol checkpoints only — the omat checkpoints were never trained with conditioning and
+  ignore both).
+- Properties: energy always. Conservative analytic forces (`F = -dE/dpos`) for UMA and Orb-v3's
+  `conservative` checkpoints; a direct MLP force head (no autograd, the fast path) for Orb-v3's
+  `direct` checkpoints. Stress for UMA (always) and Orb-v3 (`conservative` via the same autograd
+  pass; `direct-20-omat` via a dedicated stress head — `direct-omol` has none, consistent with
+  stress not being meaningful for isolated molecules), so variable-cell relaxation works for either
+  family (see [`examples/relax_cell.py`](examples/relax_cell.py)). Orb-v3 is honestly **not**
+  equivariant (see [Model coverage](#model-coverage)) — a real architectural difference from UMA,
+  not a gap in this port.
 
 ## Model coverage
+
+### UMA
 
 Meta has released two UMA sizes: `uma-s-1` (`.1`/`.2`) and `uma-m-1p1` — there is no `uma-l`. The
 [paper](https://arxiv.org/abs/2506.23971) scales capacity via mixture-of-linear-experts on the
@@ -90,119 +104,112 @@ overflows the kernel's L1 budget, and this build has no MAC fallback, so it rais
 need L1 headroom `uma-m` already overflows, so it isn't a new question, just a bigger version of
 the one above — and moot, since the checkpoint doesn't exist to test it against.
 
+### Orb-v3 / OrbMol
+
+[Orbital Materials](https://github.com/orbital-materials/orb-models) ships four public,
+ungated checkpoints, all of which run on this build:
+
+| checkpoint | family | notes |
+|---|---|---|
+| `orb-v3-conservative-inf-omat` | Orb-v3 | analytic forces (`F = -dE/dpos`), stress via the same autograd pass |
+| `orb-v3-direct-20-omat` | Orb-v3 | forces are a direct MLP head — no autograd, the fast checkpoint; dedicated stress head |
+| `orb-v3-conservative-omol` | OrbMol | aperiodic molecules, charge + spin conditioning, no stress head |
+| `orb-v3-direct-omol` | OrbMol | forces are a direct MLP head, charge + spin conditioning, no stress head |
+
+**Orb-v3 is honestly NOT equivariant** — it's a plain attention-MPNN over scalar features (real
+spherical harmonics are used only as a fixed per-edge descriptor, never carried as a rotated
+tensor representation). None of UMA's four custom kernels (`fused_rotate`/`fused_rotate_gc`/
+`fused_gate`/`fused_ln_bw`) apply, so **Orb-v3/OrbMol run on stock `ttnn` ops** — no source
+tt-metal build is needed if you only use these models (see [Install](#install) and
+`docs/orb-port.md`'s "Architecture verdict" for the full read of the upstream source that
+established this).
+
+Unlike UMA, Orb has no MoLE (or any) expert routing baked in at merge time — the raw checkpoint
+weights are valid for *any* composition/charge/spin, so `Orb(atoms)` caches its (much cheaper)
+weight export once per *checkpoint name*, not per structure (`tt_atom.orb_weight_cache`, mirrors
+`tt_atom.bundle_cache`'s refenv-subprocess pattern but without the per-composition merge). The
+`max_num_neighbors` truncation Orb's own reference applies per atom (20 for the `-20` checkpoints,
+120 otherwise) is not implemented here; rather than silently return a different neighbour list on
+a denser structure, `Orb(atoms)` raises a clear error naming the degree and the checkpoint's cap
+(same philosophy as `uma-m`'s shape error above) — use the `-inf`/`omol` checkpoints (cap 120) for
+denser systems, or a smaller cell.
+
 ## Accuracy
 
-Every task is checked on-device against the released `uma-s-1` checkpoint run through fairchem on the same structure.
+Every model/task is checked on-device against its own real upstream reference (fairchem for UMA,
+`orb-models` for Orb-v3/OrbMol) run on the same structure.
 
-| task | system | energy rel. err | force PCC | stress PCC |
-|------|--------|----------------:|----------:|-----------:|
-| omol | ethanol         | 2e-7 | 0.9996  |     |
-| omat | bulk Si         | 3e-4 | 0.99999 | 0.99999 |
-| oc20 | Cu(100) + H slab| 9e-5 | 1.0000  |     |
-| odac | MgO framework   | 2e-4 | 0.99999 |     |
-| omc  | solid CO2       | 8e-5 | 1.0000  |     |
+| model | task | system | energy rel. err | force PCC | stress |
+|---|---|---|---:|---:|---:|
+| uma-s-1 | omol | ethanol | 2e-7 | 0.9996 | |
+| uma-s-1 | omat | bulk Si | 3e-4 | 0.99999 | PCC 0.99999 |
+| uma-s-1 | oc20 | Cu(100) + H slab | 9e-5 | 1.0000 | |
+| uma-s-1 | odac | MgO framework | 2e-4 | 0.99999 | |
+| uma-s-1 | omc | solid CO2 | 8e-5 | 1.0000 | |
+| orb-v3-conservative-inf-omat | omat | bulk Si | 1.19e-4 | 0.999975 | PCC >0.999 |
+| orb-v3-direct-20-omat | omat | bulk Si | 5.79e-4 | 0.999966 | PCC >0.99 (dedicated stress head) |
+| orb-v3-conservative-omol | omol | H2O / NH4+ / CH3• | 1.6e-6 – 9.2e-6 | 0.97 – 0.9997 | n/a (no stress head) |
+| orb-v3-direct-omol | omol | H2O / NH4+ / CH3• | 1.7e-6 – 3.9e-5 | 0.93 – 0.998 | n/a |
 
-Dynamics are stable: NVE energy drift is about 1 meV/atom/ps. These numbers are from `ttnn` 0.68.0. Op numerics can shift slightly between `ttnn` versions, so confirm parity on the version you actually run:
+The OrbMol rows span three systems (closed-shell, charged, open-shell radical) — the low end of
+each range is the open-shell radical, whose forces PCC is depressed by its own tiny force
+magnitude (an absolute bf16 noise floor against a signal an order of magnitude smaller than the
+other two systems), not a conditioning bug: its energy — which has no such magnitude sensitivity —
+is the tightest of all rows here. Full per-system breakdowns, the non-equivariance analysis, and
+Orb-v3's ZBL pair-repulsion correction live in [`docs/orb-port.md`](docs/orb-port.md).
 
-Reproduce it yourself. Every bundle embeds the fairchem reference energy and forces from build time, so:
+Dynamics are stable: UMA's NVE energy drift is about 1 meV/atom/ps. These numbers are from `ttnn`
+0.68.0. Op numerics can shift slightly between `ttnn` versions, so confirm parity on the version
+you actually run:
+
+Reproduce it yourself. Every UMA bundle embeds the fairchem reference energy/forces from build
+time; Orb-v3/OrbMol goldens do the same for `orb-models` (`tests/gen_golden_orb.py`):
 
 ```bash
-tt-atom verify model.npz     # device output vs the embedded fairchem reference
-pytest tests/                # full parity suite against fairchem goldens
+tt-atom verify model.npz     # UMA: device output vs the embedded fairchem reference
+pytest tests/                # full parity suite against both models' upstream goldens
 ```
 
 ## Throughput
 
-Batch independent systems into a single device pass:
+Both models are dispatch-bound at typical MD/relaxation sizes, so the same two levers apply —
+batch many systems into one device pass, or trace-capture a fixed-topology loop to cut host
+dispatch overhead — though only UMA's batching is wired into a calculator method today:
+
+| mechanism | UMA | Orb-v3 |
+|---|---|---|
+| Batch independent systems (`calc.evaluate_batch`) | ~13x vs looping on one card (many small molecules) | backbone verified batch-transparent (bit-exact row-independence), no `evaluate_batch` wired up yet — see `docs/orb-port.md` |
+| Multi-card fan-out (`tt_atom.batch.MultiCard`) | proven (one process per card) | inherits the same card-count-agnostic scheduler; not independently wall-clock-benchmarked yet |
+| Trace-captured single-system MD/relax step | ~2x, bit-identical forces (`trace=True`) | 1.30–1.51x, bit-exact vs eager (`tt_atom.orb_trace.OrbTracedEngine`) — shrinks at larger graphs since only host *dispatch* is removed, not the host geometry recompute (see `docs/orb-port.md`) |
+| Trace-captured batched MD ensemble | K=4: 4.2x (59→246 sys/s); K=16: 2.6x (207→528 sys/s), approaching the K≥128 eager plateau (~700 sys/s) | not implemented (no batched Orb calculator path yet) |
+| `--fast` (bf8 weights) | real win (bandwidth-bound edge-activation dataflow through the custom kernels) | measured **dead end**, 0.99–1.01x — Orb's forward is dispatch-bound, not weight-bandwidth-bound, so halving weight bytes does nothing (`fast=` stays threaded through for reproducibility only) |
+
+UMA batching:
 
 ```python
-out = calc.evaluate_batch(list_of_atoms)   # out["energy"], out["forces"]
+out = calc.evaluate_batch(list_of_atoms)              # out["energy"], out["forces"]
+out = calc.evaluate_batch(replicas, trace=True)       # per-step in an MD ensemble loop
 ```
 
-For many small molecules this is roughly 13x over looping on one card. To use several cards, fan systems across them with `tt_atom.batch` (one process per card).
+To use several cards, fan systems across them with `tt_atom.batch` (one process per card, either
+model).
 
-For a **batched MD ensemble / relaxation** — K fixed-composition replicas evolving with a stable neighbour list — add `trace=True` to capture the batched device graph once and replay it (forces stay bit-identical; it re-captures whenever the neighbour list changes):
+## Compared to upstream (fairchem / orb-models)
 
-```python
-out = calc.evaluate_batch(replicas, trace=True)   # per-step in the ensemble loop
-```
+TT-Atom is an inference runtime, not a rewrite of either upstream project. It reuses the released
+weights and matches them.
 
-At small per-system sizes the eager batched forward is host-dispatch-bound below saturation, so the trace lets a *modest* ensemble reach near-peak throughput: measured on one p150 (uma-s-1, 9-atom molecules) K=4 gives 4.2x (59→246 systems/s), K=16 2.6x (207→528 sys/s) — approaching the K≥128 eager device-bound plateau (~700 sys/s) at a fraction of the batch size. Leave it `False` for one-shot screening, where a fresh batch each call would re-capture every time.
-
-## Compared to fairchem
-
-TT-Atom is an inference runtime, not a rewrite of fairchem. It reuses the released weights and matches them.
-
-|  | fairchem | TT-Atom |
+|  | Upstream (fairchem for UMA, orb-models for Orb-v3/OrbMol) | TT-Atom |
 |--|:--------:|:-------:|
 | Hardware | GPU, CPU | Tenstorrent |
-| Energy, forces, stress | ✅ | ✅ |
+| Energy, forces, stress | ✅ | ✅ (Orb: `conservative` via autograd+virial, `direct` via dedicated MLP heads) |
 | Molecules, periodic (PBC) | ✅ | ✅ |
-| Tasks (omol/omat/oc20/odac/omc) | ✅ | ✅ |
-| Models | uma-s, uma-m | uma-s-1 |
-| ASE relax and MD | ✅ | ✅ (plus a traced loop) |
-| Batched inference | ✅ | ✅ (one composition per batch) |
-| LAMMPS interface | ✅ | ❌ |
+| Charge/spin conditioning | ✅ (UMA, all tasks; OrbMol only for Orb) | ✅ (`charge=`/`spin=` kwargs, same shape for both models) |
+| Tasks / checkpoints | UMA: omol/omat/oc20/odac/omc; Orb-v3/OrbMol: omat/omol | `uma-s-1`; all 4 public Orb-v3/OrbMol checkpoints |
+| ASE relax and MD | ✅ | ✅ (plus a traced loop, both models) |
+| Batched inference | ✅ | ✅ UMA (one composition per batch); Orb backbone verified batch-transparent, not yet wired into a calculator method |
+| LAMMPS interface | ✅ (fairchem; not verified whether orb-models ships one) | ❌ |
 | Training, fine-tuning | ✅ | ❌ (inference only) |
-
-## Orb-v3 and OrbMol
-
-Alongside UMA, TT-Atom also runs [Orb-v3](https://github.com/orbital-materials/orb-models)
-(Orbital Materials) and **OrbMol**, its charge/spin-conditioned molecular variant:
-
-| checkpoint | family | notes |
-|---|---|---|
-| `orb-v3-conservative-inf-omat` | Orb-v3 | analytic forces (`F = -dE/dpos`), stress |
-| `orb-v3-direct-20-omat` | Orb-v3 | forces are a direct MLP head — no autograd, the fast checkpoint |
-| `orb-v3-conservative-omol` | OrbMol | aperiodic molecules, charge + spin conditioning, no stress head |
-| `orb-v3-direct-omol` | OrbMol | forces are a direct MLP head, charge + spin conditioning |
-
-**Orb-v3 is NOT equivariant** — it's a plain attention-MPNN over scalar features (real spherical
-harmonics are used only as a fixed per-edge descriptor, never carried as a rotated tensor
-representation). None of UMA's four custom kernels (`fused_rotate`/`fused_rotate_gc`/`fused_gate`/
-`fused_ln_bw`) apply, so **Orb-v3/OrbMol run on stock `ttnn` ops** — no source tt-metal build is
-needed if you only use these models (see `docs/orb-port.md`'s "Architecture verdict").
-
-Unlike UMA, there is no `Orb(atoms)` ASE one-liner yet — checkpoints load through the same
-golden/bundle export used for parity testing (`tests/gen_golden_orb.py`, run in the `fairchem`/
-`orb-models` reference env), then the device modules are called directly:
-
-```bash
-refenv/bin/python tests/gen_golden_orb.py --ckpt orb-v3-conservative-inf-omat \
-    --out model.npz   # --system for a custom structure; see the script's --help
-```
-
-```python
-from tt_atom.device import open_device
-from tt_atom.orb_weights import OrbWeights
-from tt_atom.orb_model import Encoder, AttentionInteractionLayer, EnergyHead, host_cutoff, _to_dev
-from tt_atom.orb_forces import energy_and_forces
-
-device = open_device(0)
-gw = OrbWeights.load("model.npz")
-cfg, w = gw.config, gw.weights
-L = cfg["num_message_passing_steps"]
-
-encoder = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                  latent_dim=cfg["latent_dim"], hidden_dim=1024)
-layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                     latent_dim=cfg["latent_dim"], hidden_dim=1024) for i in range(L)]
-ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"], hidden_dim=1024)
-
-energy, forces = energy_and_forces(
-    encoder, layers, ehead, device,
-    pos=gw.inp("pos"), senders=gw.inp("senders").long(), receivers=gw.inp("receivers").long(),
-    atomic_numbers=gw.inp("atomic_numbers").long(), node_feat=gw.host("node_feat"),
-)
-```
-
-For a fixed-topology MD/relaxation loop, capture the graph once with `tt_atom.orb_trace`'s
-`OrbTracedEngine` and replay it per step (bit-exact vs eager, 1.3–4.8x measured depending on
-system size and environment — see `docs/orb-port.md` and `CHANGELOG.md`) instead of calling
-`energy_and_forces` fresh every step.
-
-Full accuracy tables, the non-equivariance analysis, and reproduction commands for both checkpoint
-families live in [`docs/orb-port.md`](docs/orb-port.md).
 
 ## Bundles and the reference environment
 
@@ -222,6 +229,17 @@ python -m venv refenv && refenv/bin/pip install "fairchem-core>=2.10"
 
 `UMA(atoms)` and `tt-atom run` call it automatically the first time they see a new composition, then cache the result. Set `TT_ATOM_REFENV` to its python if it is not found automatically. Cached runs never need it.
 
+Orb has no MoLE (or any) expert routing, so its weights aren't composition-specific — `Orb(atoms)`
+caches one plain weight export **per checkpoint name** (not per structure), also via the same
+reference env (`orb-models` installs into it alongside `fairchem-core` with no conflicts):
+
+```bash
+refenv/bin/python tools/export_orb_weights.py --ckpt conservative-inf-omat --out weights.npz
+```
+
+then `OrbCalculator(weights.npz)`. `Orb(atoms)` calls this automatically on first use of a given
+`checkpoint=`; a cache hit needs no reference env, same as UMA's.
+
 ## License
 
-MIT for this code, which reimplements the UMA / eSCN-MD architecture from [fairchem](https://github.com/facebookresearch/fairchem) (also MIT). It depends on `ttnn` (Apache-2.0) and `ase` (LGPL-2.1+). The UMA weights are separately licensed under the [FAIR Chemistry License](https://huggingface.co/facebook/UMA), are gated, and are not included. Bring your own.
+MIT for this code, which reimplements the UMA / eSCN-MD architecture from [fairchem](https://github.com/facebookresearch/fairchem) (also MIT) and the Orb-v3 architecture from [orb-models](https://github.com/orbital-materials/orb-models) (Apache-2.0). It depends on `ttnn` (Apache-2.0) and `ase` (LGPL-2.1+). The UMA weights are separately licensed under the [FAIR Chemistry License](https://huggingface.co/facebook/UMA), are gated, and are not included — bring your own. The Orb-v3/OrbMol weights are Apache-2.0 and ungated; `Orb(atoms)` downloads them itself on first use of a given checkpoint.

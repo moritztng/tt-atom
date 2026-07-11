@@ -1,8 +1,8 @@
-"""TT-Atom — high-performance Tenstorrent inference for eSEN / eSCN-MD (UMA-family)
-equivariant ML interatomic potentials.
+"""TT-Atom — high-performance Tenstorrent inference for ML interatomic potentials: Meta's UMA
+(eSEN / eSCN-MD, equivariant) and Orbital Materials' Orb-v3 / OrbMol (non-equivariant).
 
-Public API is populated as modules land (model, calculator, weights, ...). Submodules
-import ttnn lazily so that ``import tt_atom`` is cheap and never opens a device.
+Public API is populated as modules land (model, calculator, orb_model, orb_calculator, ...).
+Submodules import ttnn lazily so that ``import tt_atom`` is cheap and never opens a device.
 """
 
 from importlib.metadata import PackageNotFoundError, version as _version
@@ -12,7 +12,8 @@ try:
 except PackageNotFoundError:  # running from a source tree, not an installed dist
     __version__ = "0+unknown"
 
-__all__ = ["UMA", "TTAtomCalculator", "WeightBundle", "Backbone", "HostGeometry", "MultiCard"]
+__all__ = ["UMA", "TTAtomCalculator", "Orb", "OrbCalculator", "WeightBundle", "Backbone",
+          "HostGeometry", "MultiCard"]
 
 
 def __getattr__(name):
@@ -25,6 +26,14 @@ def __getattr__(name):
         from .calculator import TTAtomCalculator
 
         return TTAtomCalculator
+    if name == "Orb":
+        from .orb_calculator import Orb
+
+        return Orb
+    if name == "OrbCalculator":
+        from .orb_calculator import OrbCalculator
+
+        return OrbCalculator
     if name == "WeightBundle":
         from .weights import WeightBundle
 
