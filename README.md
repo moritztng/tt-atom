@@ -6,7 +6,7 @@ Run ML interatomic potentials on [Tenstorrent](https://tenstorrent.com): Meta's 
 
 ## Install
 
-TT-Atom is the custom-kernel-only, highest-performance build for `uma-s`. Its per-edge Wigner rotation runs as a custom tt-metal kernel that the pip `ttnn` wheel does not carry, so `ttnn` comes from a **source tt-metal build**. The op is pre-integrated on the [`moritztng/tt-atom`](https://github.com/tenstorrent/tt-metal/tree/moritztng/tt-atom) branch of tt-metal, so the build is a plain clone-and-build — no patching. You need a Tenstorrent card and its driver.
+TT-Atom is the custom-kernel-only, highest-performance build for `uma-s`. Its per-edge rotation runs through a custom tt-metal kernel that the pip `ttnn` wheel does not carry, so `ttnn` comes from a **source tt-metal build**. The op is pre-integrated on the [`moritztng/tt-atom`](https://github.com/tenstorrent/tt-metal/tree/moritztng/tt-atom) branch of tt-metal, so the build is a plain clone-and-build — no patching. You need a Tenstorrent card and its driver.
 
 Orb-v3/OrbMol are non-equivariant (see [Model coverage](#model-coverage)) and run on stock `ttnn` ops — if you only use those models, skip step 1 and `pip install ttnn` from PyPI.
 
@@ -95,14 +95,11 @@ Meta has released two UMA sizes: `uma-s-1` (`.1`/`.2`) and `uma-m-1p1` — there
 small and medium models rather than shipping a third, larger dense tier, and
 [facebook/UMA](https://huggingface.co/facebook/UMA) carries checkpoints for only those two.
 
-Of the two that exist, only `uma-s-1` runs on this build. `uma-s` is square (lmax=mmax=2), so its
-per-edge Wigner rotation is a 9x9 tile that fits the fused kernel's L1 CB budget. `uma-m-1p1` uses
-mmax<lmax spherical-harmonic subselection, so its rotation is rectangular (25<->19, W=256) — that
-overflows the kernel's L1 budget, and this build has no MAC fallback, so it raises a clear
-`RuntimeError` naming the shape rather than silently running slow or wrong
-(`tests/test_umam.py` anchors this contract). A hypothetical `uma-l`, sized above `uma-m`, would
-need L1 headroom `uma-m` already overflows, so it isn't a new question, just a bigger version of
-the one above — and moot, since the checkpoint doesn't exist to test it against.
+Of the two that exist, only `uma-s-1` runs on this build; `uma-m-1p1` raises a clear
+`RuntimeError` naming the shape rather than silently running slow or wrong (`tests/test_umam.py`
+anchors this contract) — see [`custom_kernels/README.md`](custom_kernels/README.md)'s "`fused_rotate`
+contract" section for why. A hypothetical `uma-l`, sized above `uma-m`, would hit the same limit,
+and is moot anyway since the checkpoint doesn't exist to test it against.
 
 ### Orb-v3 / OrbMol
 
