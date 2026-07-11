@@ -78,8 +78,12 @@ good v2 if Moritz wants it.)
 
 ## Notes for Moritz
 - The video is rendered in OVITO (Tachyon ray-tracer): shaded spheres at the Jmol Si colour, the
-  diamond bond network, the periodic cell box, ambient occlusion + shadows. Coordinates are wrapped
-  into the cell and bonds are not drawn across the periodic faces — no "exploding crystal" artifact.
+  diamond bond network, the periodic cell box, ambient occlusion + shadows. Coordinates are
+  *unwrapped* (continuous per-atom images, not re-folded into the cell every frame) so an atom
+  whose lattice site sits near a periodic face vibrates smoothly instead of jumping to the opposite
+  side of the box — valid because the crystal is solid at 900 K over 1.5 ps (no diffusion, nothing
+  drifts out of frame). Bonds use the same unwrapped positions, so none are drawn across periodic
+  faces either — no "exploding crystal" or teleporting-atom artifact.
 - One honest on-device run; no compositing, no sped-up trickery. Loop is a boomerang (forward then
   reverse) so it seams cleanly — MD isn't time-periodic.
 - MP4 720² for the post (7.4 MB); GIF 340px for README/preview (6 MB).

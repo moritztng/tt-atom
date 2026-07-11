@@ -1,7 +1,12 @@
 """Render an on-device Orb-v3 MD trajectory to a professional looping MP4 + GIF using OVITO
 (Tachyon software ray-tracer) — shaded spheres, ambient occlusion, the periodic simulation cell,
-and the diamond bond network. Coordinates are wrapped into the cell (PBC), so nothing streaks
-across the box; bonds that cross a periodic face are drawn correctly to the wrapped image.
+and the diamond bond network. Coordinates are *unwrapped* (continuous per-atom images accumulated
+across the trajectory, not re-folded into the cell every frame), so an atom whose lattice site
+sits near a periodic face vibrates smoothly instead of teleporting to the opposite side of the box
+each time its wrapped image flips. This is valid here specifically because the crystal is solid at
+900 K over 1.5 ps (no diffusion): no atom's unwrapped displacement grows beyond a small fraction of
+the cell, so nothing drifts out of frame. Bonds use the same unwrapped (non-periodic) positions, so
+none are drawn across periodic faces either.
 
 A gentle turntable rotates the camera while the trajectory plays; the loop is a boomerang
 (forward then reverse) so it seams cleanly even though MD is not time-periodic. A small, clean
@@ -13,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import subprocess
 import tempfile
 
@@ -21,7 +27,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from ovito.io import import_file
 from ovito.vis import Viewport, TachyonRenderer, BondsVis
-from ovito.modifiers import WrapPeriodicImagesModifier, CreateBondsModifier
+from ovito.modifiers import UnwrapTrajectoriesModifier, CreateBondsModifier
 
 JMOL_SI = (0.941, 0.784, 0.627)      # CPK/Jmol silicon colour (the materials-viz standard)
 BG = (14, 17, 23)                    # solid dark slate
@@ -80,11 +86,12 @@ def main():
 
     pl = import_file(args.traj)
     nsrc = pl.source.num_frames
-    pl.modifiers.append(WrapPeriodicImagesModifier())    # PBC: fold every atom into the cell
+    pl.modifiers.append(UnwrapTrajectoriesModifier())    # continuous per-atom images, no teleport
 
     def _drop_pbc(frame, data):
-        # after wrapping, treat the rendered cell as finite so bonds are NOT drawn across the
-        # periodic faces (avoids misleading stubs); surface atoms simply show fewer bonds.
+        # unwrapped positions are absolute, not periodic images -- treat the rendered cell as
+        # finite so bonds use plain (non-minimum-image) distances and none are drawn across what
+        # used to be the periodic faces.
         data.cell_.pbc = (False, False, False)
     pl.modifiers.append(_drop_pbc)
 
@@ -114,7 +121,11 @@ def main():
 
     idx = np.linspace(0, nsrc - 1, args.nframes).round().astype(int)
     imgs = []
-    with tempfile.TemporaryDirectory() as td:
+    # the system ffmpeg is snap-confined: readable/writable only under $HOME, and not inside a
+    # dotdir (snap's home interface denies hidden paths), so use a plain visible subdirectory
+    home_tmp = os.path.expanduser("~/orb_render_tmp")
+    os.makedirs(home_tmp, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=home_tmp) as td:
         for k, f in enumerate(idx):
             az = math.radians(-25.0 + args.spin * k / max(1, len(idx) - 1))
             eye = center + dist * np.array([math.cos(tilt) * math.sin(az),
@@ -141,23 +152,29 @@ def main():
         for j, im in enumerate(loop):
             im.save(f"{td}/f{j:04d}.png")
 
-        subprocess.run(
-            ["ffmpeg", "-y", "-framerate", str(args.fps), "-i", f"{td}/f%04d.png",
-             "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
-             "-crf", "18", args.out + ".mp4"], check=True, capture_output=True)
-        print(f"wrote {args.out}.mp4  ({len(loop)} frames, {args.fps} fps)")
+        def _ffmpeg(cmd):
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode != 0:
+                raise RuntimeError(f"ffmpeg failed: {' '.join(cmd)}\n{r.stderr[-4000:]}")
 
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", f"{td}/f%04d.png", "-vf",
-             f"palettegen=max_colors={args.gif_colors}", f"{td}/pal.png"],
-            check=True, capture_output=True)
-        subprocess.run(
-            ["ffmpeg", "-y", "-framerate", str(args.fps), "-i", f"{td}/f%04d.png",
-             "-i", f"{td}/pal.png", "-lavfi",
-             f"fps={args.gif_fps},scale={args.gif_px}:-1:flags=lanczos [x]; "
-             f"[x][1:v] paletteuse=dither=bayer:bayer_scale=4", args.out + ".gif"],
-            check=True, capture_output=True)
-    import os
+        # ffmpeg (snap-confined) can't write into a path with a dotdir component (e.g. a
+        # ~/.coworker/... worktree) -- render into the plain tempdir, then plain-copy out.
+        mp4_tmp, gif_tmp = f"{td}/out.mp4", f"{td}/out.gif"
+        _ffmpeg(["ffmpeg", "-y", "-framerate", str(args.fps), "-i", f"{td}/f%04d.png",
+                 "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                 "-crf", "18", mp4_tmp])
+
+        _ffmpeg(["ffmpeg", "-y", "-i", f"{td}/f%04d.png", "-vf",
+                 f"palettegen=max_colors={args.gif_colors}", f"{td}/pal.png"])
+        _ffmpeg(["ffmpeg", "-y", "-framerate", str(args.fps), "-i", f"{td}/f%04d.png",
+                 "-i", f"{td}/pal.png", "-lavfi",
+                 f"fps={args.gif_fps},scale={args.gif_px}:-1:flags=lanczos [x]; "
+                 f"[x][1:v] paletteuse=dither=bayer:bayer_scale=4", gif_tmp])
+
+        import shutil
+        shutil.copyfile(mp4_tmp, args.out + ".mp4")
+        shutil.copyfile(gif_tmp, args.out + ".gif")
+    print(f"wrote {args.out}.mp4  ({len(loop)} frames, {args.fps} fps)")
     print(f"wrote {args.out}.gif  ({os.path.getsize(args.out + '.gif')/1e6:.1f} MB, {args.gif_px}px)")
 
 

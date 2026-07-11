@@ -4,14 +4,22 @@ Everything runs on **physical device 0** (single Blackhole card) with real Orb-v
 reference env is needed at MD time: `orb-v3-conservative-inf-omat`'s weight bundle is
 system-independent, and for a monatomic crystal the node feature is identical per atom, so it's
 tiled to any supercell size (see `orb_md_device.py` docstring). The reference env
-(`~/.ttatom_run/refenv`, `orb-models` 3.29) is only used for the CPU-reference parity and rendering.
+(`~/.ttatom_run/refenv`, `orb-models==0.5.5`) is only used for the CPU-reference parity and
+rendering; `ovito` (pip) is also needed there for rendering, neither ships by default:
 
-Two environments:
-- device : `~/.ttatom_run/env` (py3.10, ttnn + tt_atom) — MD, on-device parity
-- refenv : `~/.ttatom_run/refenv` (py3.11, orb_models + ovito) — CPU reference, lattice, render
+    ~/.ttatom_run/refenv/bin/pip install 'orb-models==0.5.5' ovito
 
-    export TT_METAL_HOME=/home/moritz/tt-metal
-    WT=/home/moritz/.coworker/wt/tt-atom-orb-social-post-polish     # tt-atom checkout (Orb port)
+Two environments (both py3.10 on qb1/tt-quietbox):
+- device : `~/.ttatom_run/env` (ttnn + tt_atom) — MD, on-device parity
+- refenv : `~/.ttatom_run/refenv` (orb_models + ovito) — CPU reference, lattice, render
+
+    WT=/home/ttuser/.coworker/wt/tt-atom-orb-social-post-polish     # tt-atom checkout (Orb port)
+
+## 0. Golden weight bundle (once; the node_feat row tiles to any supercell size)
+
+    mkdir -p ~/.ttatom_run/goldens_real
+    cd $WT && ~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py --ckpt conservative-inf-omat \
+        --system bulk --out ~/.ttatom_run/goldens_real/si_supercell_orb.npz
 
 ## 1. On-device MD — writes the trajectory + per-step energy/temperature log
 
@@ -47,16 +55,19 @@ the forward+backward is trace-captured once and replayed. Scale knobs: `--nx/ny/
         --px 720 --fps 30 --nframes 130 --spin 150 --gif-px 340 --gif-fps 12
 
 Shaded spheres (Jmol Si colour), diamond bond network, periodic cell box, ambient occlusion +
-shadows; coordinates wrapped into the cell (PBC), bonds not drawn across periodic faces; gentle
-turntable, boomerang loop, composited caption. MP4 720² (posting), GIF downscaled (preview).
-The GIF may need a final size pass from the MP4 (dark AO background inflates the palette):
+shadows; coordinates are *unwrapped* (continuous per-atom images via OVITO's
+`UnwrapTrajectoriesModifier`, not re-folded into the cell every frame) so no atom teleports across
+a periodic face — valid because the crystal is solid at 900 K over 1.5 ps (no diffusion). Bonds use
+the same unwrapped positions, so none are drawn across periodic faces either. Gentle turntable,
+boomerang loop, composited caption. MP4 720² (posting), GIF downscaled (preview).
 
-    ffmpeg -y -i orb_si_md.mp4 -vf "fps=12,scale=340:-1:flags=lanczos,palettegen=max_colors=72:stats_mode=diff" /tmp/pal.png
-    ffmpeg -y -i orb_si_md.mp4 -i /tmp/pal.png -lavfi "fps=12,scale=340:-1:flags=lanczos [x];[x][1:v] paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" orb_si_md.gif
+Note: the system `ffmpeg` here is snap-confined — it can only read/write under `$HOME`, and not
+inside a dotdir (so never point it at a path under `~/.coworker/...` or `/tmp`); the script already
+renders into a plain `~/orb_render_tmp/` and copies the final MP4/GIF out.
 
 ## Artifacts
-- `orb_si_md.mp4` — 720², 30 fps, 7.4 MB   (primary, for the post)
-- `orb_si_md.gif` — 340px, 12 fps, 6 MB    (README/preview)
+- `orb_si_md.mp4` — 720², 30 fps, ~6.9 MB   (primary, for the post)
+- `orb_si_md.gif` — 340px, 12 fps, ~6.7 MB  (README/preview)
 - `si216_final.extxyz` — the on-device MD trajectory (252 frames)
 - `md_series.csv` — per-step energy/temperature; `energy_temp.png` — stability plot
 - `parity.json`, `parity_ref.npz` — on-device vs orb-models CPU-reference parity
