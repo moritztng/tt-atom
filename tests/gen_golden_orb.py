@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 
 import numpy as np
@@ -50,6 +51,46 @@ def build_short_contact():
                 pbc=False)
 
 
+def build_molecule():
+    """Baseline closed-shell molecule (water, charge=0, spin=1/singlet) -- aperiodic, same
+    charge/spin convention as the UMA omol golden (tests/gen_golden_real.py --system molecule)."""
+    from ase.build import molecule
+
+    atoms = molecule("H2O")
+    atoms.info.update(charge=0, spin=1)
+    return atoms
+
+
+def build_molecule_charged():
+    """NH4+ (ammonium cation, charge=+1, spin=1/singlet) -- exercises OrbMol's charge
+    conditioning with a nonzero total charge. Approximate tetrahedral geometry (not relaxed;
+    Orb, like UMA, takes an arbitrary input geometry, not just equilibrium structures)."""
+    from ase import Atoms
+
+    r = 1.02
+    d = r / math.sqrt(3)
+    positions = [[0.0, 0.0, 0.0], [d, d, d], [d, -d, -d], [-d, d, -d], [-d, -d, d]]
+    atoms = Atoms("NH4", positions=positions)
+    atoms.info.update(charge=1, spin=1)
+    return atoms
+
+
+def build_molecule_openshell():
+    """Methyl radical (CH3, charge=0, spin=2/doublet -- one unpaired electron) -- exercises
+    OrbMol's spin conditioning with a nonzero-multiplicity open-shell system. Planar D3h
+    geometry (approximate, not relaxed)."""
+    from ase import Atoms
+
+    r = 1.079
+    positions = [[0.0, 0.0, 0.0]]
+    for k in range(3):
+        theta = 2 * math.pi * k / 3
+        positions.append([r * math.cos(theta), r * math.sin(theta), 0.0])
+    atoms = Atoms("CH3", positions=positions)
+    atoms.info.update(charge=0, spin=2)
+    return atoms
+
+
 def build_si_supercell():
     """A larger periodic cell (Si diamond, (3,2,2) => 32 atoms) at production scale, big enough
     that periodic self-images (an atom connecting to its own image in a neighboring cell) occur
@@ -62,12 +103,18 @@ def build_si_supercell():
     return atoms
 
 
-SYSTEMS = {"bulk": build_si, "short_contact": build_short_contact, "supercell": build_si_supercell}
+SYSTEMS = {
+    "bulk": build_si, "short_contact": build_short_contact, "supercell": build_si_supercell,
+    "molecule": build_molecule, "molecule_charged": build_molecule_charged,
+    "molecule_openshell": build_molecule_openshell,
+}
 
 
 CKPTS = {
     "conservative-inf-omat": pretrained.orb_v3_conservative_inf_omat,
     "direct-20-omat": pretrained.orb_v3_direct_20_omat,
+    "conservative-omol": pretrained.orb_v3_conservative_omol,
+    "direct-omol": pretrained.orb_v3_direct_omol,
 }
 
 
@@ -101,6 +148,8 @@ def main():
     for i, blk in enumerate(gns.gnn_stacks):
         handles.append(blk.register_forward_hook(save_out(f"gnn{i}")))
     handles.append(gns._decoder.register_forward_hook(save_out("decoder")))
+    if gns.conditioner is not None:
+        handles.append(gns.conditioner.register_forward_hook(save_out("conditioner")))
 
     is_direct = args.ckpt.startswith("direct")
     result = orbff.predict(graph, split=False)
@@ -132,7 +181,8 @@ def main():
         num_bases=gns.rbf_transform.num_bases,
         outer_product_with_cutoff=gns.outer_product_with_cutoff,
         checkpoint=args.ckpt,
-        task="omat",
+        task="omol" if "omol" in args.ckpt else "omat",
+        has_charge_spin_cond=gns.conditioner is not None,
     )
     saved["config"] = np.frombuffer(json.dumps(cfg).encode(), dtype=np.uint8)
 
@@ -142,6 +192,9 @@ def main():
     saved["in@receivers"] = npy(graph.receivers)
     saved["in@vectors"] = npy(graph.edge_features["vectors"])
     saved["in@cell"] = npy(graph.system_features["cell"])
+    if gns.conditioner is not None:
+        saved["in@charge"] = npy(graph.system_features["total_charge"])
+        saved["in@spin"] = npy(graph.system_features["total_spin"])
 
     saved["host@node_feat"] = npy(node_feat)
     saved["host@edge_feat"] = npy(edge_feat)
@@ -168,6 +221,9 @@ def main():
     if orbff.pair_repulsion:
         for k, v in orbff.pair_repulsion_fn.state_dict().items():
             saved[f"w@pair_repulsion.{k}"] = npy(v)
+    if gns.conditioner is not None:
+        for k, v in gns.conditioner.state_dict().items():
+            saved[f"w@conditioner.{k}"] = npy(v)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     np.savez(args.out, **saved)
