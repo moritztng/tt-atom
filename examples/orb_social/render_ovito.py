@@ -113,6 +113,11 @@ def main():
     ap.add_argument("--wrap", action="store_true",
                     help="liquid mode: fold atoms into the cell (a melt diffuses, so unwrapping "
                          "would fly atoms out of frame), draw a subtle box, non-periodic bonds")
+    ap.add_argument("--wrap-shift", type=float, default=0.13,
+                    help="wrap mode: rigidly translate the system by this fraction of the cell "
+                         "body-diagonal before folding, so lattice atoms sitting exactly on a "
+                         "periodic face (diamond has sites at frac 0) do not flicker across the "
+                         "box while the solid still vibrates; invisible in the disordered liquid")
     ap.add_argument("--cap-title", default="Orb-v3  ·  216-atom silicon crystal")
     ap.add_argument("--cap-line1", default="NVT molecular dynamics, 900 K")
     ap.add_argument("--cap-line2", default="real conservative forces on Tenstorrent Blackhole")
@@ -123,7 +128,16 @@ def main():
 
     if args.wrap:
         # a melt diffuses -- fold every atom back into the periodic cell each frame (the standard,
-        # correct way to view a liquid), so nothing drifts out of frame.
+        # correct way to view a liquid), so nothing drifts out of frame. First rigidly shift the
+        # whole system along the cell body-diagonal so no lattice site sits on a periodic face
+        # (diamond has atoms at frac 0); otherwise those atoms would flicker across the box as the
+        # solid vibrates. A rigid translation is physically inert and invisible in the liquid.
+        shift_frac = args.wrap_shift
+        def _center(frame, data):
+            cell = np.array(data.cell)[:, :3]           # 3x3 cell vectors (columns)
+            data.particles_.positions_[...] = (
+                data.particles.positions + cell.sum(axis=1) * shift_frac)
+        pl.modifiers.append(_center)
         pl.modifiers.append(WrapPeriodicImagesModifier())
     else:
         # a solid only vibrates -- unwrap to continuous images so atoms near a face don't teleport.
