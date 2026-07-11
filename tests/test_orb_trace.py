@@ -16,7 +16,6 @@ Any individual golden absent -> that case auto-skips (module-level goldens are i
 """
 from __future__ import annotations
 
-import os
 import pathlib
 
 import pytest
@@ -31,16 +30,6 @@ DIRECT = {
     "toy": GOLDENS / "si_omat_orb_direct20.npz",
     "supercell": GOLDENS / "si_supercell_orb_direct20.npz",
 }
-
-
-@pytest.fixture(scope="module")
-def device():
-    from tt_atom.device import open_device
-    import ttnn
-
-    dev = open_device(int(os.environ.get("TT_VISIBLE_DEVICES", "0")), trace_region_size=200_000_000)
-    yield dev
-    ttnn.close_device(dev)
 
 
 def _build_modules(gw, device):

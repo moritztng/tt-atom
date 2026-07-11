@@ -58,16 +58,6 @@ def gw():
     return OrbWeights.load(REAL_GOLDEN)
 
 
-@pytest.fixture(scope="module")
-def device():
-    from tt_atom.device import open_device
-    import ttnn
-
-    dev = open_device(int(os.environ.get("TT_VISIBLE_DEVICES", "0")))
-    yield dev
-    ttnn.close_device(dev)
-
-
 def test_radius_graph_matches_orb_neighbor_list(gw):
     """The from-scratch reconstruction (UMA's ``radius_graph`` + Orb's sender/receiver swap)
     must reproduce the exact edge SET real ``orb-models`` built (order-independent -- both graphs
