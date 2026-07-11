@@ -165,7 +165,8 @@ def backbone_bw(encoder, layers, ehead, graph):
 
 
 def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers, atomic_numbers,
-                      node_feat, cell_shift=None, r_max=6.0, num_bases=8, compute_stress=False):
+                      node_feat, cell_shift=None, r_max=6.0, num_bases=8, compute_stress=False,
+                      cond_nodes=None):
     """Conservative energy + analytic forces ``F = -dE/dpos`` for one system
     (``orb-v3-conservative-inf-omat``). One device forward at the current geometry, one device
     reverse VJP, and a host ``torch.autograd.grad`` finish through the differentiable edge
@@ -179,6 +180,12 @@ def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers
     (``dE/dstrain`` in the same raw/normalized space as ``forces``) -- the caller divides by the
     cell volume and applies the same denormalize scale as forces (see
     ``host_conservative_force_denormalize``) to get the physical stress tensor.
+
+    ``cond_nodes`` (optional, ``[N, latent_dim]``, ``host_charge_spin_embedding``) is OrbMol's
+    charge/spin conditioning input -- forwarded to ``OrbGraphContext`` unchanged. It has no
+    ``pos``/``strain`` dependence, so it needs no adjoint of its own: the backward algebra below
+    (``backbone_bw``/``attn_layer_bw``) is unmodified, since the conditioning term is just an
+    additive shift on ``nodes`` with an identity Jacobian back to this function's own inputs.
     """
     import ttnn
 
@@ -192,7 +199,7 @@ def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers
 
     N = atomic_numbers.shape[0]
     graph = OrbGraphContext(device, senders=senders, receivers=receivers,
-                            cutoff=cutoff.detach().float(), num_nodes=N)
+                            cutoff=cutoff.detach().float(), num_nodes=N, cond_nodes=cond_nodes)
 
     node_dev = _to_dev(node_feat, device, ttnn.bfloat16)
     edge_dev = _to_dev(edge_feat.detach().float(), device, ttnn.bfloat16)
