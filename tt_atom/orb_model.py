@@ -21,9 +21,38 @@ Reference: ``orb_models.forcefield.gns.py`` (``Encoder`` / ``AttentionInteractio
 """
 from __future__ import annotations
 
+import math
+
 import torch
 
 from .device import compute_kernel_config
+
+
+def host_charge_spin_embedding(weights, charge: float, spin: float, n_node: int,
+                               latent_dim: int) -> torch.Tensor:
+    """OrbMol's ``nn_util.ChargeSpinConditioner`` (``sin_emb`` type, the only embedding type any
+    public Orb checkpoint uses): a fixed, closed-form embedding of the per-system total
+    charge/spin from real ``conditioner.{charge,spin}_embedding.W`` weights, broadcast to every
+    node -- mirrors ``ChargeSpinConditioner.forward``'s ``combined_emb.repeat_interleave
+    (batch.n_node)``. Zero learned matmuls, just sin/cos of a random frequency projection --
+    computed on host and uploaded once per topology, exactly like UMA's analogous MoLE-routing
+    feature (``csd_embedding``, ``tt_atom/geometry.py``) and this port's own fixed per-edge terms
+    (``host_cutoff``, ``orb_geometry.py``). Absent for checkpoints with no charge/spin
+    conditioning (the omat checkpoints) -- callers gate on ``"conditioner.charge_embedding.W" in
+    weights``.
+    """
+    def _emb(value, w, is_spin):
+        x_proj = float(value) * w * 2.0 * math.pi
+        emb = torch.cat([torch.sin(x_proj), torch.cos(x_proj)])
+        if is_spin and value == 0:
+            emb = torch.zeros_like(emb)
+        return emb
+
+    charge_emb = _emb(charge, weights["conditioner.charge_embedding.W"], False)
+    spin_emb = _emb(spin, weights["conditioner.spin_embedding.W"], True)
+    combined = torch.cat([charge_emb, spin_emb])
+    assert combined.shape[0] == latent_dim, (combined.shape, latent_dim)
+    return combined.unsqueeze(0).expand(n_node, -1).contiguous()
 
 
 def host_cutoff(r: torch.Tensor, r_max: float = 6.0) -> torch.Tensor:
@@ -117,8 +146,17 @@ class Encoder:
 
 
 class AttentionInteractionLayer:
-    """``gns.AttentionInteractionNetwork`` for the omat config: no conditioning, sigmoid
-    attention gate (not softmax), distance-cutoff-scaled attention. One message-passing step.
+    """``gns.AttentionInteractionNetwork``: sigmoid attention gate (not softmax),
+    distance-cutoff-scaled attention. One message-passing step.
+
+    OrbMol's charge/spin conditioning (``has_charge_spin_cond=True``, absent for the omat
+    checkpoints) is node-only and additive (``conditioning=("additive", "none")`` -- Orb never
+    ships edge conditioning): each layer owns its own ``_cond_node_proj`` Linear and adds
+    ``_cond_node_proj(cond_nodes)`` into ``nodes`` *before* everything else in the layer (gather,
+    attention, residual) -- ``graph.cond_nodes`` supplies the same (per-system, node-broadcast)
+    embedding to every layer, ``host_charge_spin_embedding`` computes it once on host. Detected
+    from the weight bundle (``"{prefix}._cond_node_proj.weight" in weights``); zero behavior
+    change for checkpoints without it.
     """
 
     def __init__(self, weights, prefix, device, *, latent_dim, hidden_dim, fast=False):
@@ -137,6 +175,12 @@ class AttentionInteractionLayer:
         self.send_attn_w = _to_dev(weights[f"{prefix}._send_attn.weight"].T.contiguous(), device, wdtype)
         self.send_attn_b = _to_dev(weights[f"{prefix}._send_attn.bias"], device, wdtype)
 
+        self.has_cond = f"{prefix}._cond_node_proj.weight" in weights
+        if self.has_cond:
+            self.cond_node_proj_w = _to_dev(weights[f"{prefix}._cond_node_proj.weight"].T.contiguous(),
+                                            device, wdtype)
+            self.cond_node_proj_b = _to_dev(weights[f"{prefix}._cond_node_proj.bias"], device, wdtype)
+
     def __call__(self, nodes, edges, graph):
         """``graph`` supplies ``senders``/``receivers`` gather tables (ttnn embedding-ready,
         [E] row-major uint32) and ``cutoff`` ([E,1] tile, host-precomputed envelope), plus the
@@ -145,6 +189,11 @@ class AttentionInteractionLayer:
         from . import scatter as _sc
 
         E, N, C = graph.E, graph.N, self.C
+
+        if self.has_cond and graph.cond_nodes is not None:
+            cond = ttnn.linear(graph.cond_nodes, self.cond_node_proj_w, bias=self.cond_node_proj_b,
+                               compute_kernel_config=self.kcfg)
+            nodes = ttnn.add(nodes, cond)
 
         ra_lin = ttnn.linear(edges, self.receive_attn_w, bias=self.receive_attn_b,
                              compute_kernel_config=self.kcfg)
@@ -179,9 +228,15 @@ class AttentionInteractionLayer:
 class OrbGraphContext:
     """Host-precomputed, device-resident geometric terms for one fixed topology (mirrors
     ``tt_atom.model.GraphContext``, but for Orb's plain scatter -- no Wigner rotation buffers).
+
+    ``cond_nodes`` (optional, ``[N, latent_dim]`` host tensor from ``host_charge_spin_embedding``)
+    is OrbMol's charge/spin conditioning input -- a fixed function of (charge, spin), not of
+    position, so like ``cutoff`` it belongs on the graph context and is uploaded once per system.
+    ``None`` for checkpoints/systems without charge/spin conditioning (every ``AttentionInteractionLayer``
+    checks ``graph.cond_nodes is not None`` before using it).
     """
 
-    def __init__(self, device, *, senders, receivers, cutoff, num_nodes):
+    def __init__(self, device, *, senders, receivers, cutoff, num_nodes, cond_nodes=None):
         import ttnn
         from . import scatter as _sc
 
@@ -190,6 +245,7 @@ class OrbGraphContext:
         self.senders_idx = _to_dev(senders.to(torch.int32), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
         self.receivers_idx = _to_dev(receivers.to(torch.int32), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
         self.cutoff = _to_dev(cutoff, device, ttnn.bfloat16)
+        self.cond_nodes = _to_dev(cond_nodes, device, ttnn.bfloat16) if cond_nodes is not None else None
 
         tgt_g, self.Dmax_t = _sc.build_gather(receivers, num_nodes, E)
         src_g, self.Dmax_s = _sc.build_gather(senders, num_nodes, E)

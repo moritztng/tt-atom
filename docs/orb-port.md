@@ -6,7 +6,8 @@ existing UMA/eSEN support. The initial pass (encoder + full 5-layer backbone + e
 checkpoints, direct-20's forces) merged to `master`; this doc's "Completed since" / "Still open"
 sections track a follow-up completion pass (branch `wk/tt-atom-orb-completion`). Purely additive:
 UMA code paths (`tt_atom/{model,norm,edgewise,so2,rotation,grid,spectral}.py`, `custom_kernels/`)
-are untouched throughout.
+are untouched throughout. A later pass ("OrbMol" below, branch `wk/tt-atom-orbmol-port`) extends
+this same backbone to Orbital Materials' molecular/charge+spin-aware checkpoints.
 
 ## Architecture verdict: Orb is NOT equivariant — none of the SO(3) kernels transfer
 
@@ -324,6 +325,76 @@ otherwise: **no `--fast` CLI flag added for Orb.** The `fast=` kwarg is left thr
 cheaply reproducible; nothing calls it with `fast=True` outside `tests/test_orb_bf8_fast.py` and
 the benchmark.
 
+## OrbMol: the OMol25-trained, charge/spin-conditioned checkpoints (branch `wk/tt-atom-orbmol-port`)
+
+[OrbMol](https://huggingface.co/Orbital-Materials/OrbMol) is Orbital Materials' molecular/
+bio-adjacent model -- `orb-v3-conservative-omol` / `orb-v3-direct-omol` in `orb-models==0.5.5`
+(`pretrained.orb_v3_conservative_omol`/`orb_v3_direct_omol`; public S3, no gating). Confirmed by
+reading `pretrained.py`: **same `MoleculeGNS` backbone** (`Encoder`, 5 `AttentionInteractionNetwork`
+layers, `latent_dim=256`, `rms_norm`, `silu`) as the ported omat checkpoints, so `Encoder`/
+`EnergyHead`/`ForceHead`/`host_zbl_{energy,forces}`/`orb_forces.energy_and_forces` all reuse
+unmodified. Two real differences: `has_charge_spin_cond=True` (below) and `has_stress=False` (no
+`StressHead` weights in the checkpoint -- consistent with "stress isn't meaningful for isolated
+molecules", nothing to port). `system_config` (`radius=6.0, max_num_neighbors=120`) and molecules
+being aperiodic (`pbc=False`) are just config/data, not new code -- `tt_atom/geometry.py`'s
+`radius_graph` already takes the aperiodic branch whenever `pbc` is all-`False`, and UMA's own
+`bundle_cache`/`disjoint`/`calculator` infra already default to `task="omol"` (aperiodic molecules
+with charge/spin) -- this port needed no changes there.
+
+**Charge/spin conditioning** (`nn_util.ChargeSpinConditioner`, read from `gns.py`/`nn_util.py`
+byte-for-byte): a **node-only, additive** feature, unrelated to UMA's MoLE-baked-at-merge-time
+mechanism (Orb has no MoE at all) -- each of the 5 interaction layers owns its own
+`_cond_node_proj` `Linear(256,256)` and computes `nodes = nodes + _cond_node_proj(cond_nodes)` as
+the *very first* thing in its forward (before the sender/receiver gather *and* before the
+residual add at the end -- both then use the conditioned `nodes`), where `cond_nodes` is one
+`sin_emb`-type embedding (`ChargeSpinEmbedding`, closed-form sin/cos of a learned frequency `W`,
+zero matmuls, verbatim in `nn_util.py`) of the system's total charge + spin, broadcast to every
+node. Ported as `host_charge_spin_embedding` (`tt_atom/orb_model.py`) -- computed on host exactly
+like this port's other fixed per-system/per-edge terms (`host_cutoff`, the RBF/spherical-harmonic
+edge features) -- and `graph.cond_nodes` (`OrbGraphContext`, optional, `None` for the omat
+checkpoints with zero behavior change), consumed by `AttentionInteractionLayer` which
+auto-detects conditioning from the weight bundle (`"{prefix}._cond_node_proj.weight" in weights`).
+Edge conditioning is unused (`ChargeSpinConditioner(latent_dim)`'s default `emits_edge_embs=False`
+in every public checkpoint) so `AttentionInteractionLayer` only implements the node path.
+
+**Forces need no backward changes.** `cond_nodes` is a fixed function of (charge, spin), not of
+`pos` -- adding it to `nodes` is an identity-Jacobian shift, so `orb_forces.py`'s existing
+hand-written VJPs (`attn_layer_bw`/`backbone_bw`) are correct unmodified; `energy_and_forces`
+only gained a passthrough `cond_nodes=` kwarg to reach `OrbGraphContext`. Verified, not just
+argued: the conservative checkpoint's on-device analytic forces (below) match the real
+`torch.autograd` oracle to the same bar as the omat port's own force test.
+
+**Real on-device parity** (`tests/test_orb_omol_realweight.py`, `TT_VISIBLE_DEVICES=0`, bf16,
+real weights, real `orb-models` CPU oracle), three small aperiodic molecules exercising a
+closed-shell baseline, a nonzero total charge, and a nonzero spin multiplicity (open-shell):
+
+| system | charge | spin | checkpoint | energy rel err | forces PCC | forces MAE (eV/Å) |
+|---|---|---|---|---|---|---|
+| H2O | 0 | 1 | conservative | 1.59e-06 | 0.999741 | 0.0062 |
+| H2O | 0 | 1 | direct | 1.66e-06 | 0.997977 | 0.0103 |
+| NH4+ | +1 | 1 | conservative | 4.55e-06 | 0.994645 | 0.0074 |
+| NH4+ | +1 | 1 | direct | 3.86e-05 | 0.994425 | 0.0073 |
+| CH3• (radical) | 0 | 2 | conservative | 9.23e-06 | 0.968975 | 0.0041 |
+| CH3• (radical) | 0 | 2 | direct | 1.25e-05 | 0.933058 | 0.0057 |
+
+Backbone node-embedding PCC is >0.9998 through all 5 conditioned layers for every system/
+checkpoint (the conditioning wiring itself is not the source of any error above). The
+open-shell radical's forces PCC is visibly lower (0.93-0.97) despite its MAE being the *smallest*
+of the three systems (0.004-0.006 eV/Å, vs 0.006-0.01 for the other two) -- its oracle `|F|max`
+is ~0.03-0.05 eV/Å, an order of magnitude smaller than the other systems (~0.09-0.48), so the
+same absolute bf16 noise floor produces a much lower correlation coefficient. Not a correctness
+issue with the conditioning path (energies, which have no such magnitude sensitivity, are the
+tightest of all six rows here); a PCC bar tuned to that system's own signal scale, same reasoning
+as this doc's existing edge-stream/ZBL PCC bars. `host_charge_spin_embedding` itself matches the
+real `ChargeSpinConditioner`'s captured activation to 5.96e-08 max abs error for all three systems
+(bit-level, not statistical, agreement -- it's a closed-form host computation, no device
+rounding involved).
+
+**Not ported (genuinely out of scope, not deferred):** `StressHead` (checkpoint has none, nothing
+to port); disjoint-union batching for `cond_nodes` (the existing `EnergyHead.batch` pattern
+extends trivially -- one `cond_nodes` row per system instead of one globally -- but wasn't asked
+for and has no test coverage yet, so it isn't claimed here).
+
 ## Reproducing
 
 ```bash
@@ -340,9 +411,20 @@ the benchmark.
 ~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py --ckpt conservative-inf-omat --system supercell \
     --out ~/.ttatom_run/goldens_real/si_supercell_orb.npz
 
+# 1c. OrbMol goldens: three small aperiodic molecules (baseline/charged/open-shell), both
+# checkpoints
+for ck in conservative-omol direct-omol; do
+  for sys in molecule molecule_charged molecule_openshell; do
+    tag=$(echo $ck | cut -d- -f1)
+    ~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py --ckpt $ck --system $sys \
+        --out ~/.ttatom_run/goldens_real/${sys}_omol_${tag}.npz
+  done
+done
+
 # 2. on-device PCC verification -- ttnn env (numpy<2)
 TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python -m pytest \
     tests/test_orb_realweight.py tests/test_orb_direct_realweight.py \
     tests/test_orb_forces_realweight.py tests/test_orb_zbl_forces.py \
-    tests/test_orb_periodic_realweight.py tests/test_orb_disjoint_batch.py -q -s
+    tests/test_orb_periodic_realweight.py tests/test_orb_disjoint_batch.py \
+    tests/test_orb_omol_realweight.py -q -s
 ```
