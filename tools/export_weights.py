@@ -80,7 +80,11 @@ def export_uma_s_1(args):
                num_layers=len(bb.blocks), hidden_channels=bb.hidden_channels,
                num_distance_basis=int(bb.distance_expansion.offset.numel()),
                cutoff=float(bb.cutoff), ff_type="spectral", act_type="gate",
-               norm_type="rms_norm_sh", chg_spin_emb_type=bb.chg_spin_emb_type, task=args.task)
+               norm_type="rms_norm_sh", chg_spin_emb_type=bb.chg_spin_emb_type, task=args.task,
+               # charge_balanced_channels (uma-s-1.2): l=0 scalar channels re-balanced to the
+               # system charge after each block. cs==ce (default) => disabled (uma-s-1).
+               charge_channel_start=int(getattr(bb, "charge_channel_start", 0)),
+               charge_channel_end=int(getattr(bb, "charge_channel_end", 0)))
 
     saved = {"config": np.frombuffer(json.dumps(cfg).encode(), dtype=np.uint8)}
     for k, v in bb.state_dict().items():

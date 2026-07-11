@@ -49,9 +49,13 @@ def _worker(device_id, weights_path, fast, in_q, out_q):
         N, E = Z.shape[0], ei.shape[1]
         se = csd_embedding(w, torch.tensor([0.0]), torch.tensor([0.0]), C)[torch.zeros(N, dtype=torch.long)]
         t = geo(pos, Z, ei, se)
+        # build the per-system mean operator when the bundle balances charge channels (uma-s-1.2);
+        # else node_embedding would deref a None node_meanM. MultiCard evaluates one neutral system
+        # per worker, so the (1/N) mean + balance_add=0 default is exact.
         graph = GraphContext(dev, edge_index=ei, wigner=t["wigner"].detach(),
                              wigner_inv=t["wigner_inv"].detach(), x_edge=t["x_edge"].detach(),
-                             edge_envelope=t["edge_envelope"].detach(), num_nodes=N, fast=fast)
+                             edge_envelope=t["edge_envelope"].detach(), num_nodes=N, fast=fast,
+                             build_mean_op=(bb.ce > bb.cs))
         se3 = ttnn.from_torch(se.reshape(N, 1, C), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=dev)
         xi = ttnn.from_torch(t["x_init"].detach(), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=dev)
         _, energy = bb(xi, graph, se3)

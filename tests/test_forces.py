@@ -74,3 +74,9 @@ def test_backbone_vjp(golden, device):
             g = gc
         mirror.radial_mlp(xel, w, conv.rad_prefix).backward(g)
     assert pcc(xel.grad, lv["xe"].grad) >= 0.98
+
+    # device radial finish: acc["x_edge"] (the on-device RadialMLP.bw path) must match the fp64
+    # oracle. This is the device backward the perf pass introduced; a bf16 radial VJP mis-directs
+    # forces on OOD geometries (regressed el_Sn_cmp: 230 meV/A, PCC 0.35), so hold it tight —
+    # the default fp32 backward matches the oracle, a bf16 one would fail this.
+    assert pcc(ttnn.to_torch(acc["x_edge"]).float(), lv["xe"].grad) >= 0.999

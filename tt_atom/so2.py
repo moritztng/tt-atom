@@ -96,6 +96,18 @@ class RadialMLP:
         n4 = weights[f"{prefix}.net.4.weight"].shape[0]
         self.ln1w_b = _to_dev(weights[f"{prefix}.net.1.weight"].reshape(1, n1), device, ttnn.bfloat16)
         self.ln4w_b = _to_dev(weights[f"{prefix}.net.4.weight"].reshape(1, n4), device, ttnn.bfloat16)
+        # fp32 weight copies for the (default, non-fused) analytic-force backward. The radial MLP is
+        # tiny (edge-channel hidden), so its VJP runs in fp32 for a few % of one block's cost; a
+        # fully-bf16 backward mis-directs forces on out-of-distribution geometries (compressed heavy
+        # cells: el_Sn_cmp 230 meV/A, PCC 0.35 vs the fp64 oracle). Mirrors the fp32-accurate VJPs the
+        # SH-norm (rmsnorm_bw) and gate (gate_bw) backwards already use. w6_f mirrors the *transformed*
+        # w6 (out_scale + dup_index), so the backward matches the forward.
+        f32 = ttnn.float32
+        self.w0_f = _to_dev(weights[f"{prefix}.net.0.weight"].T.contiguous(), device, f32)
+        self.w3_f = _to_dev(weights[f"{prefix}.net.3.weight"].T.contiguous(), device, f32)
+        self.w6_f = _to_dev(w6.T.contiguous(), device, f32)
+        self.ln1w_b_f = _to_dev(weights[f"{prefix}.net.1.weight"].reshape(1, n1), device, f32)
+        self.ln4w_b_f = _to_dev(weights[f"{prefix}.net.4.weight"].reshape(1, n4), device, f32)
         self.kcfg = compute_kernel_config()
 
     def __call__(self, x_edge):
@@ -145,21 +157,33 @@ class RadialMLP:
     def bw(self, g_out):
         """Adjoint of the radial MLP: given ``g_out`` at the output, return g wrt ``x_edge``.
         Mirrors :meth:`__call__` on device (transpose-matmuls + hand-written LN/SiLU backward),
-        replacing the host ``torch.autograd`` radial finish (~100 ms at N=128 on the force path)."""
+        replacing the host ``torch.autograd`` radial finish (~100 ms at N=128 on the force path).
+
+        The default path runs in fp32 (upcast cache/g_out + fp32 weight copies): a fully-bf16 radial
+        backward mis-directs forces on OOD compressed heavy cells (el_Sn_cmp 230 meV/A). The opt-in
+        ``fused_ln_bw`` kernel is bf16-only, so that path keeps bf16 (a documented precision tradeoff
+        for the fused kernel)."""
         ttnn = self.ttnn
         from .forces import silu_bw, _mm
         a0, n1, a3, n4 = self._cache
-        g_s2 = _mm(ttnn, g_out, self.w6, self.kcfg)        # [E, hidden]
-        if _FUSED_LNBW and a3.shape[-1] % 32 == 0:
-            g_a3 = self._silu_ln_bw(g_s2, n4, a3, self.ln4w_b)   # one kernel: silu-bw + LN-bw
-        else:
-            g_a3 = self._ln_bw(silu_bw(ttnn, g_s2, n4), a3, self.ln4w_b)
-        g_s1 = _mm(ttnn, g_a3, self.w3, self.kcfg)
-        if _FUSED_LNBW and a0.shape[-1] % 32 == 0:
-            g_a0 = self._silu_ln_bw(g_s1, n1, a0, self.ln1w_b)
-        else:
-            g_a0 = self._ln_bw(silu_bw(ttnn, g_s1, n1), a0, self.ln1w_b)
-        return _mm(ttnn, g_a0, self.w0, self.kcfg)         # [E, x_edge dim]
+        if _FUSED_LNBW:
+            g_s2 = _mm(ttnn, g_out, self.w6, self.kcfg)        # [E, hidden] (bf16 fused-kernel path)
+            g_a3 = (self._silu_ln_bw(g_s2, n4, a3, self.ln4w_b) if a3.shape[-1] % 32 == 0
+                    else self._ln_bw(silu_bw(ttnn, g_s2, n4), a3, self.ln4w_b))
+            g_s1 = _mm(ttnn, g_a3, self.w3, self.kcfg)
+            g_a0 = (self._silu_ln_bw(g_s1, n1, a0, self.ln1w_b) if a0.shape[-1] % 32 == 0
+                    else self._ln_bw(silu_bw(ttnn, g_s1, n1), a0, self.ln1w_b))
+            return _mm(ttnn, g_a0, self.w0, self.kcfg)
+        # default: fp32 backward (bf16 STORAGE of the cache is fine; the bf16 arithmetic is not)
+        f32 = ttnn.float32
+        g_out = ttnn.typecast(g_out, f32)
+        a0 = ttnn.typecast(a0, f32); n1 = ttnn.typecast(n1, f32)
+        a3 = ttnn.typecast(a3, f32); n4 = ttnn.typecast(n4, f32)
+        g_s2 = _mm(ttnn, g_out, self.w6_f, self.kcfg)      # [E, hidden]
+        g_a3 = self._ln_bw(silu_bw(ttnn, g_s2, n4), a3, self.ln4w_b_f)
+        g_s1 = _mm(ttnn, g_a3, self.w3_f, self.kcfg)
+        g_a0 = self._ln_bw(silu_bw(ttnn, g_s1, n1), a0, self.ln1w_b_f)
+        return _mm(ttnn, g_a0, self.w0_f, self.kcfg)       # [E, x_edge dim], fp32
 
 
 class SO2Convolution:

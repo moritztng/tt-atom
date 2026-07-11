@@ -466,11 +466,18 @@ def backbone_bw(bb, graph, node_emb):
     """Full reverse pass of the backbone+energy head. Returns a dict of device adjoints
     (g_x_init, g_wigner, g_wigner_inv, g_envelope, g_x_edge). ``g_x_edge`` is finished on device
     (radial-MLP backward), so the host only reads back adjoints and drives the geometric autograd."""
+    from .model import balance_l0
+
     ttnn = bb.ttnn
     acc = {"rot_fwd": None, "rot_inv": None, "envelope": None, "g_rad": []}
     g = energy_bw(bb, node_emb)
     g = rmsnorm_bw(bb.final_norm, g)
+    do_bal = bb.ce > bb.cs
     for blk in reversed(bb.blocks):
+        # balance_channels is self-adjoint (a projection I - mean); its VJP is the same op with
+        # zero target. It followed each block in the forward, so undo it before that block's VJP.
+        if do_bal:
+            g = balance_l0(bb.ttnn, g, graph.node_meanM, bb.cs, bb.ce, 0.0, bb.kcfg)
         g = block_bw(blk, graph, g, acc)
     acc["x_init"] = g
     # device edge-degree embedding backward: the node adjoint ``g`` is backpropped through the
@@ -486,8 +493,9 @@ def backbone_bw(bb, graph, node_emb):
     # with a captured device pass -- only a single [E, x_edge] readback remains on host.
     g_xe = None
     for conv, g_rad in acc["g_rad"]:
-        # radial backward runs bf16 (small hidden=128; the fused_ln_bw kernel is bf16-only and the
-        # x_edge adjoint feeds forces -> keep precision). Cast the bf8-edge g_rad back to bf16 here.
+        # radial backward: rad.bw runs in fp32 by default (small hidden=128; a bf16 radial VJP
+        # mis-directs forces on OOD compressed heavy cells, so it upcasts internally). The opt-in
+        # fused_ln_bw kernel path stays bf16. Cast the bf8-edge g_rad back to bf16 for rad.bw's input.
         if g_rad.dtype == ttnn.bfloat8_b:
             g_rad = ttnn.typecast(g_rad, ttnn.bfloat16)
         gc = conv.rad.bw(g_rad)
@@ -500,7 +508,8 @@ def backbone_bw(bb, graph, node_emb):
 
 
 def _forward(bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding, edge_cell_shift,
-             requires_grad, compute_stress=False, force_linear_scatter=None):
+             requires_grad, compute_stress=False, force_linear_scatter=None,
+             charge=0.0, system_natoms=None):
     """Shared forward: host geometry -> device-resident GraphContext + backbone node embedding.
     Returns ``(node_emb, graph, t, pos_leaf, strain_leaf)``; ``pos_leaf`` tracks grad when
     ``requires_grad``. ``strain_leaf`` is a zero symmetric 3x3 leaf (else None) that is applied to
@@ -531,7 +540,8 @@ def _forward(bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding, edge_
     graph = GraphContext(device, edge_index=edge_index, wigner=t["wigner"].detach(),
                          wigner_inv=t["wigner_inv"].detach(), x_edge=t["x_edge"].detach(),
                          edge_envelope=t["edge_envelope"].detach(), num_nodes=N,
-                         linear_scatter=force_linear_scatter)
+                         linear_scatter=force_linear_scatter,
+                         system_natoms=system_natoms, build_mean_op=(bb.ce > bb.cs))
     se3 = ttnn.from_torch(sys_node_embedding.reshape(N, 1, C), dtype=ttnn.bfloat16,
                           layout=ttnn.TILE_LAYOUT, device=device)
     # with the device edge-degree embedding on, the backbone builds x_init on device and this
@@ -539,7 +549,11 @@ def _forward(bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding, edge_
     init = t["l0"] if bb.edge_degree is not None else t["x_init"]
     x_init = ttnn.from_torch(init.detach(), dtype=ttnn.bfloat16,
                              layout=ttnn.TILE_LAYOUT, device=device)
-    node_emb = bb.node_embedding(x_init, graph, se3)
+    # per-atom charge target = charge/natoms (uniform: one bundle is one composition/charge, and a
+    # same-composition batch shares natoms). 0 when neutral or when balancing is disabled.
+    per_sys_n = int(system_natoms[0]) if system_natoms else N
+    balance_add = (float(charge) / per_sys_n) if bb.ce > bb.cs else 0.0
+    node_emb = bb.node_embedding(x_init, graph, se3, balance_add)
     return node_emb, graph, t, pos, strain
 
 
@@ -591,7 +605,7 @@ def _forces(bb, geo, graph, node_emb, t, pos, strain=None):
 
 
 def energy_and_forces(bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding,
-                      edge_cell_shift=None, compute_stress=False):
+                      edge_cell_shift=None, compute_stress=False, charge=0.0):
     """Conservative energy + analytic forces ``F = -dE/dpos`` for one system.
 
     Device-resident forward + reverse VJP gives ``dE/d{geometric inputs}``; ``torch.autograd``
@@ -605,7 +619,7 @@ def energy_and_forces(bb, geo, pos, atomic_numbers, edge_index, sys_node_embeddi
 
     node_emb, graph, t, pos, strain = _forward(
         bb, geo, pos, atomic_numbers, edge_index, sys_node_embedding, edge_cell_shift,
-        requires_grad=True, compute_stress=compute_stress)
+        requires_grad=True, compute_stress=compute_stress, charge=charge)
     E = float(ttnn.to_torch(bb.energy(node_emb)).reshape(-1)[0])
     if compute_stress:
         F, virial = _forces(bb, geo, graph, node_emb, t, pos, strain=strain)
@@ -630,7 +644,8 @@ def energy_and_forces_batch(bb, geo, bg, *, compute_forces=True):
     # single-system node-count threshold (dense is ~5x faster at small N).
     node_emb, graph, t, pos, _ = _forward(bb, geo, bg.pos, bg.Z, bg.edge_index, bg.sys_emb,
                                           bg.cell_shift, requires_grad=compute_forces,
-                                          force_linear_scatter=(bg.K > 1 or None))
+                                          force_linear_scatter=(bg.K > 1 or None),
+                                          charge=bg.charge, system_natoms=bg.natoms)
     seg = ttnn.from_torch(bg.segment_matrix(), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
                           device=bb.device)
     E = ttnn.to_torch(bb.energy_batch(node_emb, seg)).float().reshape(-1)[:bg.K]

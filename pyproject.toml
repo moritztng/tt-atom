@@ -40,5 +40,10 @@ Homepage = "https://github.com/moritztng/tt-atom"
 [tool.setuptools.packages.find]
 include = ["tt_atom*"]
 
+[tool.setuptools.package-data]
+# the quaternion edge frame (default) loads this vendored fairchem Wigner-D table at runtime, so it
+# must ship in the wheel (a non-editable `pip install` otherwise omits it -> FileNotFoundError).
+tt_atom = ["assets/*.pt"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

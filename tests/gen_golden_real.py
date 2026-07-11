@@ -87,7 +87,9 @@ def main():
     ap.add_argument("--system", default="molecule",
                     choices=["molecule", "bulk", "slab", "mof", "molcrystal"])
     ap.add_argument("--task", default="omol")
-    ap.add_argument("--ckpt", default="uma-s-1", help="UMA checkpoint name (e.g. uma-s-1, uma-m-1p1)")
+    ap.add_argument("--ckpt", default="uma-s-1", help="UMA checkpoint name (e.g. uma-s-1, uma-s-1p2, uma-m-1p1)")
+    ap.add_argument("--ckpt-path", default=None,
+                    help="local checkpoint .pt path; overrides --ckpt (skips the HF download)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--merged-only", action="store_true",
                     help="skip the separate unmerged-MoE oracle unit and use the merged inference "
@@ -96,7 +98,7 @@ def main():
                          "inference path and was validated against the unmerged MoE on uma-s-1.")
     args = ap.parse_args()
 
-    ckpt = hf_hub_download("facebook/UMA", f"checkpoints/{args.ckpt}.pt")
+    ckpt = args.ckpt_path or hf_hub_download("facebook/UMA", f"checkpoints/{args.ckpt}.pt")
     atoms = build_system(args.system, args.task)
 
     # ---- ground-truth oracle: unmerged MoE (the released inference default) --------------
@@ -239,6 +241,10 @@ def main():
         num_distance_basis=int(bb.distance_expansion.offset.numel()),
         cutoff=float(bb.cutoff), ff_type="spectral", act_type="gate",
         norm_type="rms_norm_sh", chg_spin_emb_type=bb.chg_spin_emb_type, task=args.task,
+        # charge_balanced_channels (uma-s-1.2): l=0 charge channels re-balanced to the system
+        # charge after each block. cs==ce (uma-s-1) => disabled. Mirrors tools/export_weights.py.
+        charge_channel_start=int(getattr(bb, "charge_channel_start", 0)),
+        charge_channel_end=int(getattr(bb, "charge_channel_end", 0)),
     )
     saved["config"] = np.frombuffer(json.dumps(out_cfg).encode(), dtype=np.uint8)
 

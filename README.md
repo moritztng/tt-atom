@@ -68,8 +68,8 @@ Add `--trace` (or `UMA(atoms, trace=True)`) to replay the captured device graph 
 
 ## What it supports
 
-- Models: `uma-s-1` (default). See [Model coverage](#model-coverage) for what else exists upstream
-  and why this build doesn't run it.
+- Models: `uma-s-1` (default), `uma-s-1.2`. See [Model coverage](#model-coverage) for what else
+  exists upstream and why this build doesn't run it.
 - Tasks: `omol`, `omat`, `oc20`, `odac`, `omc`.
 - Systems: isolated molecules and periodic cells. Charge and spin via `UMA(atoms, charge=-1, spin=2)`.
 - Properties: energy, conservative analytic forces, and stress, so variable-cell relaxation works (see [`examples/relax_cell.py`](examples/relax_cell.py)).
@@ -81,14 +81,24 @@ Meta has released two UMA sizes: `uma-s-1` (`.1`/`.2`) and `uma-m-1p1` — there
 small and medium models rather than shipping a third, larger dense tier, and
 [facebook/UMA](https://huggingface.co/facebook/UMA) carries checkpoints for only those two.
 
-Of the two that exist, only `uma-s-1` runs on this build. `uma-s` is square (lmax=mmax=2), so its
-per-edge Wigner rotation is a 9x9 tile that fits the fused kernel's L1 CB budget. `uma-m-1p1` uses
-mmax<lmax spherical-harmonic subselection, so its rotation is rectangular (25<->19, W=256) — that
-overflows the kernel's L1 budget, and this build has no MAC fallback, so it raises a clear
-`RuntimeError` naming the shape rather than silently running slow or wrong
+Of the two that exist, only `uma-s` runs on this build (both `uma-s-1` and `uma-s-1.2`). `uma-s` is
+square (lmax=mmax=2), so its per-edge Wigner rotation is a 9x9 tile that fits the fused kernel's L1 CB
+budget. `uma-m-1p1` uses mmax<lmax spherical-harmonic subselection, so its rotation is rectangular
+(25<->19, W=256) — that overflows the kernel's L1 budget, and this build has no MAC fallback, so it
+raises a clear `RuntimeError` naming the shape rather than silently running slow or wrong
 (`tests/test_umam.py` anchors this contract). A hypothetical `uma-l`, sized above `uma-m`, would
 need L1 headroom `uma-m` already overflows, so it isn't a new question, just a bigger version of
 the one above — and moot, since the checkpoint doesn't exist to test it against.
+
+### uma-s-1.2
+
+`uma-s-1.2` adds fairchem's charge-balanced channels: the `l=0` charge channels are re-balanced to the system charge after every block. TT-Atom applies this automatically — point `UMA` at the checkpoint (gated; bring your own):
+
+```python
+atoms.calc = UMA(atoms, checkpoint="uma-s-1p2.pt")
+```
+
+Parity with fairchem — forces, energy, and stress across 757 molecular and periodic systems, plus a CPU throughput comparison — is written up in [`docs/uma-s-1p2-validation.md`](docs/uma-s-1p2-validation.md).
 
 ## Accuracy
 
@@ -139,7 +149,7 @@ TT-Atom is an inference runtime, not a rewrite of fairchem. It reuses the releas
 | Energy, forces, stress | ✅ | ✅ |
 | Molecules, periodic (PBC) | ✅ | ✅ |
 | Tasks (omol/omat/oc20/odac/omc) | ✅ | ✅ |
-| Models | uma-s, uma-m | uma-s-1 |
+| Models | uma-s, uma-m | uma-s-1, uma-s-1.2 |
 | ASE relax and MD | ✅ | ✅ (plus a traced loop) |
 | Batched inference | ✅ | ✅ (one composition per batch) |
 | LAMMPS interface | ✅ | ❌ |
