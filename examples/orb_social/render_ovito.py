@@ -1,15 +1,22 @@
 """Render an on-device Orb-v3 MD trajectory to a professional looping MP4 + GIF using OVITO
-(Tachyon software ray-tracer) — shaded spheres, ambient occlusion, soft shadows, and the diamond
-bond network. No simulation-cell wireframe is drawn (unwrapped atoms sit outside the original box,
-so a cell outline would clip/cage the view rather than describe it).
+(Tachyon software ray-tracer) — shaded spheres, ambient occlusion, soft shadows, and the bond
+network.
 
-Coordinates are *unwrapped* (continuous per-atom images accumulated across the trajectory, not
-re-folded into the cell every frame), so an atom whose lattice site sits near a periodic face
-vibrates smoothly instead of teleporting to the opposite side of the box each time its wrapped
-image flips. This is valid here specifically because the crystal is solid at 900 K over 1.5 ps (no
-diffusion): no atom's unwrapped displacement grows beyond a small fraction of the cell, so nothing
-drifts out of frame. Bonds use the same unwrapped (non-periodic) positions, so none are drawn
-across what used to be the periodic faces either.
+Two coordinate modes, matched to the phase being shown:
+
+* Solid (default): coordinates are *unwrapped* (continuous per-atom images accumulated across the
+  trajectory, not re-folded into the cell every frame), so an atom whose lattice site sits near a
+  periodic face vibrates smoothly instead of teleporting when its wrapped image flips. Valid only
+  because a crystal below melting has no diffusion, so no atom drifts out of frame. No cell
+  wireframe is drawn (unwrapped atoms sit outside the original box, so an outline would cage it).
+
+* Liquid (``--wrap``): a melt *diffuses*, so unwrapping would fly atoms out of frame. Coordinates
+  are instead folded back into the periodic cell every frame (the standard, correct liquid view),
+  with a subtle thin cell outline that frames the wrapped fluid and explains why an atom leaving
+  one face reappears at the opposite one.
+
+In both modes the rendered cell is treated as finite (pbc off) before bonds are built, so no bond
+is ever drawn across a periodic face as a long line spanning the box.
 
 Framing: the camera distance is set from the bounding sphere of *every atom position across every
 frame* (not just frame 0's cell box), so the whole crystal stays fully in view with margin at every
@@ -34,7 +41,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 from ovito.io import import_file
 from ovito.vis import Viewport, TachyonRenderer, BondsVis
-from ovito.modifiers import UnwrapTrajectoriesModifier, CreateBondsModifier
+from ovito.modifiers import (UnwrapTrajectoriesModifier, WrapPeriodicImagesModifier,
+                             CreateBondsModifier)
 
 SI_COLOR = (0.22, 0.38, 0.58)        # premium metallic blue-steel (richer, more saturated)
 BOND_COLOR = (0.14, 0.22, 0.32)      # muted, darker echo of the atom colour (not a stark cage)
@@ -102,16 +110,30 @@ def main():
     ap.add_argument("--gif-px", type=int, default=440)
     ap.add_argument("--gif-fps", type=int, default=18)
     ap.add_argument("--gif-colors", type=int, default=128)
+    ap.add_argument("--wrap", action="store_true",
+                    help="liquid mode: fold atoms into the cell (a melt diffuses, so unwrapping "
+                         "would fly atoms out of frame), draw a subtle box, non-periodic bonds")
+    ap.add_argument("--cap-title", default="Orb-v3  ·  216-atom silicon crystal")
+    ap.add_argument("--cap-line1", default="NVT molecular dynamics, 900 K")
+    ap.add_argument("--cap-line2", default="real conservative forces on Tenstorrent Blackhole")
     args = ap.parse_args()
 
     pl = import_file(args.traj)
     nsrc = pl.source.num_frames
-    pl.modifiers.append(UnwrapTrajectoriesModifier())    # continuous per-atom images, no teleport
+
+    if args.wrap:
+        # a melt diffuses -- fold every atom back into the periodic cell each frame (the standard,
+        # correct way to view a liquid), so nothing drifts out of frame.
+        pl.modifiers.append(WrapPeriodicImagesModifier())
+    else:
+        # a solid only vibrates -- unwrap to continuous images so atoms near a face don't teleport.
+        pl.modifiers.append(UnwrapTrajectoriesModifier())
 
     def _drop_pbc(frame, data):
-        # unwrapped positions are absolute, not periodic images -- treat the rendered cell as
-        # finite so bonds use plain (non-minimum-image) distances and none are drawn across what
-        # used to be the periodic faces.
+        # After wrapping/unwrapping, render the cell as finite so bonds use plain (non-minimum-
+        # image) distances: no bond is drawn across a periodic face (a long line spanning the box).
+        # For the liquid this is the "clean, no misleading cross-face bonds" view; for the solid
+        # the unwrapped images are absolute anyway.
         data.cell_.pbc = (False, False, False)
     pl.modifiers.append(_drop_pbc)
 
@@ -124,8 +146,15 @@ def main():
     st = pl.source.data.particles_.particle_types_.type_by_id_(1)
     st.radius = args.radius
     st.color = SI_COLOR
-    pl.source.data.cell_.vis.enabled = False    # no wireframe box -- unwrapped atoms sit outside
-                                                 # the original cell, so an outline would clip/cage
+    if args.wrap:
+        # a subtle, thin cell outline: it frames the wrapped liquid and explains why an atom that
+        # diffuses out one face reappears at the opposite one -- without caging the view.
+        cv = pl.source.data.cell_.vis
+        cv.enabled = True
+        cv.line_width = 0.06
+        cv.rendering_color = (0.18, 0.24, 0.32)
+    else:
+        pl.source.data.cell_.vis.enabled = False   # no wireframe -- unwrapped atoms sit outside it
 
     # bounding sphere over EVERY frame's actual atom positions (not just frame 0's cell box), so
     # nothing clips at the frame edge as atoms vibrate and the camera turntables
@@ -159,10 +188,8 @@ def main():
             fg = Image.open(raw).convert("RGBA")
             bg = Image.new("RGBA", fg.size, BG + (255,))
             comp = Image.alpha_composite(bg, fg).convert("RGB")
-            comp = caption(comp, args.px,
-                           ["Orb-v3  ·  216-atom silicon crystal"],
-                           ["NVT molecular dynamics, 900 K",
-                            "real conservative forces on Tenstorrent Blackhole"])
+            comp = caption(comp, args.px, [args.cap_title],
+                           [args.cap_line1, args.cap_line2])
             imgs.append(comp)
             if k % 20 == 0:
                 print(f"  rendered {k+1}/{len(idx)}", flush=True)
