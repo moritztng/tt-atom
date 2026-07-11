@@ -1,0 +1,18 @@
+model              : orb-v3-conservative-inf-omat (CPU reference)
+a grid             : 5.30 .. 5.54 A
+  a=5.30 A   E=-5.3696 eV/atom
+  a=5.32 A   E=-5.3808 eV/atom
+  a=5.34 A   E=-5.3904 eV/atom
+  a=5.36 A   E=-5.3983 eV/atom
+  a=5.38 A   E=-5.4047 eV/atom
+  a=5.40 A   E=-5.4095 eV/atom
+  a=5.42 A   E=-5.4128 eV/atom
+  a=5.44 A   E=-5.4148 eV/atom
+  a=5.46 A   E=-5.4155 eV/atom  <- min
+  a=5.48 A   E=-5.4149 eV/atom
+  a=5.50 A   E=-5.4131 eV/atom
+  a=5.52 A   E=-5.4101 eV/atom
+  a=5.54 A   E=-5.4059 eV/atom
+equilibrium a (fit): 5.462 A   (experimental Si: 5.431 A)
+E at equilibrium   : -5.4159 eV/atom
+E at a=5.43        : -5.4148 eV/atom  (MD lattice constant)
