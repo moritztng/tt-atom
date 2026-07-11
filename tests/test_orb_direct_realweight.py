@@ -44,16 +44,6 @@ def gw():
     return OrbWeights.load(REAL_GOLDEN)
 
 
-@pytest.fixture(scope="module")
-def device():
-    from tt_atom.device import open_device
-    import ttnn
-
-    dev = open_device(int(os.environ.get("TT_VISIBLE_DEVICES", "0")))
-    yield dev
-    ttnn.close_device(dev)
-
-
 def test_direct_end_to_end(gw, device):
     from tt_atom.orb_model import (Encoder, AttentionInteractionLayer, OrbGraphContext,
                                    EnergyHead, ForceHead, host_cutoff, host_zbl_energy,

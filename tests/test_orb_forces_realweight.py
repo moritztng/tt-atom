@@ -46,15 +46,6 @@ def gw():
     return OrbWeights.load(REAL_GOLDEN)
 
 
-@pytest.fixture(scope="module")
-def device():
-    from tt_atom.device import open_device
-    import ttnn
-
-    dev = open_device(int(os.environ.get("TT_VISIBLE_DEVICES", "0")))
-    yield dev
-    ttnn.close_device(dev)
-
 
 def test_edge_geometry_matches_golden(gw):
     """Sanity gate before trusting any gradient: the from-scratch differentiable

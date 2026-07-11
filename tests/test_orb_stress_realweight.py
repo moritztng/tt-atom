@@ -44,15 +44,6 @@ def _pcc(a, b):
     return float(np.corrcoef(a, b)[0, 1])
 
 
-@pytest.fixture(scope="module")
-def device():
-    from tt_atom.device import open_device
-    import ttnn
-
-    dev = open_device(int(os.environ.get("TT_VISIBLE_DEVICES", "0")))
-    yield dev
-    ttnn.close_device(dev)
-
 
 @pytest.mark.skipif(not pathlib.Path(CONSERVATIVE_GOLDEN).exists(),
                     reason=f"Orb golden bundle not found at {CONSERVATIVE_GOLDEN}")
