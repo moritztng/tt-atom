@@ -77,13 +77,16 @@ node feature tile to any supercell size, so the on-device run needed no new refe
 good v2 if Moritz wants it.)
 
 ## Notes for Moritz
-- The video is rendered in OVITO (Tachyon ray-tracer): shaded spheres at the Jmol Si colour, the
-  diamond bond network, the periodic cell box, ambient occlusion + shadows. Coordinates are
-  *unwrapped* (continuous per-atom images, not re-folded into the cell every frame) so an atom
-  whose lattice site sits near a periodic face vibrates smoothly instead of jumping to the opposite
-  side of the box — valid because the crystal is solid at 900 K over 1.5 ps (no diffusion, nothing
-  drifts out of frame). Bonds use the same unwrapped positions, so none are drawn across periodic
-  faces either — no "exploding crystal" or teleporting-atom artifact.
+- The video is rendered in OVITO (Tachyon ray-tracer): shaded spheres in a metallic blue-steel,
+  the diamond bond network (thin, muted), ambient occlusion + soft shadows, no simulation-cell
+  wireframe (with unwrapped coordinates a cell outline would clip/cage the view rather than
+  describe it). Coordinates are *unwrapped* (continuous per-atom images, not re-folded into the
+  cell every frame) so an atom whose lattice site sits near a periodic face vibrates smoothly
+  instead of jumping to the opposite side of the box — valid because the crystal is solid at 900 K
+  over 1.5 ps (no diffusion, nothing drifts out of frame). Bonds use the same unwrapped positions,
+  so none are drawn across periodic faces either — no "exploding crystal" or teleporting-atom
+  artifact. The camera frames the bounding sphere of every atom position across every frame, so
+  the whole crystal stays fully in view with margin at every turntable angle.
 - One honest on-device run; no compositing, no sped-up trickery. Loop is a boomerang (forward then
   reverse) so it seams cleanly — MD isn't time-periodic.
 - MP4 720² for the post (7.4 MB); GIF 340px for README/preview (6 MB).

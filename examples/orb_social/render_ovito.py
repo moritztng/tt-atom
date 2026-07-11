@@ -1,12 +1,19 @@
 """Render an on-device Orb-v3 MD trajectory to a professional looping MP4 + GIF using OVITO
-(Tachyon software ray-tracer) — shaded spheres, ambient occlusion, the periodic simulation cell,
-and the diamond bond network. Coordinates are *unwrapped* (continuous per-atom images accumulated
-across the trajectory, not re-folded into the cell every frame), so an atom whose lattice site
-sits near a periodic face vibrates smoothly instead of teleporting to the opposite side of the box
-each time its wrapped image flips. This is valid here specifically because the crystal is solid at
-900 K over 1.5 ps (no diffusion): no atom's unwrapped displacement grows beyond a small fraction of
-the cell, so nothing drifts out of frame. Bonds use the same unwrapped (non-periodic) positions, so
-none are drawn across periodic faces either.
+(Tachyon software ray-tracer) — shaded spheres, ambient occlusion, soft shadows, and the diamond
+bond network. No simulation-cell wireframe is drawn (unwrapped atoms sit outside the original box,
+so a cell outline would clip/cage the view rather than describe it).
+
+Coordinates are *unwrapped* (continuous per-atom images accumulated across the trajectory, not
+re-folded into the cell every frame), so an atom whose lattice site sits near a periodic face
+vibrates smoothly instead of teleporting to the opposite side of the box each time its wrapped
+image flips. This is valid here specifically because the crystal is solid at 900 K over 1.5 ps (no
+diffusion): no atom's unwrapped displacement grows beyond a small fraction of the cell, so nothing
+drifts out of frame. Bonds use the same unwrapped (non-periodic) positions, so none are drawn
+across what used to be the periodic faces either.
+
+Framing: the camera distance is set from the bounding sphere of *every atom position across every
+frame* (not just frame 0's cell box), so the whole crystal stays fully in view with margin at every
+turntable angle and every timestep -- nothing clipped at the frame edge.
 
 A gentle turntable rotates the camera while the trajectory plays; the loop is a boomerang
 (forward then reverse) so it seams cleanly even though MD is not time-periodic. A small, clean
@@ -29,8 +36,9 @@ from ovito.io import import_file
 from ovito.vis import Viewport, TachyonRenderer, BondsVis
 from ovito.modifiers import UnwrapTrajectoriesModifier, CreateBondsModifier
 
-JMOL_SI = (0.941, 0.784, 0.627)      # CPK/Jmol silicon colour (the materials-viz standard)
-BG = (14, 17, 23)                    # solid dark slate
+SI_COLOR = (0.22, 0.38, 0.58)        # premium metallic blue-steel (richer, more saturated)
+BOND_COLOR = (0.14, 0.22, 0.32)      # muted, darker echo of the atom colour (not a stark cage)
+BG = (8, 10, 15)                     # solid near-black slate, complements the cool atom tone
 
 
 def _font(sz):
@@ -69,6 +77,17 @@ def caption(img, px, lines_bold, lines_reg):
     return img
 
 
+def _bounding_sphere(pl, nsrc):
+    """Bounding sphere (center, radius) over every atom position in every frame, so the camera
+    distance keeps the whole crystal in view at every timestep and turntable angle."""
+    all_pos = [np.array(pl.compute(f).particles.positions) for f in range(nsrc)]
+    stacked = np.concatenate(all_pos, axis=0)
+    lo, hi = stacked.min(axis=0), stacked.max(axis=0)
+    center = (lo + hi) / 2.0
+    radius = max(np.linalg.norm(pos - center, axis=1).max() for pos in all_pos)
+    return center, float(radius)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--traj", required=True)
@@ -79,6 +98,7 @@ def main():
     ap.add_argument("--spin", type=float, default=150.0, help="turntable degrees over the play")
     ap.add_argument("--radius", type=float, default=0.75)
     ap.add_argument("--bond-cutoff", type=float, default=2.55)
+    ap.add_argument("--margin", type=float, default=1.18, help="framing headroom over the bounding sphere")
     ap.add_argument("--gif-px", type=int, default=440)
     ap.add_argument("--gif-fps", type=int, default=18)
     ap.add_argument("--gif-colors", type=int, default=128)
@@ -96,28 +116,27 @@ def main():
     pl.modifiers.append(_drop_pbc)
 
     bonds = CreateBondsModifier(cutoff=args.bond_cutoff)
-    bonds.vis.width = 0.30
-    bonds.vis.color = (0.40, 0.45, 0.52)
+    bonds.vis.width = 0.16
+    bonds.vis.color = BOND_COLOR
     pl.modifiers.append(bonds)
     pl.add_to_scene()
 
     st = pl.source.data.particles_.particle_types_.type_by_id_(1)
     st.radius = args.radius
-    st.color = JMOL_SI
-    pl.source.data.cell_.vis.line_width = 0.045
-    pl.source.data.cell_.vis.rendering_color = (0.55, 0.60, 0.68)
+    st.color = SI_COLOR
+    pl.source.data.cell_.vis.enabled = False    # no wireframe box -- unwrapped atoms sit outside
+                                                 # the original cell, so an outline would clip/cage
 
-    # cell centre + a camera distance that frames the whole box with margin
-    cell = np.array(pl.compute(0).cell[:3, :3])
-    L = float(np.abs(cell).sum(axis=0).max())
-    center = cell.sum(axis=0) * 0.5
-    dist = L * 2.4
+    # bounding sphere over EVERY frame's actual atom positions (not just frame 0's cell box), so
+    # nothing clips at the frame edge as atoms vibrate and the camera turntables
+    center, bound_r = _bounding_sphere(pl, nsrc)
     tilt = math.radians(18.0)                     # look slightly down onto the cell
-
     vp = Viewport(type=Viewport.Type.Perspective)
     vp.fov = math.radians(30.0)
+    dist = (bound_r * args.margin) / math.tan(vp.fov / 2.0)
     renderer = TachyonRenderer(ambient_occlusion=True, shadows=True,
-                               ambient_occlusion_samples=24, antialiasing_samples=6)
+                               ambient_occlusion_samples=24, ambient_occlusion_brightness=0.65,
+                               direct_light_intensity=1.05, antialiasing_samples=8)
 
     idx = np.linspace(0, nsrc - 1, args.nframes).round().astype(int)
     imgs = []
@@ -176,6 +195,7 @@ def main():
         shutil.copyfile(gif_tmp, args.out + ".gif")
     print(f"wrote {args.out}.mp4  ({len(loop)} frames, {args.fps} fps)")
     print(f"wrote {args.out}.gif  ({os.path.getsize(args.out + '.gif')/1e6:.1f} MB, {args.gif_px}px)")
+    print(f"framing: bounding-sphere radius={bound_r:.2f} A, camera dist={dist:.2f} A, margin={args.margin}")
 
 
 if __name__ == "__main__":
