@@ -302,11 +302,16 @@ class EnergyHead:
         ``Backbone.energy_batch`` (a per-node scalar energy, segment-*summed* per system), Orb's
         ``EnergyHead`` means the node *features* first and only then runs the 2-layer MLP, so the
         adapter is a per-system mean (matmul against ``seg_mean``) feeding the same MLP, batched
-        over the K systems -> ``[K, 1]`` raw (normalized-space) energy predictions."""
+        over the K systems -> ``[K, 1]`` raw (normalized-space) energy predictions.
+
+        Caches the pre-SiLU activation ``_cache_a0`` (``[K, hidden]``) so ``orb_forces.energy_bw_batch``
+        -- the batched analogue of ``energy_bw`` -- can replay the SiLU VJP without re-running the
+        forward, exactly like ``__call__`` caches ``_cache_a0`` for the single-system backward."""
         ttnn = self.ttnn
         mean = ttnn.matmul(seg_mean, node_features, compute_kernel_config=self.kcfg)  # [K, C]
-        h = ttnn.silu(ttnn.linear(mean, self.w0, bias=self.b0, compute_kernel_config=self.kcfg))
-        return ttnn.linear(h, self.w1, bias=self.b1, compute_kernel_config=self.kcfg)
+        a0 = ttnn.linear(mean, self.w0, bias=self.b0, compute_kernel_config=self.kcfg)
+        self._cache_a0 = a0                              # [K, hidden] -- for orb_forces.energy_bw_batch
+        return ttnn.linear(ttnn.silu(a0), self.w1, bias=self.b1, compute_kernel_config=self.kcfg)
 
 
 class ForceHead:
@@ -340,6 +345,22 @@ class ForceHead:
         pred = ttnn.linear(h, self.w1, bias=self.b1, compute_kernel_config=self.kcfg)
         mean = ttnn.mean(pred, dim=0, keepdim=True)
         return ttnn.subtract(pred, mean)
+
+    def batch(self, node_features, seg, seg_mean):
+        """Disjoint-union batched readout: the per-node MLP is batch-transparent (each row is an
+        independent forward through the same weights), but the net-force removal in ``__call__``
+        subtracts a *single global* mean -- which a K-system batch must not do (it would couple
+        independent systems' net forces). ``seg`` [K, Ntot] is the plain indicator
+        (``seg[k, n] = 1`` iff atom n is in system k) and ``seg_mean`` [K, Ntot] its row-normalized
+        form; per-system mean force is ``seg_mean @ pred`` [K, 3], broadcast back to each node via
+        ``seg^T`` -> ``[Ntot, 3]`` with each system's own mean removed. Returns ``[Ntot, 3]`` raw
+        (normalized-space, per-system mean-removed) per-atom force prediction."""
+        ttnn = self.ttnn
+        h = ttnn.silu(ttnn.linear(node_features, self.w0, bias=self.b0, compute_kernel_config=self.kcfg))
+        pred = ttnn.linear(h, self.w1, bias=self.b1, compute_kernel_config=self.kcfg)
+        sys_mean = ttnn.matmul(seg_mean, pred, compute_kernel_config=self.kcfg)   # [K, 3]
+        return ttnn.subtract(pred, ttnn.matmul(seg, sys_mean, transpose_a=True,
+                                               compute_kernel_config=self.kcfg))  # [Ntot, 3]
 
 
 class StressHead:

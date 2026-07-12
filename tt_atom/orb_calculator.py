@@ -203,3 +203,109 @@ class OrbCalculator(DeviceCalculator):
 
         E = float(E + host_zbl_energy(Z, senders, receivers, vectors))
         self._store_results(atoms, E, F, stress=stress)
+
+    def evaluate_batch(self, systems, properties=("energy", "forces")):
+        """Disjoint-union batched evaluation -- K systems in ONE device forward (Orb-family
+        counterpart to :meth:`tt_atom.calculator.TTAtomCalculator.evaluate_batch`).
+
+        ``systems`` is a list of ASE ``Atoms`` (or ``(positions, atomic_numbers)`` / dicts). The
+        systems are concatenated into one block-diagonal graph, evaluated in a single device call,
+        and the per-system energies recovered by ``EnergyHead.batch`` (a per-system mean of the
+        node features feeding the same 2-layer MLP); forces come from one shared backward
+        (conservative checkpoints: the analytic ``-dE/dpos`` VJP, block-diagonal so each atom's
+        own-system force falls out automatically; direct checkpoints: the ``ForceHead`` MLP with
+        per-system net-force removal). This is the throughput path for many small systems.
+
+        Returns ``dict(energy=np.ndarray[K], forces=list[np.ndarray[N_k, 3]] | None)``, mirroring
+        ``TTAtomCalculator.evaluate_batch``'s shape so the two are drop-in parallels from a user's
+        perspective.
+
+        Orb has no per-composition MoLE routing (unlike UMA), so the batch may mix compositions,
+        charges, and spins freely -- the only constraint is :meth:`assemble_orb`'s per-atom
+        ``max_num_neighbors`` cap, enforced per-system just like ``calculate`` does for one
+        structure (a denser system inside a batch still raises the same clear error)."""
+        import ttnn
+
+        from .disjoint import assemble_orb
+        from .orb_forces import energy_and_forces_batch
+        from .orb_geometry import host_edge_features
+        from .orb_model import (OrbGraphContext, _to_dev, host_charge_spin_embedding,
+                                host_conservative_force_denormalize, host_energy_denormalize,
+                                host_force_denormalize, host_node_features, host_zbl_energy,
+                                host_zbl_forces)
+
+        want_forces = "forces" in properties
+        bg = assemble_orb(systems, self.r_max, self.max_num_neighbors)
+        Ntot = bg.Z.shape[0]
+        seg, seg_mean = bg.segment_matrices()
+        seg_mean_T = seg_mean.t().contiguous()
+
+        node_feat = host_node_features(self._w, bg.Z)
+        cond_nodes = None
+        if self.has_cond:
+            cond_nodes = torch.cat([
+                host_charge_spin_embedding(self._w, float(bg.charges[k]), float(bg.spins[k]),
+                                          bg.natoms[k], self.cfg["latent_dim"])
+                for k in range(bg.K)], dim=0)
+
+        if self.is_direct or not want_forces:
+            # Forward-only: encoder + layers, then EnergyHead.batch (and ForceHead.batch for direct
+            # with forces). Conservative-without-forces reuses this path (no backward needed).
+            edge_feat, cutoff, _vectors = host_edge_features(
+                bg.pos, bg.senders, bg.receivers, bg.cell_shift,
+                r_max=self.r_max, num_bases=self.num_bases)
+            graph = OrbGraphContext(self.device, senders=bg.senders, receivers=bg.receivers,
+                                   cutoff=cutoff.detach().float(), num_nodes=Ntot,
+                                   cond_nodes=cond_nodes)
+            seg_dev = _to_dev(seg.float(), self.device, ttnn.bfloat16)
+            seg_mean_dev = _to_dev(seg_mean.float(), self.device, ttnn.bfloat16)
+            node_dev = _to_dev(node_feat, self.device, ttnn.bfloat16)
+            edge_dev = _to_dev(edge_feat.detach().float(), self.device, ttnn.bfloat16)
+            nodes, edges = self.encoder(node_dev, edge_dev)
+            for layer in self.layers:
+                nodes, edges = layer(nodes, edges, graph)
+            E_raw = ttnn.to_torch(self.ehead.batch(nodes, seg_mean_dev)).double().view(-1)
+            if self.is_direct and want_forces:
+                F_raw = ttnn.to_torch(self.fhead.batch(nodes, seg_dev, seg_mean_dev)).double()
+            else:
+                F_raw = None
+        else:
+            # Conservative with forces: one device forward + one batched VJP + host autograd finish.
+            E_raw, F_raw = energy_and_forces_batch(
+                self.encoder, self.layers, self.ehead, self.device,
+                pos=bg.pos, senders=bg.senders, receivers=bg.receivers, atomic_numbers=bg.Z,
+                node_feat=node_feat, cell_shift=bg.cell_shift, seg_mean=seg_mean,
+                seg_mean_T=seg_mean_T, r_max=self.r_max, num_bases=self.num_bases,
+                cond_nodes=cond_nodes)
+        # Per-system denormalize + ZBL. Orb's normalizer scales forces by sigma * N_k per system
+        # (conservative) or sigma (direct), and ZBL pair-repulsion is added per-system. ZBL forces
+        # are block-diagonal (edges never cross systems), so one host autograd over the union gives
+        # correct per-atom ZBL forces; ZBL energy is split per-system (mean over each system's atoms).
+        vectors = bg.pos[bg.receivers] - bg.pos[bg.senders] + bg.cell_shift
+        F_zbl = (host_zbl_forces(bg.Z, bg.senders, bg.receivers, bg.pos, bg.cell_shift)
+                if want_forces else None)
+        energies, forces_out, off = [], [], 0
+        for k, n in enumerate(bg.natoms):
+            Z_k = bg.Z[off:off + n]
+            E_k = host_energy_denormalize(
+                E_raw[k], Z_k, n,
+                running_mean=self._w["energy_head.normalizer.bn.running_mean"],
+                running_var=self._w["energy_head.normalizer.bn.running_var"],
+                ref_weight=self._w["energy_head.reference.linear.weight"].view(-1))
+            # ZBL energy per system: slice this system's edges (block-diagonal => batch[senders]==k).
+            m = bg.batch[bg.senders] == k
+            E_zbl = host_zbl_energy(Z_k, bg.senders[m] - off, bg.receivers[m] - off, vectors[m])
+            energies.append(float(E_k + E_zbl))
+            if want_forces:
+                F_k = F_raw[off:off + n]
+                if self.is_direct:
+                    F_k = host_force_denormalize(
+                        F_k, running_mean=self._w["forces_head.normalizer.bn.running_mean"],
+                        running_var=self._w["forces_head.normalizer.bn.running_var"])
+                else:
+                    F_k = host_conservative_force_denormalize(
+                        F_k, n, running_var=self._w["energy_head.normalizer.bn.running_var"])
+                F_k = F_k + F_zbl[off:off + n]
+                forces_out.append(F_k.detach().numpy().astype(np.float64))
+            off += n
+        return dict(energy=np.array(energies), forces=forces_out if want_forces else None)

@@ -184,11 +184,19 @@ trace capture as the answer.
   which has a notion of system boundary. One place *does* need an adapter: `EnergyHead` means node
   features first, then runs the MLP (unlike UMA's `Backbone.energy_batch`, a per-node-scalar
   segment-*sum*) — added `EnergyHead.batch` (row-normalized segment-mean matmul), bit-exact vs the
-  single-system path (`tests/test_orb_disjoint_batch.py`). Wall-clock multi-card fan-out itself
-  (spawning workers across physical cards) was not separately re-benchmarked here — it reuses the
-  same card-count-agnostic scheduler already proven for UMA/BoltzGen once per-system independence
-  holds (see `predict-multicard-already-exists`/`gen-multicard-already-exists`), and that
-  independence is exactly what this test establishes.
+  single-system path (`tests/test_orb_disjoint_batch.py`). The batched calculator method is now
+  wired up (`OrbCalculator.evaluate_batch`): one device forward for K systems, per-system energies
+  via `EnergyHead.batch`, forces either from the batched conservative VJP
+  (`orb_forces.energy_and_forces_batch` — `energy_bw_batch` seeds the head adjoint per-system via
+  the transposed segment matrix, then the unchanged block-diagonal layer VJP) or the direct
+  `ForceHead.batch` (per-system net-force removal). Parity vs looping `calculate` is gated on all
+  three checkpoint variants (`tests/test_orb_evaluate_batch.py`, E rel < 1e-2, force PCC > 0.999).
+  Wall-clock: ~19x vs looping at K=128 9-atom molecules on `conservative-omol` (1338 vs 71 sys/s),
+  ~12x on `direct-omol` (2056 vs 166 sys/s) — `benchmarks/bench_orb_evaluate_batch.py`. Multi-card
+  fan-out itself (spawning workers across physical cards) was not separately re-benchmarked here —
+  it reuses the same card-count-agnostic scheduler already proven for UMA/BoltzGen once per-system
+  independence holds (see `predict-multicard-already-exists`/`gen-multicard-already-exists`), and
+  that independence is exactly what this test establishes.
 
 ## Still open
 
@@ -391,9 +399,9 @@ real `ChargeSpinConditioner`'s captured activation to 5.96e-08 max abs error for
 rounding involved).
 
 **Not ported (genuinely out of scope, not deferred):** `StressHead` (checkpoint has none, nothing
-to port); disjoint-union batching for `cond_nodes` (the existing `EnergyHead.batch` pattern
-extends trivially -- one `cond_nodes` row per system instead of one globally -- but wasn't asked
-for and has no test coverage yet, so it isn't claimed here).
+to port). Disjoint-union batching for `cond_nodes` is now wired up — `OrbCalculator.evaluate_batch`
+concatenates one `host_charge_spin_embedding` per system and uploads it once, parity-gated on the
+OrbMol checkpoint (`tests/test_orb_evaluate_batch.py::test_evaluate_batch_conservative_omol`).
 
 ## Reproducing
 
@@ -426,5 +434,5 @@ TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python -m pytest \
     tests/test_orb_realweight.py tests/test_orb_direct_realweight.py \
     tests/test_orb_forces_realweight.py tests/test_orb_zbl_forces.py \
     tests/test_orb_periodic_realweight.py tests/test_orb_disjoint_batch.py \
-    tests/test_orb_omol_realweight.py -q -s
+    tests/test_orb_omol_realweight.py tests/test_orb_evaluate_batch.py -q -s
 ```
