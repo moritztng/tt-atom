@@ -122,12 +122,13 @@ def test_direct_omat_end_to_end(device):
                     reason="orb weight cache or molecule_omol_conservative.npz golden not found")
 def test_orbmol_conditioning_end_to_end(device):
     """Same ASE path, an OrbMol checkpoint — exercises host_charge_spin_embedding through the
-    full calculator (charge=0, spin=1 default, closed-shell water)."""
-    from tt_atom.orb_calculator import Orb
+    full calculator (charge=0, spin=1 default, closed-shell water). Also exercises the unified
+    ``Calculator(atoms, model=...)`` front door dispatching to the Orb family by name."""
+    from tt_atom import Calculator
 
     gold = np.load(GOLDEN_DIR / "molecule_omol_conservative.npz")
     atoms = _build_molecule()
-    calc = Orb(atoms, checkpoint="orb-v3-conservative-omol", device=device)
+    calc = Calculator(atoms, model="orb-v3-conservative-omol", device=device)
     try:
         atoms.calc = calc
         E = atoms.get_potential_energy()

@@ -19,30 +19,6 @@ from .model import Backbone
 from .weights import WeightBundle
 
 
-def UMA(atoms, task=None, model="uma-s-1", charge=0, spin=1, refenv=None, checkpoint=None,
-        cache_dir=None, device=None, device_id=0, fast=False, trace=False, **kwargs):
-    """Zero-config entry point — the face of the library.
-
-        from tt_atom import UMA
-        atoms.calc = UMA(atoms)            # energy + forces on the card, nothing else to know
-
-    Picks sensible defaults (``uma-s-1``; ``task`` inferred from periodicity — ``omat`` for a fully
-    periodic cell, else ``omol``; auto-build + composition-cache the bundle; auto-locate the
-    reference env; device 0) and returns a ready :class:`TTAtomCalculator`. Every default is a plain
-    keyword you can override (``task=``, ``charge=``/``spin=``, ``trace=``, ``fast=``, ``device_id=``,
-    ``refenv=``, ...). It is exactly :meth:`TTAtomCalculator.from_uma` with task inference on top —
-    reach for ``from_uma`` / ``TTAtomCalculator(bundle)`` directly only when you want to pin the
-    task or manage the bundle file yourself."""
-    from . import bundle_cache as BC
-
-    if task is None:
-        task = BC.infer_task(atoms)
-    return TTAtomCalculator.from_uma(model=model, task_name=task, atoms=atoms, charge=charge,
-                                     spin=spin, refenv=refenv, checkpoint=checkpoint,
-                                     cache_dir=cache_dir, device=device, device_id=device_id,
-                                     fast=fast, trace=trace, **kwargs)
-
-
 class TTAtomCalculator(DeviceCalculator):
     def __init__(self, bundle, task_name=None, device=None, device_id=0, gamma=0.0,
                  fast=False, trace=False, trace_region_size=400_000_000, **kwargs):
@@ -125,7 +101,7 @@ class TTAtomCalculator(DeviceCalculator):
         spin = atoms.info.get("spin", spin)
         # ...and, symmetrically, stamp the resolved values back onto the atoms so `calculate`
         # reads the *same* charge/spin the bundle was merged for. Without this, the flagship
-        # `UMA(atoms)` path (default charge=0, spin=1) merges a spin=1 bundle but `calculate`
+        # `Calculator(atoms)` path (default charge=0, spin=1) merges a spin=1 bundle but `calculate`
         # falls back to spin=0 — a silent mismatch between the baked MoLE routing and the runtime
         # system embedding. `setdefault` respects an explicit value (which already won above).
         atoms.info.setdefault("charge", charge)

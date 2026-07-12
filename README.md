@@ -49,15 +49,16 @@ tt-atom run structure.xyz
 
 ```python
 from ase.io import read
-from tt_atom import UMA, Orb
+from tt_atom import Calculator
 
 atoms = read("structure.xyz")
-atoms.calc = UMA(atoms)                                    # or: Orb(atoms)
+atoms.calc = Calculator(atoms)                             # uma-s-1
+# atoms.calc = Calculator(atoms, "orb-v3-conservative-omol")   # or any Orb checkpoint
 atoms.get_potential_energy()
 atoms.get_forces()
 ```
 
-`UMA(atoms)` uses `uma-s-1`, infers the task (`omat` if the cell is periodic, else `omol`), and builds a device-resident model for that composition on first use. Later calls load it from cache. `Orb(atoms)` is the symmetric one-liner for `orb-v3-conservative-inf-omat` (pass `checkpoint=` for one of the other three, see [Model coverage](#model-coverage)) — its weights aren't composition-specific, so the cache is per-checkpoint, not per-structure. Everything downstream is plain ASE either way.
+One entry point, one call, the model picked by name (like fairchem's `FAIRChemCalculator` or Hugging Face's `AutoModel.from_pretrained`) — you never need to know whether it's a UMA or an Orb under the hood. `Calculator(atoms)` defaults to `uma-s-1`, infers the task (`omat` if the cell is periodic, else `omol`), and builds a device-resident model for that composition on first use; later calls load it from cache. Any `orb-v3-*` name routes to the Orb family instead (see [Model coverage](#model-coverage)); Orb weights aren't composition-specific, so the cache is per-checkpoint, not per-structure. Everything downstream is plain ASE either way.
 
 ## Relax and MD
 
@@ -66,17 +67,17 @@ tt-atom run structure.xyz --relax --out relaxed.xyz
 tt-atom run structure.xyz --md --steps 200 --temp 300
 ```
 
-Add `--trace` (or `UMA(atoms, trace=True)`) to replay the captured device graph over the loop. About 2x on relax/MD, forces stay bit-identical.
+Add `--trace` (or `Calculator(atoms, trace=True)`, UMA only) to replay the captured device graph over the loop. About 2x on relax/MD, forces stay bit-identical.
 
 ## What it supports
 
 - Models: UMA's `uma-s-1` and all four Orb-v3/OrbMol checkpoints (`orb-v3-{conservative,direct}-{omat,omol}`).
   See [Model coverage](#model-coverage) for what else exists upstream and why this build doesn't run it.
 - Tasks: UMA — `omol`, `omat`, `oc20`, `odac`, `omc`. Orb-v3/OrbMol — `omat`, `omol`.
-- Systems: isolated molecules and periodic cells, both model families. Charge and spin: `UMA(atoms,
-  charge=-1, spin=2)` (all UMA tasks); `Orb(atoms, checkpoint="orb-v3-conservative-omol", charge=-1,
-  spin=2)` (OrbMol checkpoints only — the omat checkpoints were never trained with conditioning and
-  ignore both).
+- Systems: isolated molecules and periodic cells, both model families. Charge and spin: `Calculator(
+  atoms, charge=-1, spin=2)` (all UMA tasks); `Calculator(atoms, "orb-v3-conservative-omol",
+  charge=-1, spin=2)` (OrbMol checkpoints only — the Orb-v3 omat checkpoints were never trained with
+  conditioning and ignore both).
 - Properties: energy always. Conservative analytic forces (`F = -dE/dpos`) for UMA and Orb-v3's
   `conservative` checkpoints; a direct MLP force head (no autograd, the fast path) for Orb-v3's
   `direct` checkpoints. Stress for UMA (always) and Orb-v3 (`conservative` via the same autograd
@@ -122,14 +123,14 @@ tt-metal build is needed if you only use these models (see [Install](#install) a
 established this).
 
 Unlike UMA, Orb has no MoLE (or any) expert routing baked in at merge time — the raw checkpoint
-weights are valid for *any* composition/charge/spin, so `Orb(atoms)` caches its (much cheaper)
+weights are valid for *any* composition/charge/spin, so an Orb model caches its (much cheaper)
 weight export once per *checkpoint name*, not per structure (`tt_atom.orb_weight_cache`, mirrors
 `tt_atom.bundle_cache`'s refenv-subprocess pattern but without the per-composition merge). The
 `max_num_neighbors` truncation Orb's own reference applies per atom (20 for the `-20` checkpoints,
 120 otherwise) is not implemented here; rather than silently return a different neighbour list on
-a denser structure, `Orb(atoms)` raises a clear error naming the degree and the checkpoint's cap
-(same philosophy as `uma-m`'s shape error above) — use the `-inf`/`omol` checkpoints (cap 120) for
-denser systems, or a smaller cell.
+a denser structure, it raises a clear error naming the degree and the checkpoint's cap (same
+philosophy as `uma-m`'s shape error above) — use the `-inf`/`omol` checkpoints (cap 120) for denser
+systems, or a smaller cell.
 
 ## Accuracy
 
@@ -210,7 +211,7 @@ weights and matches them.
 
 ## Bundles and the reference environment
 
-The model is a "bundle": UMA weights merged for one composition. `UMA(atoms)` builds and caches bundles for you, so most users never touch this. To build one yourself:
+The model is a "bundle": UMA weights merged for one composition. `Calculator(atoms)` builds and caches bundles for you, so most users never touch this. To build one yourself:
 
 ```bash
 refenv/bin/python tools/export_weights.py --uma-s-1 --xyz structure.xyz --task omol --out model.npz
@@ -224,9 +225,9 @@ Building a bundle needs `fairchem` to read the checkpoint and merge the experts.
 python -m venv refenv && refenv/bin/pip install "fairchem-core>=2.10"
 ```
 
-`UMA(atoms)` and `tt-atom run` call it automatically the first time they see a new composition, then cache the result. Set `TT_ATOM_REFENV` to its python if it is not found automatically. Cached runs never need it.
+`Calculator(atoms)` and `tt-atom run` call it automatically the first time they see a new composition, then cache the result. Set `TT_ATOM_REFENV` to its python if it is not found automatically. Cached runs never need it.
 
-Orb has no MoLE (or any) expert routing, so its weights aren't composition-specific — `Orb(atoms)`
+Orb has no MoLE (or any) expert routing, so its weights aren't composition-specific — an Orb model
 caches one plain weight export **per checkpoint name** (not per structure), also via the same
 reference env (`orb-models` installs into it alongside `fairchem-core` with no conflicts):
 
@@ -234,9 +235,9 @@ reference env (`orb-models` installs into it alongside `fairchem-core` with no c
 refenv/bin/python tools/export_orb_weights.py --ckpt conservative-inf-omat --out weights.npz
 ```
 
-then `OrbCalculator(weights.npz)`. `Orb(atoms)` calls this automatically on first use of a given
-`checkpoint=`; a cache hit needs no reference env, same as UMA's.
+then `OrbCalculator(weights.npz)`. `Calculator(atoms, "orb-...")` calls this automatically on first
+use of a given checkpoint name; a cache hit needs no reference env, same as UMA's.
 
 ## License
 
-MIT for this code, which reimplements the UMA / eSCN-MD architecture from [fairchem](https://github.com/facebookresearch/fairchem) (also MIT) and the Orb-v3 architecture from [orb-models](https://github.com/orbital-materials/orb-models) (Apache-2.0). It depends on `ttnn` (Apache-2.0) and `ase` (LGPL-2.1+). The UMA weights are separately licensed under the [FAIR Chemistry License](https://huggingface.co/facebook/UMA), are gated, and are not included — bring your own. The Orb-v3/OrbMol weights are Apache-2.0 and ungated; `Orb(atoms)` downloads them itself on first use of a given checkpoint.
+MIT for this code, which reimplements the UMA / eSCN-MD architecture from [fairchem](https://github.com/facebookresearch/fairchem) (also MIT) and the Orb-v3 architecture from [orb-models](https://github.com/orbital-materials/orb-models) (Apache-2.0). It depends on `ttnn` (Apache-2.0) and `ase` (LGPL-2.1+). The UMA weights are separately licensed under the [FAIR Chemistry License](https://huggingface.co/facebook/UMA), are gated, and are not included — bring your own. The Orb-v3/OrbMol weights are Apache-2.0 and ungated; `Calculator(atoms, "orb-...")` downloads them itself on first use of a given checkpoint.

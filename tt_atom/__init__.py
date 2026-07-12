@@ -12,24 +12,20 @@ try:
 except PackageNotFoundError:  # running from a source tree, not an installed dist
     __version__ = "0+unknown"
 
-__all__ = ["UMA", "TTAtomCalculator", "Orb", "OrbCalculator", "WeightBundle", "Backbone",
+__all__ = ["Calculator", "TTAtomCalculator", "OrbCalculator", "WeightBundle", "Backbone",
           "HostGeometry", "MultiCard"]
 
 
 def __getattr__(name):
     # lazy so that ``import tt_atom`` stays cheap and never imports ttnn/torch eagerly
-    if name == "UMA":
-        from .calculator import UMA
+    if name == "Calculator":
+        from .auto import Calculator
 
-        return UMA
+        return Calculator
     if name == "TTAtomCalculator":
         from .calculator import TTAtomCalculator
 
         return TTAtomCalculator
-    if name == "Orb":
-        from .orb_calculator import Orb
-
-        return Orb
     if name == "OrbCalculator":
         from .orb_calculator import OrbCalculator
 

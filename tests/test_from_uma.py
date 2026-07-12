@@ -96,11 +96,12 @@ def test_infer_task_from_periodicity():
     assert BC.infer_task(bulk) == "omat"                            # fully periodic -> materials
 
 
-def test_uma_is_exported_and_delegates():
+def test_calculator_is_exported():
     import tt_atom
 
-    assert "UMA" in tt_atom.__all__
-    assert callable(tt_atom.UMA)
+    assert "Calculator" in tt_atom.__all__
+    assert callable(tt_atom.Calculator)
+    assert "UMA" not in tt_atom.__all__ and "Orb" not in tt_atom.__all__  # clean break, no aliases
 
 
 # ------------------------------------------------------------------ device: cached fast path + parity
@@ -155,18 +156,19 @@ def test_cached_fast_path_needs_no_refenv_and_matches_direct(tmp_path, device, m
 
     assert e_factory == pytest.approx(e_direct, abs=1e-6), f"{e_factory} vs {e_direct}"
 
-    # the zero-config UMA(atoms) face must reach the identical result (task inferred = omol here)
+    # the zero-config Calculator(atoms) face must reach the identical result (task inferred = omol)
     if task == "omol":
-        from tt_atom import UMA
+        from tt_atom import Calculator
 
         a3 = _atoms_from_golden(d)
-        a3.calc = UMA(a3, refenv="/nonexistent/python", cache_dir=str(cache_dir), device=device)
+        a3.calc = Calculator(a3, refenv="/nonexistent/python", cache_dir=str(cache_dir),
+                             device=device)
         assert a3.get_potential_energy() == pytest.approx(e_direct, abs=1e-6)
 
 
 @real_golden
 def test_uma_evaluates_with_the_bundles_charge_spin(tmp_path, device, monkeypatch):
-    """Regression (silent-wrong-answer): the flagship ``UMA(atoms)`` / ``from_uma`` path must
+    """Regression (silent-wrong-answer): the flagship ``Calculator(atoms)`` / ``from_uma`` path must
     evaluate with the SAME charge/spin the bundle was merged for. The ethanol golden is merged at
     charge=0, spin=1 (the UMA omol default); before the fix ``calculate`` fell back to spin=0,
     silently disagreeing with the baked MoLE routing. Assert (a) the resolved values are stamped
@@ -174,7 +176,7 @@ def test_uma_evaluates_with_the_bundles_charge_spin(tmp_path, device, monkeypatc
     spin=0 run (so the test has teeth — spin genuinely moves this bundle's answer)."""
     from ase import Atoms
 
-    from tt_atom import UMA, TTAtomCalculator
+    from tt_atom import Calculator, TTAtomCalculator
 
     d = np.load(REAL_GOLDEN)
     assert int(d["in@charge"][0]) == 0 and int(d["in@spin"][0]) == 1  # golden's merge (charge, spin)
@@ -187,7 +189,8 @@ def test_uma_evaluates_with_the_bundles_charge_spin(tmp_path, device, monkeypatc
     monkeypatch.setenv("TT_ATOM_REFENV", "/nonexistent/python")   # a build attempt would raise
 
     atoms = Atoms(numbers=numbers, positions=pos)                 # NO info: exercises the defaults
-    atoms.calc = UMA(atoms, refenv="/nonexistent/python", cache_dir=str(cache_dir), device=device)
+    atoms.calc = Calculator(atoms, refenv="/nonexistent/python", cache_dir=str(cache_dir),
+                           device=device)
     e_uma = atoms.get_potential_energy()
     assert atoms.info["charge"] == 0 and atoms.info["spin"] == 1  # resolved values stamped back
 

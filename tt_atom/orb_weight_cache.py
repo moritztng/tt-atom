@@ -1,4 +1,4 @@
-"""Per-checkpoint weight cache — the machinery behind ``Orb(atoms)``.
+"""Per-checkpoint weight cache — the machinery behind ``Calculator(atoms, "orb-...")``.
 
 Orb has no MoLE (or any) expert routing baked at merge time (see ``docs/orb-port.md``'s
 architecture verdict): the raw checkpoint weights are valid for *any* composition/charge/spin, so
