@@ -164,6 +164,106 @@ def backbone_bw(encoder, layers, ehead, graph):
     return g_edge_feat, g_cutoff
 
 
+def energy_bw_batch(ehead, seg_mean_T):
+    """Batched analogue of ``energy_bw``: the VJP seed at the EnergyHead's node-features input for a
+    disjoint-union batch of K systems, where the batched energy is ``E_total = sum_k E_k`` and
+    ``E_k = ehead.batch``'s k-th output.
+
+    ``seg_mean_T`` [Ntot, K] is the transpose of the row-normalized segment matrix
+    (``seg_mean[k, n] = 1/N_k`` iff atom n in system k): ``seg_mean_T @ g_mean`` broadcasts each
+    system's ``g_mean[k]`` back to its own nodes scaled by ``1/N_k`` -- exactly what single-system
+    ``energy_bw`` does with ``ones[N,1] @ (g_mean * 1/N)``. The rest of the head VJP (``g_h = w1^T``,
+    SiLU backward, ``g_mean = w0^T``) is the per-system-identical matmul, now over ``[K, *]`` instead
+    of ``[1, *]``; the pre-SiLU activation ``a0`` is cached by ``EnergyHead.batch``. The K-row ones
+    seed is cached on ``ehead`` for the same trace-capture-allocation reason as ``energy_bw``'s
+    ``_bw_ones11``."""
+    ttnn = ehead.ttnn
+    kcfg = ehead.kcfg
+    K = seg_mean_T.shape[1]
+    if getattr(ehead, "_bw_onesK1", None) is None or tuple(ehead._bw_onesK1.shape) != (K, 1):
+        ehead._bw_onesK1 = ttnn.ones((K, 1), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+                                     device=ehead.device)
+    g_h = _mm(ttnn, ehead._bw_onesK1, ehead.w1, kcfg)        # [K, hidden]
+    g_a0 = silu_bw(ttnn, g_h, ehead._cache_a0)               # [K, hidden]
+    g_mean = _mm(ttnn, g_a0, ehead.w0, kcfg)                 # [K, C]
+    return ttnn.matmul(seg_mean_T, g_mean, compute_kernel_config=kcfg)   # [Ntot, C]
+
+
+def backbone_bw_batch(encoder, layers, ehead, graph, seg_mean_T):
+    """Batched ``backbone_bw``: the energy-head seed comes from ``energy_bw_batch`` (per-system);
+    every interaction-layer VJP (``attn_layer_bw``) is unchanged because its adjoint algebra only
+    touches the graph's gather/scatter tables and per-edge cutoff -- all block-diagonal under a
+    disjoint-union batch, so an edge's adjoint can only reach its own system's nodes. Returns
+    ``(g_edge_feat, g_cutoff)`` -- the device adjoints at the two pos-dependent uploaded inputs of
+    the *whole* batch -- which the host ``torch.autograd.grad`` finish turns into per-atom forces
+    (block-diagonal => ``dE_total/dpos[n] = dE_{system(n)}/dpos[n]``)."""
+    ttnn = ehead.ttnn
+
+    g_nodes = energy_bw_batch(ehead, seg_mean_T)
+    E, C = graph.E, layers[0].C
+    if getattr(ehead, "_bw_edges_zero", None) is None or tuple(ehead._bw_edges_zero.shape) != (E, C):
+        ehead._bw_edges_zero = ttnn.zeros((E, C), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+                                          device=ehead.device)
+    g_edges = ehead._bw_edges_zero
+    g_cutoff = None
+    for layer in reversed(layers):
+        g_nodes, g_edges, g_c = attn_layer_bw(layer, graph, g_nodes, g_edges)
+        g_cutoff = g_c if g_cutoff is None else ttnn.add(g_cutoff, g_c)
+
+    g_edge_feat = mlpnorm_bw(encoder.edge_fn, g_edges)
+    return g_edge_feat, g_cutoff
+
+
+def energy_and_forces_batch(encoder, layers, ehead, device, *, pos, senders, receivers,
+                            atomic_numbers, node_feat, cell_shift, seg_mean, seg_mean_T,
+                            r_max=6.0, num_bases=8, cond_nodes=None):
+    """Conservative energy + analytic forces for K systems in ONE device forward+backward
+    (disjoint-union batched ``orb-v3-conservative-*``). The batched analogue of
+    ``energy_and_forces``: one device forward at the union geometry, ``ehead.batch`` for the
+    per-system normalized energies, ``backbone_bw_batch`` for the per-system adjoints at the two
+    pos-dependent uploaded inputs (``edge_feat``, ``cutoff``), and a host ``torch.autograd.grad``
+    finish through the differentiable edge geometry. Block-diagonality makes
+    ``dE_total/dpos[n] = dE_{system(n)}/dpos[n]``, so the concatenated forces are each atom's
+    own-system force -- no per-system splitting of the backward is needed.
+
+    ``seg_mean`` [K, Ntot] is the row-normalized segment matrix (``seg_mean[k, n] = 1/N_k`` iff
+    atom n in system k) -- ``ehead.batch`` matmuls it against the node features for the per-system
+    mean. ``seg_mean_T`` [Ntot, K] is its transpose -- ``energy_bw_batch`` matmuls it against
+    ``g_mean`` to broadcast each system's head-adjoint back to its own nodes. Both are host tensors,
+    uploaded here. ``senders``/``receivers``/``cell_shift`` carry per-system node offsets
+    (block-diagonal); ``node_feat``/``cond_nodes`` are the concatenated per-system encoder inputs.
+    Returns ``(energy_raw: torch.Tensor[K], forces: torch.Tensor[Ntot, 3])`` in normalized
+    (pre-denormalize) space, matching ``energy_and_forces``'s convention so the caller finishes with
+    the same host denormalize + ZBL add used by the single-system path."""
+    import ttnn
+
+    from .orb_geometry import host_edge_features
+    from .orb_model import OrbGraphContext, _to_dev
+
+    pos = pos.detach().clone().requires_grad_(True)
+    edge_feat, cutoff, _vectors = host_edge_features(pos, senders, receivers, cell_shift,
+                                                    r_max=r_max, num_bases=num_bases)
+    Ntot = atomic_numbers.shape[0]
+    graph = OrbGraphContext(device, senders=senders, receivers=receivers,
+                            cutoff=cutoff.detach().float(), num_nodes=Ntot, cond_nodes=cond_nodes)
+
+    node_dev = _to_dev(node_feat, device, ttnn.bfloat16)
+    edge_dev = _to_dev(edge_feat.detach().float(), device, ttnn.bfloat16)
+    seg_mean_dev = _to_dev(seg_mean.float(), device, ttnn.bfloat16)
+    seg_mean_T_dev = _to_dev(seg_mean_T.float(), device, ttnn.bfloat16)
+    nodes, edges = encoder(node_dev, edge_dev)
+    for layer in layers:
+        nodes, edges = layer(nodes, edges, graph)
+    raw_pred = ttnn.to_torch(ehead.batch(nodes, seg_mean_dev)).double().view(-1)
+
+    g_edge_feat_dev, g_cutoff_dev = backbone_bw_batch(encoder, layers, ehead, graph, seg_mean_T_dev)
+    g_edge_feat = ttnn.to_torch(g_edge_feat_dev).float()
+    g_cutoff = ttnn.to_torch(g_cutoff_dev).float()
+
+    forces = -torch.autograd.grad([edge_feat, cutoff], pos, grad_outputs=[g_edge_feat, g_cutoff])[0]
+    return raw_pred, forces
+
+
 def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers, atomic_numbers,
                       node_feat, cell_shift=None, r_max=6.0, num_bases=8, compute_stress=False,
                       cond_nodes=None):

@@ -171,23 +171,28 @@ pytest tests/                # full parity suite against both models' upstream g
 
 Both models are dispatch-bound at typical MD/relaxation sizes, so the same two levers apply —
 batch many systems into one device pass, or trace-capture a fixed-topology loop to cut host
-dispatch overhead — though only UMA's batching is wired into a calculator method today:
+dispatch overhead. Both ship a calculator `evaluate_batch`:
 
 | mechanism | UMA | Orb-v3 |
 |---|---|---|
-| Batch independent systems (`calc.evaluate_batch`) | ~13x vs looping on one card (many small molecules) | backbone verified batch-transparent (bit-exact row-independence), no `evaluate_batch` wired up yet — see `docs/orb-port.md` |
+| Batch independent systems (`calc.evaluate_batch`) | ~13x vs looping on one card (many small molecules) | ~19x (conservative-omol, 1338 vs 71 sys/s at K=128 9-atom molecules); ~12x (direct-omol, 2056 vs 166 sys/s) — same disjoint-union backbone verified bit-exact row-independent, now wired through the calculator (`benchmarks/bench_orb_evaluate_batch.py`) |
 | Multi-card fan-out (`tt_atom.batch.MultiCard`) | proven (one process per card) | inherits the same card-count-agnostic scheduler; not independently wall-clock-benchmarked yet |
 | Trace-captured single-system MD/relax step | ~2x, bit-identical forces (`trace=True`) | 1.30–1.51x, bit-exact vs eager (`tt_atom.orb_trace.OrbTracedEngine`) — shrinks at larger graphs since only host *dispatch* is removed, not the host geometry recompute (see `docs/orb-port.md`) |
-| Trace-captured batched MD ensemble | K=4: 4.2x (59→246 sys/s); K=16: 2.6x (207→528 sys/s), approaching the K≥128 eager plateau (~700 sys/s) | not implemented (no batched Orb calculator path yet) |
+| Trace-captured batched MD ensemble | K=4: 4.2x (59→246 sys/s); K=16: 2.6x (207→528 sys/s), approaching the K≥128 eager plateau (~700 sys/s) | not implemented (no batched Orb trace path yet) |
 | `--fast` (bf8 weights + Wigner coefs) | `fast=` kept for reproducibility; the real bandwidth win is the separate edge-activation dataflow (`TT_ATOM_BF8_EDGE`) plus on-device edge-degree (`TT_ATOM_DEVICE_EDE`) and the fused radial-LayerNorm backward — see below | measured **dead end**, 0.99–1.01x — Orb's forward is dispatch-bound, not weight-bandwidth-bound, so halving weight bytes does nothing (`fast=` stays threaded through for reproducibility only) |
 | Source-build perf wins (`device_ede` / `bf8_edge` / `fused_lnbw`) | ~2x traced MD step at large systems (512 atoms: 389→194 ms; 216: 158→85 ms), force PCC 0.9997. Size-dependent — `device_ede`/`bf8_edge` regress small molecules (~0.85x at 9 atoms) so they're opt-in (`TT_ATOM_DEVICE_EDE=1`, `TT_ATOM_BF8_EDGE=1`) for bulk/large MD; `fused_lnbw` is a pure kernel fuse and defaults on. All three need the source `ttnn` build and no-op safely on stock `ttnn` | n/a — Orb runs on stock `ttnn` and doesn't use these kernels |
 
-UMA batching:
+Batching (either model):
 
 ```python
 out = calc.evaluate_batch(list_of_atoms)              # out["energy"], out["forces"]
-out = calc.evaluate_batch(replicas, trace=True)       # per-step in an MD ensemble loop
+out = calc.evaluate_batch(replicas, trace=True)       # per-step in an MD ensemble loop (UMA)
 ```
+
+UMA bakes one MoLE bundle per reduced composition, so a batch shares that composition (conformers
+/ an MD ensemble of one molecule). Orb has no per-composition routing, so its batch may mix
+compositions, charges, and spins freely — the only constraint is the checkpoint's per-atom
+`max_num_neighbors` cap, enforced per-system inside the batch.
 
 To use several cards, fan systems across them with `tt_atom.batch` (one process per card, either
 model).
@@ -205,7 +210,7 @@ weights and matches them.
 | Charge/spin conditioning | ✅ (UMA, all tasks; OrbMol only for Orb) | ✅ (`charge=`/`spin=` kwargs, same shape for both models) |
 | Tasks / checkpoints | UMA: omol/omat/oc20/odac/omc; Orb-v3/OrbMol: omat/omol | `uma-s-1`; all 4 public Orb-v3/OrbMol checkpoints |
 | ASE relax and MD | ✅ | ✅ (plus a traced loop, both models) |
-| Batched inference | ✅ | ✅ UMA (one composition per batch); Orb backbone verified batch-transparent, not yet wired into a calculator method |
+| Batched inference | ✅ | ✅ both models — UMA (one composition per batch); Orb (any mix of compositions/charge/spin), `calc.evaluate_batch` |
 | LAMMPS interface | ✅ (fairchem; not verified whether orb-models ships one) | ❌ |
 | Training, fine-tuning | ✅ | ❌ (inference only) |
 
