@@ -1,13 +1,11 @@
 """Device-resident, trace-captured energy+forces for Orb-v3 at a FIXED topology (MD / relaxation).
 
-Mirrors ``tt_atom/trace.py``'s ``TracedEngine`` (the UMA engine): the capture/refresh/replay
-mechanics are architecture-agnostic in *idea* (capture the forward+backward op stream once,
-refresh only the pos-dependent input buffers in place, replay with zero per-op host dispatch),
-but ``TracedEngine`` itself is not reusable as-is -- its refresh path is built entirely around
-UMA's equivariant machinery (Wigner rotation coefficients, ``rotation.gather_coef``,
-``GraphContext``'s SO(3) buffers), none of which exists for Orb's plain non-equivariant backbone
-(see ``tt_atom/orb_model.py``). This is the from-scratch port of the same *pattern* onto Orb's own
-inputs/outputs.
+Shares the capture/refresh/replay skeleton with the UMA engine via ``trace.TraceEngineBase`` (the
+idea is architecture-agnostic: capture the forward+backward op stream once, refresh only the
+pos-dependent input buffers in place, replay with zero per-op host dispatch). Only the family-
+specific hooks differ: UMA refreshes its equivariant machinery (Wigner rotation coefficients,
+``rotation.gather_coef``, ``GraphContext``'s SO(3) buffers), none of which exists for Orb's plain
+non-equivariant backbone (see ``tt_atom/orb_model.py``). This supplies those hooks for Orb.
 
 For a fixed topology (``senders``/``receivers``/``cell_shift``), the only pos-dependent device
 inputs each step are ``edge_feat`` (the encoder's edge-MLP input) and ``cutoff`` (the attention
@@ -29,10 +27,10 @@ from __future__ import annotations
 
 import torch
 
-from .trace import _host_like
+from .trace import TraceEngineBase, _host_like
 
 
-class OrbTracedEngine:
+class OrbTracedEngine(TraceEngineBase):
     """Captures the device forward(+backward) once for a fixed topology, then replays it.
 
     Construct with the same operands as ``orb_forces.energy_and_forces`` (minus ``pos``), plus
@@ -43,12 +41,9 @@ class OrbTracedEngine:
 
     def __init__(self, encoder, layers, device, *, senders, receivers, atomic_numbers, node_feat,
                  ehead, fhead=None, cell_shift=None, r_max=6.0, num_bases=8):
-        import ttnn
-
-        self.ttnn = ttnn
+        super().__init__(device)
         self.encoder = encoder
         self.layers = layers
-        self.device = device
         self.senders = senders
         self.receivers = receivers
         self.Z = atomic_numbers
@@ -59,18 +54,27 @@ class OrbTracedEngine:
         self.shift = cell_shift
         self.r_max = r_max
         self.num_bases = num_bases
-        self.tid = None
 
     # ------------------------------------------------------------------ capture / refresh
 
-    def _refresh(self, edge_feat, cutoff):
+    def _prepare(self, pos):
+        from .orb_geometry import host_edge_features
+
+        edge_feat, cutoff, _vectors = host_edge_features(pos, self.senders, self.receivers,
+                                                         self.shift, r_max=self.r_max,
+                                                         num_bases=self.num_bases)
+        return edge_feat, cutoff
+
+    def _refresh(self, ctx):
+        edge_feat, cutoff = ctx
         ttnn = self.ttnn
         ttnn.copy_host_to_device_tensor(_host_like(ttnn, self.edge_dev, edge_feat.detach()),
                                         self.edge_dev)
         ttnn.copy_host_to_device_tensor(_host_like(ttnn, self.graph.cutoff, cutoff.detach()),
                                         self.graph.cutoff)
 
-    def _capture(self, edge_feat, cutoff):
+    def _capture(self, ctx):
+        edge_feat, cutoff = ctx
         ttnn = self.ttnn
         from .orb_forces import backbone_bw
         from .orb_model import OrbGraphContext, _to_dev
@@ -104,23 +108,12 @@ class OrbTracedEngine:
 
     # ------------------------------------------------------------------ evaluate
 
-    def __call__(self, pos):
-        """Energy + forces at ``pos`` (same topology as construction). Conservative: analytic
-        ``-dE/dpos``, matching ``energy_and_forces``'s return. Direct: raw per-node ForceHead
-        prediction (still normalized-space, un-denormalized, matching ``ForceHead.__call__``)."""
+    def _finish(self, pos, ctx):
+        """Energy + forces from the replayed outputs. Conservative: analytic ``-dE/dpos``, matching
+        ``energy_and_forces``'s return. Direct: raw per-node ForceHead prediction (still normalized-
+        space, un-denormalized, matching ``ForceHead.__call__``)."""
+        edge_feat, cutoff = ctx
         ttnn = self.ttnn
-        from .orb_geometry import host_edge_features
-
-        pos = pos.detach().clone().requires_grad_(True)
-        edge_feat, cutoff, vectors = host_edge_features(pos, self.senders, self.receivers,
-                                                         self.shift, r_max=self.r_max,
-                                                         num_bases=self.num_bases)
-        if self.tid is None:
-            self._capture(edge_feat, cutoff)
-        else:
-            self._refresh(edge_feat, cutoff)
-        ttnn.execute_trace(self.device, self.tid, cq_id=0, blocking=True)
-
         raw_pred = ttnn.to_torch(self.raw_pred_t).double().view(())
         if not self.conservative:
             raw_forces = ttnn.to_torch(self.raw_force_t).double()
@@ -131,8 +124,3 @@ class OrbTracedEngine:
         forces = -torch.autograd.grad([edge_feat, cutoff], pos,
                                       grad_outputs=[g_edge_feat, g_cutoff])[0]
         return float(raw_pred), forces
-
-    def close(self):
-        if self.tid is not None:
-            self.ttnn.release_trace(self.device, self.tid)
-            self.tid = None

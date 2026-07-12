@@ -16,6 +16,11 @@ bit the eager analytic forces (same op stream) — the trace only removes dispat
 The engine assumes a fixed topology (fixed ``edge_index`` and edge count). The calculator falls
 back to a re-capture whenever the neighbour list changes (an atom crosses the cutoff), so the
 result is always correct; only steps that keep the topology enjoy the replay speedup.
+
+``TraceEngineBase`` holds the architecture-agnostic replay skeleton (detach pos, capture-once /
+refresh-then-replay, device teardown); the UMA :class:`TracedEngine` and Orb
+``orb_trace.OrbTracedEngine`` supply the family-specific ``_prepare``/``_capture``/``_refresh``/
+``_finish`` hooks.
 """
 from __future__ import annotations
 
@@ -39,27 +44,59 @@ def _host_like(ttnn, dev_tensor, torch_tensor):
     return ttnn.from_torch(torch_tensor, dtype=dev_tensor.dtype, layout=dev_tensor.layout)
 
 
-class TracedEngine:
-    """Captures the device forward+backward once for a fixed topology, then replays it.
+class TraceEngineBase:
+    """Capture the device forward(+backward) once for a fixed topology, then replay it.
+
+    Subclasses supply the family-specific pieces: ``_prepare(pos)`` recomputes the host geometry
+    and returns a per-step context; ``_capture(ctx)`` records the op stream and uploads the
+    resident buffers; ``_refresh(ctx)`` overwrites the pos-dependent buffers in place; and
+    ``_finish(pos, ctx)`` reads the replayed outputs back and returns ``(energy, forces)``. The
+    replay skeleton and device teardown are shared."""
+
+    def __init__(self, device):
+        import ttnn
+
+        self.ttnn = ttnn
+        self.device = device
+        self.tid = None
+
+    def __call__(self, pos):
+        """Energy + forces at ``pos`` (same topology as construction). The first call captures the
+        trace (leaving inputs set to this step's data); later calls refresh + replay."""
+        pos = pos.detach().clone().requires_grad_(True)
+        ctx = self._prepare(pos)
+        if self.tid is None:
+            self._capture(ctx)
+        else:
+            self._refresh(ctx)
+        # trace capture records without executing, so a replay is needed to populate the outputs
+        # on the capture step too (the inputs already hold this step's data after _capture).
+        self.ttnn.execute_trace(self.device, self.tid, cq_id=0, blocking=True)
+        return self._finish(pos, ctx)
+
+    def close(self):
+        if self.tid is not None:
+            self.ttnn.release_trace(self.device, self.tid)
+            self.tid = None
+
+
+class TracedEngine(TraceEngineBase):
+    """Captures the UMA (eSCN-MD) device forward+backward once for a fixed topology, then replays.
 
     Construct with the same operands as ``forces.energy_and_forces`` (minus ``pos``); call with
     successive positions. The first call captures the trace; later calls refresh + replay."""
 
     def __init__(self, bb, geo, atomic_numbers, edge_index, sys_node_embedding,
                  edge_cell_shift=None, seg=None, linear_scatter=None):
-        import ttnn
-
-        self.ttnn = ttnn
+        super().__init__(bb.device)
         self.bb = bb
         self.geo = geo
         self.Z = atomic_numbers
         self.edge_index = edge_index
         self.shift = edge_cell_shift
         self.se = sys_node_embedding
-        self.dev = bb.device
         self.C = geo.C
         self.N = atomic_numbers.shape[0]
-        self.tid = None
         self._device_ede = bb.edge_degree is not None
         # disjoint-union batch: ``seg`` [K, N] one-hot -> per-system energy readout inside the
         # trace (block-diagonal, so forces are unchanged). ``linear_scatter`` forces the O(E)
@@ -69,6 +106,9 @@ class TracedEngine:
         self._linear_scatter = linear_scatter
 
     # ------------------------------------------------------------------ capture / refresh
+
+    def _prepare(self, pos):
+        return self.geo(pos, self.Z, self.edge_index, self.se, edge_cell_shift=self.shift)
 
     def _refresh(self, t):
         """Overwrite the pos-dependent resident buffers in place (topology buffers untouched)."""
@@ -104,20 +144,20 @@ class TracedEngine:
         ttnn = self.ttnn
         N, C = self.N, self.C
         self.graph = GraphContext(
-            self.dev, edge_index=self.edge_index, wigner=t["wigner"].detach(),
+            self.device, edge_index=self.edge_index, wigner=t["wigner"].detach(),
             wigner_inv=t["wigner_inv"].detach(), x_edge=t["x_edge"].detach(),
             edge_envelope=t["edge_envelope"].detach(), num_nodes=N,
             linear_scatter=self._linear_scatter)
         self.se3 = ttnn.from_torch(self.se.reshape(N, 1, C), dtype=ttnn.bfloat16,
-                                   layout=ttnn.TILE_LAYOUT, device=self.dev)
+                                   layout=ttnn.TILE_LAYOUT, device=self.device)
         if self.seg is not None:
             self.seg_dev = ttnn.from_torch(self.seg, dtype=ttnn.bfloat16,
-                                           layout=ttnn.TILE_LAYOUT, device=self.dev)
+                                           layout=ttnn.TILE_LAYOUT, device=self.device)
         # x_init operand is the constant l0 node init (device edge-degree on) or the full host
         # x_init (off). l0 is pos-independent so it is uploaded once here and never refreshed.
         init = t["l0"] if self._device_ede else t["x_init"]
         self.x_init = ttnn.from_torch(init.detach(), dtype=ttnn.bfloat16,
-                                      layout=ttnn.TILE_LAYOUT, device=self.dev)
+                                      layout=ttnn.TILE_LAYOUT, device=self.device)
         from . import forces as Fmod
 
         def body():
@@ -130,32 +170,21 @@ class TracedEngine:
             return energy, acc
 
         body()                                  # warmup: compile all kernels before capture
-        ttnn.synchronize_device(self.dev)
+        ttnn.synchronize_device(self.device)
         # Drop the warmup's expanded-coef cache so the capture below records the on-device coef
         # expansion INTO the trace (refreshed from the compact coef on every replay) rather than
         # freezing it at the capture step's values. See rotation.reset_expand_cache.
         rotation.reset_expand_cache()
-        self.tid = ttnn.begin_trace_capture(self.dev, cq_id=0)
+        self.tid = ttnn.begin_trace_capture(self.device, cq_id=0)
         self.energy_t, self.acc = body()
-        ttnn.end_trace_capture(self.dev, self.tid, cq_id=0)
-        ttnn.synchronize_device(self.dev)
+        ttnn.end_trace_capture(self.device, self.tid, cq_id=0)
+        ttnn.synchronize_device(self.device)
 
     # ------------------------------------------------------------------ evaluate
 
-    def __call__(self, pos):
-        """Energy + analytic forces at ``pos`` (same topology as construction)."""
+    def _finish(self, pos, t):
+        """Energy + analytic forces from the replayed outputs."""
         ttnn = self.ttnn
-        pos = pos.detach().clone().requires_grad_(True)
-        t = self.geo(pos, self.Z, self.edge_index, self.se, edge_cell_shift=self.shift)
-
-        if self.tid is None:
-            self._capture(t)            # records the op stream + leaves inputs set to this ``t``
-        else:
-            self._refresh(t)
-        # trace capture records without executing, so a replay is needed to populate the outputs
-        # on the capture step too (the inputs already hold this ``t``'s data after _capture).
-        ttnn.execute_trace(self.dev, self.tid, cq_id=0, blocking=True)
-
         E_flat = ttnn.to_torch(self.energy_t).float().reshape(-1)
         E = E_flat[:self.K].clone() if self.seg is not None else float(E_flat[0])
         acc = self.acc
@@ -184,8 +213,3 @@ class TracedEngine:
             gouts = [ttnn.to_torch(acc["x_init"]).float()] + gouts
         g_pos = torch.autograd.grad(outs, pos, grad_outputs=gouts)[0]
         return E, -g_pos
-
-    def close(self):
-        if self.tid is not None:
-            self.ttnn.release_trace(self.dev, self.tid)
-            self.tid = None

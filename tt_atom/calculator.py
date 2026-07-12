@@ -3,15 +3,17 @@
 Wraps the host geometry + device backbone + analytic-force VJP behind ASE's interface so the
 model is usable for real geometry relaxations and MD. Energy and conservative forces come from
 ``tt_atom.forces.energy_and_forces`` (forces are ``-dE/dpos`` via the on-device reverse pass,
-not finite differences)."""
+not finite differences). The device lifecycle + ASE results packing are shared with the Orb
+family via :class:`ase_base.DeviceCalculator`; the ``calculate`` body (equivariant graph build +
+device forward + energy normalizer) is UMA-specific."""
 from __future__ import annotations
 
 import numpy as np
 import torch
-from ase.calculators.calculator import Calculator, all_changes
+from ase.calculators.calculator import all_changes
 
-from . import device as D
 from . import forces as Fmod
+from .ase_base import DeviceCalculator
 from .geometry import HostGeometry, csd_embedding, radius_graph
 from .model import Backbone
 from .weights import WeightBundle
@@ -41,9 +43,7 @@ def UMA(atoms, task=None, model="uma-s-1", charge=0, spin=1, refenv=None, checkp
                                      fast=fast, trace=trace, **kwargs)
 
 
-class TTAtomCalculator(Calculator):
-    implemented_properties = ["energy", "energies", "free_energy", "forces", "stress"]
-
+class TTAtomCalculator(DeviceCalculator):
     def __init__(self, bundle, task_name=None, device=None, device_id=0, gamma=0.0,
                  fast=False, trace=False, trace_region_size=400_000_000, **kwargs):
         """``bundle`` is a TT-Atom weight bundle (path or ``WeightBundle``) exported for a fixed
@@ -57,22 +57,19 @@ class TTAtomCalculator(Calculator):
         The neighbour list is rechecked every step and the trace is re-captured automatically if
         an atom crosses the cutoff, so results are always correct. When passing your own
         ``device`` with ``trace=True``, open it with a non-zero ``trace_region_size``."""
-        super().__init__(**kwargs)
+        super().__init__(device=device, device_id=device_id, fast=fast,
+                         trace_region_size=trace_region_size if trace else 0, **kwargs)
         if isinstance(bundle, str):
             bundle = WeightBundle.load(bundle)
         self.bundle = bundle
         self.cfg = bundle.config
         self.C = self.cfg["sphere_channels"]
-        self.fast = fast
         self.trace = trace
         if task_name is not None and task_name != bundle.task:
             raise ValueError(
                 f"task_name={task_name!r} does not match this bundle's task {bundle.task!r}. "
                 f"UMA's MoLE routing bakes the task into the merged bundle; export a bundle for "
                 f"{task_name!r} (tools/export_weights.py --task {task_name}) to use that task.")
-        self._owns_device = device is None
-        self.device = device if device is not None else D.open_device(
-            device_id, trace_region_size=trace_region_size if trace else 0)
         self._engine = None
         self._engine_edges = None
         self._engine_shift = None
@@ -138,18 +135,13 @@ class TTAtomCalculator(Calculator):
         return cls(str(path), task_name=task_name, device=device, device_id=device_id,
                    fast=fast, trace=trace, **kwargs)
 
-    def close(self):
+    def _release_engines(self):
         if self._engine is not None:
             self._engine.close()
             self._engine = None
         if self._batch_engine is not None:
             self._batch_engine.close()
             self._batch_engine = None
-        if self._owns_device and self.device is not None:
-            import ttnn
-
-            ttnn.close_device(self.device)
-            self.device = None
 
     def calculate(self, atoms=None, properties=("energy", "forces"), system_changes=all_changes):
         super().calculate(atoms, properties, system_changes)
@@ -188,16 +180,14 @@ class TTAtomCalculator(Calculator):
         if self.elem_refs is not None:
             E += float(self.elem_refs[Z].sum())
         F = self.scale_rmsd * F
-        self.results["energy"] = E
-        self.results["free_energy"] = E
-        self.results["energies"] = np.full(len(atoms), E / len(atoms), dtype=np.float64)
-        self.results["forces"] = F.detach().numpy().astype(np.float64)
+        stress = None
         if virial is not None:
             from ase.stress import full_3x3_to_voigt_6_stress
 
             # stress = (rmsd * dE_raw/dstrain) / V; fairchem's convention (uma/outputs.py)
-            stress = self.scale_rmsd * virial.detach().numpy().astype(np.float64) / atoms.get_volume()
-            self.results["stress"] = full_3x3_to_voigt_6_stress(stress)
+            stress = full_3x3_to_voigt_6_stress(
+                self.scale_rmsd * virial.detach().numpy().astype(np.float64) / atoms.get_volume())
+        self._store_results(atoms, E, F, stress=stress)
 
     def evaluate_batch(self, systems, properties=("energy", "forces"), trace=False):
         """Disjoint-union batched evaluation — K systems in ONE device forward (fairchem/PyG style).

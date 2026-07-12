@@ -8,37 +8,17 @@ buffers (Jd, to_m, SO3 grid matrices, gaussian basis) that are not all in a bare
 
 The bundle format is exactly the one the parity goldens already use, so tests and the calculator
 share a single code path. ``WeightBundle.verify_coverage`` checks a real checkpoint is a drop-in
-fit (every key the modules need is present with the right shape)."""
+fit (every key the modules need is present with the right shape). The ``.npz`` container mechanics
+(config parse, ``w@`` weights, lazy tensor copy) live in the shared :class:`bundle.NpzBundle`; this
+adds the UMA-specific accessors."""
 from __future__ import annotations
 
-import json
-import pathlib
-
-import numpy as np
-import torch
+from .bundle import NpzBundle
 
 
-class WeightBundle:
-    def __init__(self, npz):
-        self._d = npz
-        self.config = json.loads(bytes(npz["config"]).decode())
-
-    @classmethod
-    def load(cls, path):
-        return cls(np.load(pathlib.Path(path)))
-
-    def _t(self, key):
-        return torch.from_numpy(self._d[key].copy())
-
-    @property
-    def weights(self):
-        return {k[2:]: self._t(k).float() for k in self._d.files if k.startswith("w@")}
-
+class WeightBundle(NpzBundle):
     def buffer(self, name):
         return self._t(f"host@{name}").float()
-
-    def has(self, key):
-        return key in self._d.files
 
     # --------------------------------------------------------------- energy normalizer / task
 

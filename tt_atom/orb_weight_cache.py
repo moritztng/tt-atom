@@ -4,16 +4,17 @@ Orb has no MoLE (or any) expert routing baked at merge time (see ``docs/orb-port
 architecture verdict): the raw checkpoint weights are valid for *any* composition/charge/spin, so
 unlike ``tt_atom.bundle_cache`` (one merged bundle per *(composition, charge, spin, task)*, a
 subprocess rebuild per system) this only ever needs one export per *checkpoint name*, ever. A
-cache hit is a plain ``np.load``, exactly like ``bundle_cache``'s.
+cache hit is a plain ``np.load``, exactly like ``bundle_cache``'s. The refenv resolution and the
+atomic subprocess-export mechanics are shared with ``bundle_cache`` (``resolve_refenv`` /
+``run_export``); only the export command is Orb-specific.
 """
 from __future__ import annotations
 
 import os
 import pathlib
-import subprocess
 import sys
 
-from .bundle_cache import resolve_refenv  # same refenv resolution UMA uses, no Orb-specific logic
+from .bundle_cache import resolve_refenv, run_export
 
 CACHE_DIR = pathlib.Path(
     os.environ.get("TT_ATOM_CACHE", pathlib.Path.home() / ".cache" / "tt_atom")
@@ -44,20 +45,8 @@ def get_or_build(checkpoint, *, refenv=None, cache_dir=None, log=True):
              f"env...", file=sys.stderr, flush=True)
     py = resolve_refenv(refenv)
     tools = pathlib.Path(__file__).resolve().parent.parent / "tools" / "export_orb_weights.py"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_out = path.with_name(path.name + ".building.npz")
-    cmd = [py, str(tools), "--ckpt", _short_name(checkpoint), "--out", str(tmp_out)]
-    env = dict(os.environ)
-    env.setdefault("HF_HUB_OFFLINE", "1")
-    try:
-        subprocess.run(cmd, check=True, env=env)
-    except subprocess.CalledProcessError as e:
-        tmp_out.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"reference-env Orb weight export failed (exit {e.returncode}). Command:\n  "
-            + " ".join(cmd)
-        ) from e
-    os.replace(tmp_out, path)
+    run_export(path, lambda tmp_out: [py, str(tools), "--ckpt", _short_name(checkpoint),
+                                      "--out", str(tmp_out)])
     if log:
         print(f"[tt-atom] cached -> {path}", file=sys.stderr, flush=True)
     return path

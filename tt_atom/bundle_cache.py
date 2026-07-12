@@ -92,11 +92,37 @@ def resolve_refenv(refenv=None):
     )
 
 
+def run_export(out_path, make_cmd, *, error_hint=""):
+    """Run a reference-env export that writes a sidecar, then atomically move it into place.
+
+    ``make_cmd(tmp_out)`` returns the argv list that writes ``tmp_out``. Writing to a sidecar
+    (``*.building.npz``) and ``os.replace``-ing only on success means an interrupted or failed
+    build can never leave a half-written file that later looks like a cache hit. Shared by the UMA
+    bundle build and the Orb per-checkpoint export (``orb_weight_cache``); ``HF_HUB_OFFLINE`` is
+    defaulted on so a cache hit never reaches out to the hub."""
+    out_path = pathlib.Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # sidecar ends in .npz so np.savez does not append a second extension
+    tmp_out = out_path.with_name(out_path.name + ".building.npz")
+    cmd = make_cmd(tmp_out)
+    env = dict(os.environ)
+    env.setdefault("HF_HUB_OFFLINE", "1")
+    try:
+        subprocess.run(cmd, check=True, env=env)
+    except subprocess.CalledProcessError as e:
+        tmp_out.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"reference-env export failed (exit {e.returncode}). Command:\n  "
+            + " ".join(str(c) for c in cmd) + error_hint
+        ) from e
+    os.replace(tmp_out, out_path)
+    return out_path
+
+
 def build_bundle(atoms, out_path, *, model="uma-s-1", task="omol", charge=0, spin=1,
                  refenv=None, checkpoint=None):
     """Merge + export a bundle for ``atoms`` by running ``tools/export_weights.py`` in the
-    reference env. Writes atomically (build to a sidecar, then ``os.replace``) so an interrupted
-    build can never leave a half-written file that later looks like a cache hit."""
+    reference env."""
     if model != "uma-s-1":
         raise ValueError(
             f"auto-build supports model='uma-s-1'; got {model!r}. Export other checkpoints "
@@ -104,34 +130,25 @@ def build_bundle(atoms, out_path, *, model="uma-s-1", task="omol", charge=0, spi
         )
     py = resolve_refenv(refenv)
     tools = pathlib.Path(__file__).resolve().parent.parent / "tools" / "export_weights.py"
-    out_path = pathlib.Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    # sidecar ends in .npz so np.savez does not append a second extension
-    tmp_out = out_path.with_name(out_path.name + ".building.npz")
+    hint = (
+        "\n\nIf this is a checkpoint/access error: the UMA weights are gated — accept the "
+        "license at\n  https://huggingface.co/facebook/UMA\nand log in once with "
+        "`huggingface-cli login` (or set HF_TOKEN) in the reference env."
+    )
     with tempfile.TemporaryDirectory() as td:
         from ase.io import write
 
         xyz = pathlib.Path(td) / "structure.xyz"
         write(str(xyz), atoms)
-        cmd = [py, str(tools), "--uma-s-1", "--xyz", str(xyz), "--task", task,
-               "--charge", str(int(charge)), "--spin", str(int(spin)), "--out", str(tmp_out)]
-        if checkpoint:
-            cmd += ["--checkpoint", str(checkpoint)]
-        env = dict(os.environ)
-        env.setdefault("HF_HUB_OFFLINE", "1")
-        try:
-            subprocess.run(cmd, check=True, env=env)
-        except subprocess.CalledProcessError as e:
-            tmp_out.unlink(missing_ok=True)
-            raise RuntimeError(
-                f"reference-env bundle build failed (exit {e.returncode}). Command:\n  "
-                + " ".join(cmd)
-                + "\n\nIf this is a checkpoint/access error: the UMA weights are gated — accept the "
-                "license at\n  https://huggingface.co/facebook/UMA\nand log in once with "
-                "`huggingface-cli login` (or set HF_TOKEN) in the reference env."
-            ) from e
-    os.replace(tmp_out, out_path)
-    return out_path
+
+        def make_cmd(tmp_out):
+            cmd = [py, str(tools), "--uma-s-1", "--xyz", str(xyz), "--task", task,
+                   "--charge", str(int(charge)), "--spin", str(int(spin)), "--out", str(tmp_out)]
+            if checkpoint:
+                cmd += ["--checkpoint", str(checkpoint)]
+            return cmd
+
+        return run_export(out_path, make_cmd, error_hint=hint)
 
 
 def get_or_build(atoms, *, model="uma-s-1", task="omol", charge=0, spin=1, refenv=None,

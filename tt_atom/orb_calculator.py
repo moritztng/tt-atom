@@ -1,7 +1,8 @@
 """``OrbCalculator`` — an ASE calculator backed by the device-resident Orb-v3/OrbMol backbone.
 
-The Orb-family counterpart to ``tt_atom.calculator.TTAtomCalculator``/``UMA``: same ASE-calculator
-shape, same ``Model(atoms, charge=, spin=)`` one-liner, same device-open/close lifecycle. The one
+The Orb-family counterpart to ``tt_atom.calculator.TTAtomCalculator``/``UMA``: it shares the ASE
+device lifecycle + results packing (:class:`ase_base.DeviceCalculator`) and the same
+``Model(atoms, charge=, spin=)`` one-liner, differing only in the backbone it drives. The one
 genuine architectural difference (see ``docs/orb-port.md``'s "Architecture verdict"): Orb has no
 MoLE (or any) expert routing baked in at merge time, so its weights are valid for *any*
 composition/charge/spin — there is no per-system bundle to build or cache, only a per-*checkpoint*
@@ -15,9 +16,9 @@ import pathlib
 
 import numpy as np
 import torch
-from ase.calculators.calculator import Calculator, all_changes
+from ase.calculators.calculator import all_changes
 
-from . import device as D
+from .ase_base import DeviceCalculator
 
 
 def Orb(atoms=None, checkpoint="orb-v3-conservative-inf-omat", charge=0, spin=1, refenv=None,
@@ -41,16 +42,14 @@ def Orb(atoms=None, checkpoint="orb-v3-conservative-inf-omat", charge=0, spin=1,
                                          device=device, device_id=device_id, fast=fast, **kwargs)
 
 
-class OrbCalculator(Calculator):
-    implemented_properties = ["energy", "energies", "free_energy", "forces", "stress"]
-
+class OrbCalculator(DeviceCalculator):
     def __init__(self, weights, device=None, device_id=0, fast=False, **kwargs):
         """``weights`` is an ``OrbWeights`` (or a path to one, see ``tools/export_orb_weights.py``
         / ``tt_atom.orb_weight_cache``): the raw checkpoint's config + state dict, no system-
         specific data. Builds the device-resident encoder/backbone/heads once; every subsequent
         ``calculate()`` call reuses them for whatever structure ASE hands it — no per-composition
         rebuild, since Orb bakes no routing into the weights."""
-        super().__init__(**kwargs)
+        super().__init__(device=device, device_id=device_id, fast=fast, **kwargs)
         if isinstance(weights, (str, pathlib.Path)):
             from .orb_weights import OrbWeights
 
@@ -58,14 +57,10 @@ class OrbCalculator(Calculator):
         self.cfg = weights.config
         w = weights.weights
         self._w = w
-        self.fast = fast
         self.r_max = self.cfg["cutoff"]
         self.num_bases = self.cfg["num_bases"]
         self.max_num_neighbors = self.cfg["max_num_neighbors"]
         self.task = self.task_name = self.cfg["task"]
-
-        self._owns_device = device is None
-        self.device = device if device is not None else D.open_device(device_id)
 
         from .orb_model import AttentionInteractionLayer, Encoder, EnergyHead, ForceHead, StressHead
 
@@ -101,13 +96,6 @@ class OrbCalculator(Calculator):
         path = OWC.get_or_build(checkpoint, refenv=refenv, cache_dir=cache_dir)
         return cls(OrbWeights.load(str(path)), device=device, device_id=device_id, fast=fast,
                   **kwargs)
-
-    def close(self):
-        if self._owns_device and self.device is not None:
-            import ttnn
-
-            ttnn.close_device(self.device)
-            self.device = None
 
     def calculate(self, atoms=None, properties=("energy", "forces"), system_changes=all_changes):
         super().calculate(atoms, properties, system_changes)
@@ -214,9 +202,4 @@ class OrbCalculator(Calculator):
                     rest[0], N, cell, running_var=self._w["energy_head.normalizer.bn.running_var"])
 
         E = float(E + host_zbl_energy(Z, senders, receivers, vectors))
-        self.results["energy"] = E
-        self.results["free_energy"] = E
-        self.results["energies"] = np.full(N, E / N, dtype=np.float64)
-        self.results["forces"] = F.detach().numpy().astype(np.float64)
-        if stress is not None:
-            self.results["stress"] = stress.detach().numpy().astype(np.float64)
+        self._store_results(atoms, E, F, stress=stress)
