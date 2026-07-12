@@ -48,17 +48,18 @@ tt-atom run structure.xyz
 ```
 
 ```python
-from ase.io import read
+from ase.build import molecule
 from tt_atom import Calculator
 
-atoms = read("structure.xyz")
-atoms.calc = Calculator(atoms)                             # uma-s-1
-# atoms.calc = Calculator(atoms, "orb-v3-conservative-omol")   # or any Orb checkpoint
+atoms = molecule("H2O")                          # any ASE Atoms (e.g. ase.io.read("file.xyz"))
+atoms.calc = Calculator(atoms, "orb-v3-conservative-omol")   # pick the model by name
 atoms.get_potential_energy()
 atoms.get_forces()
 ```
 
-One entry point, one call, the model picked by name (like fairchem's `FAIRChemCalculator` or Hugging Face's `AutoModel.from_pretrained`) — you never need to know whether it's a UMA or an Orb under the hood. `Calculator(atoms)` defaults to `uma-s-1`, infers the task (`omat` if the cell is periodic, else `omol`), and builds a device-resident model for that composition on first use; later calls load it from cache. Any `orb-v3-*` name routes to the Orb family instead (see [Model coverage](#model-coverage)); Orb weights aren't composition-specific, so the cache is per-checkpoint, not per-structure. Everything downstream is plain ASE either way.
+One entry point, one call, the model picked by name (like fairchem's `FAIRChemCalculator` or Hugging Face's `AutoModel.from_pretrained`) — you never need to know whether it's a UMA or an Orb under the hood. The name selects the family: any `uma-*` routes to the equivariant eSCN-MD engine, any `orb-v3-*` to the Orb backbone (see [Model coverage](#model-coverage)). With no name, `Calculator(atoms)` is the default, `uma-s-1`.
+
+UMA infers the task (`omat` if the cell is periodic, else `omol`) and builds a device-resident model for that composition on first use; later calls load it from cache. Orb weights aren't composition-specific, so its cache is per-checkpoint, not per-structure. The example above leads with an Orb checkpoint because its weights are ungated and it runs on stock `ttnn`; UMA needs the gated `uma-s-1` weights and a source `tt-metal` build with the custom kernels (see [Install](#install)). Everything downstream is plain ASE either way.
 
 ## Relax and MD
 
