@@ -29,8 +29,8 @@ from .device import compute_kernel_config
 _SO2_FUSED = os.environ.get("TT_ATOM_SO2_FUSED", "1") == "1"
 # Route the radial-MLP LayerNorm backward (_ln_bw) through the custom fused reduction kernel
 # (ttnn.experimental.fused_ln_bw): one kernel launch computes mean/rstd + dx with W L1-resident,
-# vs ~15 ttnn ops. Biggest single fuseable glue (~14 ms/step, x~10 calls). Needs source-ttnn build.
-_FUSED_LNBW = os.environ.get("TT_ATOM_FUSED_LNBW") == "1"
+# vs ~15 ttnn ops. Biggest single fuseable glue (~14 ms/step, x~10 calls). Default ON when the
+# source-ttnn build carries the kernel; see device.fused_lnbw() (capability-probed, A/B-overrideable).
 _RED_CACHE: dict = {}
 
 
@@ -148,14 +148,15 @@ class RadialMLP:
         replacing the host ``torch.autograd`` radial finish (~100 ms at N=128 on the force path)."""
         ttnn = self.ttnn
         from .forces import silu_bw, _mm
+        from .device import fused_lnbw
         a0, n1, a3, n4 = self._cache
         g_s2 = _mm(ttnn, g_out, self.w6, self.kcfg)        # [E, hidden]
-        if _FUSED_LNBW and a3.shape[-1] % 32 == 0:
+        if fused_lnbw() and a3.shape[-1] % 32 == 0:
             g_a3 = self._silu_ln_bw(g_s2, n4, a3, self.ln4w_b)   # one kernel: silu-bw + LN-bw
         else:
             g_a3 = self._ln_bw(silu_bw(ttnn, g_s2, n4), a3, self.ln4w_b)
         g_s1 = _mm(ttnn, g_a3, self.w3, self.kcfg)
-        if _FUSED_LNBW and a0.shape[-1] % 32 == 0:
+        if fused_lnbw() and a0.shape[-1] % 32 == 0:
             g_a0 = self._silu_ln_bw(g_s1, n1, a0, self.ln1w_b)
         else:
             g_a0 = self._ln_bw(silu_bw(ttnn, g_s1, n1), a0, self.ln1w_b)

@@ -16,15 +16,53 @@ from __future__ import annotations
 import os
 from contextlib import contextmanager
 
+# The three measured wins below (device edge-degree embedding, bf8 edge-activation dataflow, fused
+# radial-LayerNorm backward) landed on the source-ttnn build (branch ``moritztng/tt-atom``, which
+# carries UMA's custom ``fused_rotate``/``fused_rotate_gc``/``fused_gate``/``fused_ln_bw`` kernels).
+# They default ON when that build is installed and fall back to the stock-ttnn path otherwise, so a
+# plain ``pip install ttnn`` wheel (e.g. 0.68, which lacks the custom kernels) keeps the safe
+# behaviour. ``TT_ATOM_DEVICE_EDE`` / ``TT_ATOM_BF8_EDGE`` / ``TT_ATOM_FUSED_LNBW`` remain as
+# ``=1``/``=0`` overrides for A/B measurement; the *default* is the capability probe, not the env
+# var (see memory ``prefer-args-over-envvars``).
+_CAP_CACHE: dict = {}
+
+
+def _experimental_ops():
+    """The ttnn experimental-ops module, or ``None`` if ttnn / the submodule isn't importable.
+    Imported lazily so ``import tt_atom`` never pulls ttnn or opens a device."""
+    try:
+        import ttnn._ttnn.operations.experimental as e  # noqa: PLC0415
+        return e
+    except Exception:
+        return None
+
+
+def _cap(*ops: str) -> bool:
+    """Cached probe: are all ``ops`` present on the installed ttnn's experimental module? False on
+    stock ttnn wheels that lack UMA's custom kernels (the fallback trigger)."""
+    key = "cap:" + ",".join(ops)
+    return _CAP_CACHE.setdefault(key, bool(
+        (e := _experimental_ops()) is not None and all(hasattr(e, o) for o in ops)))
+
+
+def _tri(env: str, cap: bool) -> bool:
+    """Tri-state: ``=1`` forces on, ``=0`` forces off, unset -> the capability probe ``cap``."""
+    v = os.environ.get(env)
+    if v == "1":
+        return True
+    if v == "0":
+        return False
+    return cap
+
 
 def device_ede() -> bool:
     """Whether the edge-degree embedding (node init) is computed on device inside the trace.
 
-    Default OFF (host torch, the original path). When ``TT_ATOM_DEVICE_EDE=1`` the radial MLP ->
-    rotate-back -> envelope -> scatter -> +l0 chain runs on device (see tt_atom/edge_degree.py),
-    removing the largest per-step host cost (the radial-MLP fwd+bw over E edges). Read at call
-    time so tests / benches can toggle it per run."""
-    return os.environ.get("TT_ATOM_DEVICE_EDE") == "1"
+    Default ON when the source-ttnn build (``fused_rotate`` present) is installed; OFF on stock
+    ttnn wheels. Moves the largest per-step host cost (the radial-MLP fwd+bw over E edges) onto the
+    device inside the captured trace (see tt_atom/edge_degree.py). ``TT_ATOM_DEVICE_EDE=0/1``
+    overrides for A/B."""
+    return _tri("TT_ATOM_DEVICE_EDE", _cap("fused_rotate"))
 
 
 def bf8_edge() -> bool:
@@ -33,9 +71,18 @@ def bf8_edge() -> bool:
     these activations (bf8 halves the traffic -> ~2x on the fat matmuls; measured), NOT compute-
     bound (HiFi4==LoFi) nor weight-bound (bf8 weights alone = 1.00x). The bf16<->bf8 boundary sits
     at the SMALL N-sized node features (gather input / scatter output), so there is no per-edge
-    typecast overhead. Node residual stream + norms stay bf16. Requires the source-ttnn build whose
-    fused_rotate/gate/gc kernels accept bf8 I/O. Default OFF."""
-    return os.environ.get("TT_ATOM_BF8_EDGE") == "1"
+    typecast overhead. Node residual stream + norms stay bf16. Default ON when the source-ttnn
+    build's ``fused_rotate``/``fused_rotate_gc``/``fused_gate`` kernels (which accept bf8 I/O) are
+    installed; OFF on stock ttnn. ``TT_ATOM_BF8_EDGE=0/1`` overrides for A/B."""
+    return _tri("TT_ATOM_BF8_EDGE", _cap("fused_rotate", "fused_rotate_gc", "fused_gate"))
+
+
+def fused_lnbw() -> bool:
+    """Whether the radial-MLP LayerNorm backward routes through the custom ``fused_ln_bw`` kernel
+    (one launch: mean/rstd + dx with W L1-resident, vs ~15 ttnn ops). Default ON when
+    ``fused_ln_bw`` is present (source-ttnn build); OFF otherwise. ``TT_ATOM_FUSED_LNBW=0/1``
+    overrides for A/B."""
+    return _tri("TT_ATOM_FUSED_LNBW", _cap("fused_ln_bw"))
 
 
 def edge_dtype(ttnn):
