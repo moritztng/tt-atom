@@ -52,7 +52,8 @@ from ase.build import molecule
 from tt_atom import Calculator
 
 atoms = molecule("H2O")                          # any ASE Atoms (e.g. ase.io.read("file.xyz"))
-atoms.calc = Calculator(atoms, "orb-v3-conservative-omol")   # pick the model by name
+atoms.calc = Calculator(atoms, "orb-v3-conservative-omol")   # an Orb checkpoint, by name
+# atoms.calc = Calculator(atoms, "uma-s-1")                  # UMA, by name (same as Calculator(atoms))
 atoms.get_potential_energy()
 atoms.get_forces()
 ```
