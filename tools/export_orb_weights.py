@@ -3,8 +3,8 @@
 Unlike UMA (``tools/export_weights.py``), Orb has no MoLE expert routing to merge — the raw
 checkpoint weights are valid for *any* composition/charge/spin, so this is a plain one-time
 per-checkpoint export (no structure, no forward pass), read back by ``tt_atom.orb_weights.OrbWeights``
-in the ttnn env. This is what lets ``Orb(atoms)`` skip the per-composition bundle dance
-``UMA(atoms)`` needs (see README's "Model coverage").
+in the ttnn env. This is what lets an Orb ``Calculator`` skip the per-composition bundle dance a
+UMA ``Calculator`` needs (see README's "Model coverage").
 
 Run with the reference (numpy>=2, has ``orb-models``) env:
 

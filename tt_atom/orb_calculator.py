@@ -1,8 +1,9 @@
 """``OrbCalculator`` — an ASE calculator backed by the device-resident Orb-v3/OrbMol backbone.
 
-The Orb-family counterpart to ``tt_atom.calculator.TTAtomCalculator``/``UMA``: it shares the ASE
-device lifecycle + results packing (:class:`ase_base.DeviceCalculator`) and the same
-``Model(atoms, charge=, spin=)`` one-liner, differing only in the backbone it drives. The one
+The Orb-family counterpart to ``tt_atom.calculator.TTAtomCalculator``: it shares the ASE device
+lifecycle + results packing (:class:`ase_base.DeviceCalculator`) and is reachable through the same
+unified ``Calculator(atoms, model=...)`` front door (:mod:`tt_atom.auto`), differing only in the
+backbone it drives. The one
 genuine architectural difference (see ``docs/orb-port.md``'s "Architecture verdict"): Orb has no
 MoLE (or any) expert routing baked in at merge time, so its weights are valid for *any*
 composition/charge/spin — there is no per-system bundle to build or cache, only a per-*checkpoint*
@@ -19,27 +20,6 @@ import torch
 from ase.calculators.calculator import all_changes
 
 from .ase_base import DeviceCalculator
-
-
-def Orb(atoms=None, checkpoint="orb-v3-conservative-inf-omat", charge=0, spin=1, refenv=None,
-       cache_dir=None, device=None, device_id=0, fast=False, **kwargs):
-    """Zero-config entry point — the Orb-family counterpart to :func:`tt_atom.calculator.UMA`.
-
-        from tt_atom import Orb
-        atoms.calc = Orb(atoms)            # orb-v3-conservative-inf-omat, energy + forces
-
-    Unlike ``UMA(atoms)``, Orb has no MoLE routing to bake per composition, so the checkpoint
-    export is cached once per *checkpoint name* (not per structure) and ``atoms`` is only used to
-    stamp ``charge``/``spin`` defaults, mirroring ``UMA``'s convention (``Orb(atoms, charge=-1,
-    spin=2)``) — pass ``atoms=None`` to build a calculator with no structure in hand yet. Charge/
-    spin conditioning only exists on the OrbMol checkpoints (``checkpoint="orb-v3-conservative-
-    omol"`` / ``"orb-v3-direct-omol"``); the omat checkpoints ignore both (no conditioning
-    weights) since they were never trained with them."""
-    if atoms is not None:
-        atoms.info.setdefault("charge", charge)
-        atoms.info.setdefault("spin", spin)
-    return OrbCalculator.from_checkpoint(checkpoint=checkpoint, refenv=refenv, cache_dir=cache_dir,
-                                         device=device, device_id=device_id, fast=fast, **kwargs)
 
 
 class OrbCalculator(DeviceCalculator):
@@ -88,7 +68,7 @@ class OrbCalculator(DeviceCalculator):
                         device=None, device_id=0, fast=False, **kwargs):
         """Export (or load from cache) ``checkpoint``'s weights via the reference env and return a
         ready calculator. Resolution order for the reference python: ``refenv`` arg >
-        ``$TT_ATOM_REFENV`` > ``~/.ttatom_run/refenv/bin/python`` (same as ``UMA``'s). A cache hit
+        ``$TT_ATOM_REFENV`` > ``~/.ttatom_run/refenv/bin/python`` (same as the UMA path's). A cache hit
         needs no reference env at all."""
         from . import orb_weight_cache as OWC
         from .orb_weights import OrbWeights
