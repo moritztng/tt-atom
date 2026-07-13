@@ -79,14 +79,18 @@ directly; the raw Tenstorrent throughput (21 steps/s, 0.90 ns/day) is also in th
   atoms leave their lattice sites. Both evolve frame-by-frame alongside the atoms.
 
 ## Notes for Moritz
-- The video is one honest on-device melt; the HUD is composited from the real per-step log and the
-  real g(r)/MSD of that trajectory — no fabricated numbers, no sped-up trickery. The loop is a
-  boomerang (forward then reverse) so it seams cleanly; MD is not time-periodic.
-- The periodic-cell wireframe is deliberately shown (a periodic MD system is displayed with its
-  cell box — it reads the boundary and the scale); thin and subtle so it frames the melt without
-  fighting it.
-- Rendered in OVITO (Tachyon): shaded Jmol-Si spheres, the diamond bond network, the cell box,
-  ambient occlusion + shadows. MP4 1280×720 for the post (6.1 MB); GIF 540 px for preview (5.8 MB).
+- The video is one honest on-device melt; the side-card (T-ramp, MSD, g(r)) is composited from the
+  real per-step log and the real g(r)/MSD of that trajectory, advancing in lockstep with the atoms
+  — no fabricated numbers, no sped-up trickery. It plays forward once with a short fade in/out at
+  the loop point (MD is not time-periodic; a boomerang would rewind the ramp = look like cooling).
+- No jumping: the cell is tiled 3×3×3 with a smooth radial transparency fade, so an atom leaving a
+  face is continued by its periodic image (no teleport) and nothing pops at the crop edge (no
+  flicker). The central primitive cell stays opaque with its wireframe, framed by a dim image halo.
+- No GPU / NVIDIA / per-dollar comparison anywhere in the video (the label is model + system + T
+  only), per Moritz. The per-dollar angle above is for the post text only, optional.
+- Rendered in OVITO (Tachyon): shaded cool-silicon spheres, the cell box, ambient occlusion +
+  shadows. MP4 1920×1080 (~5 MB), GIF 720 px for preview. Standalone 4-panel physics figure in
+  `melt_charts.png` for scientific scrutiny.
 - Reproduction: `NOTES.md`. Full verification + honesty caveats: `VERIFICATION.md`.
 - The earlier 900 K solid-vibration demo (the first Orb social post draft) is archived under
   `prev_solid_demo/` — this melt version supersedes it.

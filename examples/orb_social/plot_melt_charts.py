@@ -48,6 +48,8 @@ def main():
     msd = np.asarray(m["msd"], float); mt = np.asarray(m["msd_time"], float)
     tcross = float(m["t_melt_cross"]); drift_s = float(m["drift_solid"]); drift_l = float(m["drift_liquid"])
     D = float(m["D_m2s"])
+    # for the liquid g(r) reference use the hottest frame (clearly above T_m), not the cooled tail
+    iliq = int(np.argmax(gtemp))
 
     fig, ax = plt.subplots(2, 2, figsize=(12.4, 8.2), dpi=150)
     fig.patch.set_facecolor(BG)
@@ -94,8 +96,8 @@ def main():
     # (d) g(r)
     d = ax[1, 1]; _style(d, "d   Radial distribution  g(r)")
     d.plot(r, gser[0], color=C_XTAL, lw=1.7, label="crystalline (%.0f K)" % gtemp[0])
-    d.plot(r, gser[-1], color=C_LIQ, lw=1.9, label="liquid (%.0f K)" % gtemp[-1])
-    d.fill_between(r, 0, gser[-1], color=C_LIQ, alpha=0.10)
+    d.plot(r, gser[iliq], color=C_LIQ, lw=1.9, label="liquid (%.0f K)" % gtemp[iliq])
+    d.fill_between(r, 0, gser[iliq], color=C_LIQ, alpha=0.10)
     d.axhline(1.0, color=GRID, lw=0.8)
     d.set_xlabel(r"r (${\rm \AA}$)", color=DIM, fontsize=10); d.set_ylabel("g(r)", color=DIM, fontsize=10)
     d.set_xlim(0, r[-1]); d.set_ylim(0, min(float(gser[0].max()) * 1.05, 22))

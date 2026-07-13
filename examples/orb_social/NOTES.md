@@ -72,27 +72,42 @@ solid.
     <refenv> plot_melt_charts.py --metrics $TMP/melt_metrics.npz --out $TMP/melt_charts.png
 
 4 panels: T-ramp crossing T_m, E_tot conservation (rises under NVT, flat under NVE), MSD (flat
-solid -> rising diffusion), g(r) (sharp crystal -> broad liquid). Verified by eye.
+solid -> rising diffusion), g(r) (sharp crystal -> broad liquid). Verified by eye. The g(r) liquid
+reference is the hottest frame (~2311 K, clearly above T_m), not the cooled NVE tail.
 
-## 6. Render — clean premium 3D video (Moritz's four fixes)
+## 6. Render — clean premium video with a synced physics side-card
 
     <refenv> render_melt_video.py --traj $TMP/si_melt.extxyz --metrics $TMP/melt_metrics.npz \
         --out orb_si_melt --workdir $TMP
 
-1080x1080 MP4 + 560px GIF, boomerang loop. The four fixes (see the video's own docstring):
+1920x1080 MP4 + 720px GIF: a square 3D scene on the left, a synced physics side-card on the right
+(T-ramp, MSD, g(r)) whose cursors/curves advance in lockstep with the melt. The decisions:
 
 1. **Framing** — camera distance is derived from the cell's bounding sphere, so the whole cell +
-   ~16% margin stays in frame at every timestep and every turntable angle. Verified by eye on
-   first/mid/last frames: nothing clipped.
+   margin stays in frame at every timestep and every turntable angle. Verified by eye: nothing
+   clipped.
 2. **Minimal text** — one line only: `Orb-v3 . 216-atom Si . T = <live> K`, plus a small
-   sub-line (state). No stats paragraph. The numbers live in the charts figure and the docs.
+   sub-line (state). No stats paragraph. The numbers live in the side-card and the docs. The live
+   T is edge-corrected moving-average smoothed (raw instantaneous T of 216 atoms swings ±150 K
+   frame-to-frame and reads as unstable).
 3. **Atom colour** — a premium cool "silicon" blue with Tachyon ambient occlusion + shadows on a
-   near-black canvas (was pale tan).
-4. **The jump** — chose *periodic-image tiling*: render the primitive cell surrounded by a thin
-   shell of its periodic images (tile 3x3x3, keep the central cell + a 3.2 A shell). An atom
-   leaving one face is matched by its image entering the opposite face, so the liquid reads
-   continuous and there is no wrap "teleport" — while staying exactly the periodic system the MD
-   integrated. The wireframe marks the primitive cell.
+   near-black canvas.
+4. **The jump (Moritz's ADDENDUM 2)** — chose *periodic-image tiling with a smooth radial fade*.
+   Two artifacts had to go: the wrap "teleport" (an atom crossing a box face jumps to the far
+   side) and the shell "pop" (atoms flickering in/out at a hard periodic-image crop). We tile the
+   cell 3x3x3 so an atom leaving one face is continued by its image entering the opposite face
+   (continuity, no teleport), AND fade atoms smoothly to transparent over a radial band
+   [r_solid=14.2 A, r_fade=22 A] from the cell centre, dropping the fully-transparent tail
+   (no hard edge, no pop). The central primitive cell stays fully opaque and reads as the subject,
+   framed by a dim periodic-image halo. Verified by eye across consecutive frames: the liquid
+   moves coherently, no atom jumps anywhere on screen. This is exactly the periodic system the MD
+   integrated; the wireframe marks the primitive cell.
+
+Charts included in the video (Moritz's ADDENDUM 2): T-ramp (heating through T_m), MSD (diffusion
+onset), g(r) (crystal -> liquid). Energy conservation was dropped from the video panel (kept in
+the standalone 4-panel figure) — the two structural signatures are the compelling ones. The loop
+plays forward once with a short fade in/out so the restart is not a hard snap (MD is not
+time-periodic; a boomerang would rewind the ramp, which reads as cooling — misleading).
 
 **No GPU / NVIDIA / per-dollar comparison anywhere in the video** (per Moritz).
 
