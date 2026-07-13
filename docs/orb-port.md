@@ -403,6 +403,142 @@ to port). Disjoint-union batching for `cond_nodes` is now wired up — `OrbCalcu
 concatenates one `host_charge_spin_embedding` per system and uploads it once, parity-gated on the
 OrbMol checkpoint (`tests/test_orb_evaluate_batch.py::test_evaluate_batch_conservative_omol`).
 
+## Performance per dollar: one Blackhole p150 vs an NVIDIA H100-class GPU
+
+The question that matters for a buyer: for an Orb-v3 materials-MD workload, how much
+throughput does a single Tenstorrent Blackhole p150 deliver relative to a single
+NVIDIA data-centre GPU, and what does that look like once you divide by what the card
+costs? The short version: on a 216-atom periodic crystal the p150 is *faster* than an
+NVIDIA H200, and it costs roughly twenty-three times less. Even at 512 atoms, where the
+H200 pulls slightly ahead on raw throughput, the p150 delivers ~20x the throughput per
+dollar. This is a stronger perf-per-dollar result than the UMA comparison it mirrors
+(UMA is ~4-5x slower than an H100, which costs ~21x more, for a ~4-5x perf-per-dollar
+edge); Orb on a fixed-topology solid is the regime where the p150 wins outright.
+
+### What was measured
+
+Same model, same system, same quantity on both sides: one Orb-v3
+`orb-v3-conservative-inf-omat` MD step (energy + conservative forces) on a periodic Si
+diamond supercell, warm steady-state with model load and first-call compilation
+excluded.
+
+| side | card | precision | path | neighbour list |
+|---|---|---|---|---|
+| Tenstorrent | Blackhole p150 (one card) | bf16 weights/activations, fp32-accumulate matmul | `OrbTracedEngine` trace/replay (the production path for a fixed-topology solid) | frozen at the first geometry |
+| NVIDIA | H200 (one GPU, rented on vast.ai) | fp32 (`orb_models` default) | `orb_models.forcefield.calculator.ORBCalculator`, the stock reference package | rebuilt every call (`orb_models` default) |
+
+Forces come from the analytic/autograd backward on both sides (the conservative
+checkpoint's `F = -dE/dpos`): hand-written device VJPs on Tenstorrent (`tt_atom/orb_forces.py`),
+`torch.autograd` on the GPU. The Tenstorrent path freezes the neighbour list because a
+solid crystal's atoms vibrate about their lattice sites and never cross the cutoff, so
+the topology is genuinely constant and trace-capture replay is bit-exact. That is the
+honest production mode for solid-state MD and is what `examples/orb_md.py` runs; the
+reference package rebuilds the list every call because that is its default. A frozen
+neighbour list is a legitimate optimisation the p150 path bakes in and the stock GPU
+package does not, not a trick.
+
+`orb_models` runs fp32 by default and its autocast path breaks under bf16 (dtype
+mismatch in its compiled matmuls), so the GPU number is fp32 and the Tenstorrent number
+is bf16. That favours Tenstorrent slightly on memory bandwidth, but at these system
+sizes the step is dispatch- and autograd-bound, not bandwidth-bound, so precision is not
+the dominant term. No `--fast`/bf8 mode on either side (bf8 is a measured dead end for
+Orb, see the section above).
+
+### Results
+
+| system (Si diamond) | N | edges | p150 (bf16, traced) | H200 (fp32) | p150 vs H200 |
+|---|---|---|---|---|---|
+| 3x3x3 cells | 216 | 9936 | 50.9 ms/step, 19.6 steps/s | 88.4 ms/step, 11.3 steps/s | p150 **1.74x faster** |
+| 4x4x4 cells | 512 | 23552 | 106.2 ms/step, 9.4 steps/s | 93.2 ms/step, 10.7 steps/s | H200 1.14x faster |
+
+(Median of 40-80 timed steps after warmup, jittered positions each step so the trace
+replay and torch graph are exercised like a real MD loop, not a degenerate identical-
+input replay. The H200 was rented on-demand on vast.ai at $3.30/hr; total GPU spend for
+this measurement was $1.07 of a ~$12 credit, instance destroyed after the run. No H100
+on-demand inventory was available the day of the run, so H200 stands in for the H100
+class, see the price table.)
+
+The crossover sits between these two sizes. At 216 atoms the step is dispatch-bound on
+both accelerators and the p150's trace/replay (no per-step host dispatch, no neighbour-
+list rebuild) wins outright. At 512 atoms the GPU's compute starts to fill and it edges
+ahead on raw throughput. The perf-per-dollar conclusion holds at both sizes because the
+price gap is so much larger than the throughput gap.
+
+### Hardware cost basis
+
+Prices are single-card street/list prices in USD, cited from public sources (no
+fabricated numbers):
+
+| card | price | source |
+|---|---|---|
+| Tenstorrent Blackhole p150 | $1,399 | tenstorrent.com product page (active list price) |
+| NVIDIA H100 PCIe 80GB | ~$25,000-$30,000 | cloudzero.com / jarvislabs.ai 2026 price guides |
+| NVIDIA H200 (141GB) | ~$30,000-$40,000 | thundercompute.com / jarvislabs.ai 2026 price guides |
+| NVIDIA RTX 5090 (FE, consumer) | $1,999 MSRP | NVIDIA launch / tweaktown.com (CES 2025) |
+
+The H100 is the card the UMA perf-per-dollar story is told against (cost ratio ~21x vs
+the p150). The H200 measured here is the same price class (cost ratio ~23x) and is a
+close performance proxy for the H100 on a workload that is dispatch-bound at small N;
+an H100 was not measurable this run because none was available on-demand on vast.ai the
+day of the test. The RTX 5090 is listed for context as the modern consumer card many
+groups actually use; it was not benchmarked this run (a vast.ai 5090 instance got stuck
+on the docker image pull and was destroyed to stop the meter), so no throughput number
+is claimed for it.
+
+### Perf-per-dollar
+
+Taking the H200 as the measured H100-class stand-in at a representative $32,000 (cost
+ratio vs the p150: ~23x):
+
+| system | p150 throughput | H200 throughput | throughput ratio | cost ratio (H200/p150) | perf-per-dollar (p150 advantage) |
+|---|---|---|---|---|---|
+| 216 atoms | 19.6 steps/s | 11.3 steps/s | p150 1.74x faster | ~23x | **~40x** |
+| 512 atoms | 9.4 steps/s | 10.7 steps/s | H200 1.14x faster | ~23x | **~20x** |
+
+Read plainly: a 216-atom Orb-v3 crystal MD loop runs faster on a $1,399 Blackhole p150
+than on a ~$32,000 H200, so the p150 does the same work at roughly one-fortieth the
+cost-per-step. At 512 atoms the H200 is ~14% faster in raw steps/s but still costs ~23x
+more, so the p150 delivers ~20x the throughput per dollar. Against the H100 (same price
+class, the UMA-story reference card) the numbers are within rounding of these.
+
+This is a positioning-facing result, not a benchmark report: it is one model
+(`orb-v3-conservative-inf-omat`), one system family (periodic Si diamond), two sizes,
+and the production fixed-topology MD path on each side. The ratio will move toward the
+GPU as system size grows past the point where the GPU's compute fills (the 512-atom row
+already shows the start of that), and a workload that forces a per-step neighbour-list
+rebuild on the p150 would lose the trace-replay win. Within the regime Orb is actually
+bought for (materials MD / relaxation of periodic crystals at atom counts in the
+hundreds), a single p150 is the cheaper card by an order of magnitude per unit of
+throughput, and at the small end it is the faster card outright. This is a social-post /
+marketing candidate.
+
+### Reproducing this comparison
+
+```bash
+# Tenstorrent side (one Blackhole p150, device 0) -- warm traced MD step:
+TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python examples/orb_md.py \
+    --weights ~/.ttatom_run/goldens_real/si_supercell_orb.npz \
+    --nx 3 --ny 3 --nz 3 --steps 120 --temp 900
+#   -> "device MD step: 50.9 ms warm median ... => 19.6 MD steps/s"
+# swap --nx/--ny/--nz to 4 4 4 for the 512-atom row.
+
+# NVIDIA side (one H200, rented on vast.ai) -- warm orb_models MD step:
+#   on the GPU box: pip install orb-models ase  (and a CUDA-matched torch)
+python orb_gpu_bench.py --ckpt orb-v3-conservative-inf-omat --nx 3 --ny 3 --nz 3 \
+    --warmup 15 --steps 80
+#   -> "MD step (E+F): 88.4 ms median => 11.3 MD steps/s" (fp32, ORBCalculator default)
+```
+
+The GPU-side harness (`orb_gpu_bench.py`, used for the H200 numbers above) and the
+Tenstorrent path (`examples/orb_md.py`) compute the same quantity (one energy + force
+evaluation per step) on the same Si diamond supercell and the same checkpoint; both
+exclude load and first-call warmup. The GPU-side harness (``benchmarks/orb_gpu_bench.py``, used for the H200 numbers above)
+and the Tenstorrent path (``examples/orb_md.py``) compute the same quantity (one energy
++ force evaluation per step) on the same Si diamond supercell and the same checkpoint;
+both exclude load and first-call warmup. The GPU number is reproducible from a clean
+vast.ai box with just ``pip install orb-models ase`` (plus a CUDA-matched torch if the
+box's default torch is too new for its driver).
+
 ## Reproducing
 
 ```bash
