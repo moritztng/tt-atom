@@ -1,6 +1,12 @@
 # UMA and Orb public API
 
-## Decision
+**Superseded 2026-07-13**: this decision was reversed. `tt_atom.Calculator(atoms, model=...)` is
+now the single public entry point (`wk/tt-atom-unify-uma-orb-public-api`, merged to master); the
+factory functions this doc argues for were removed, not kept. The reasoning below is retained for
+context (it was a real, considered tradeoff) but does not describe current behavior — see
+`tt_atom/auto.py` and the README Quickstart for the current API.
+
+## Decision (superseded, see above)
 
 Keep `UMA(atoms, ...)` and `Orb(atoms, ...)` as the public constructors. Both return an ASE
 calculator, so usage after construction stays identical.
@@ -30,8 +36,8 @@ Cache implementation alone would not justify separate APIs. The user-visible dif
 required inputs and supported controls do. If future families converge on one construction
 contract, a shared factory can be reconsidered without changing the ASE calculator protocol.
 
-## Result
+## Result (superseded, see top of file)
 
-The unified public-API branch is not merged. The shared internal calculator lifecycle from the
-earlier refactor remains, while the README and package exports continue to present `UMA()` and
-`Orb()`.
+The unified public-API branch was later merged (2026-07-13). The concerns above (charge/spin/task
+only applying to UMA, Orb's checkpoint-keyed cache, etc.) are handled by `Calculator` raising on
+family-inapplicable args rather than by keeping separate constructors.
