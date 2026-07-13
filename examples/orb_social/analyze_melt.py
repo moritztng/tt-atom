@@ -111,10 +111,9 @@ def main():
     # frame k was saved at MD step k*save_every -> time k*save_every*dt (frame 0 is the t=0 snap)
     ftime = np.arange(nf, dtype=np.float64) * args.save_every * args.dt
     # per-frame temperature: build a step -> T lookup from the CSV (dedupe the doubled step 0)
-    step_to_T = {}
-    for stv, tv in zip(step, T):
-        step_to_T.setdefault(int(stv), float(tv))
-    ftemp = np.array([step_to_T.get(int(k * args.save_every), float("nan")) for k in range(nf)])
+    # interpolate per-step temperature onto the (monotonic) frame times -- robust for every
+    # frame including the last (an exact step->T lookup misses frames saved between CSV rows).
+    ftemp = np.interp(ftime, t, T)
     # subsample frames evenly for the g(r) sweep (skip the very first perfect-lattice frame)
     rdf_idx = np.linspace(1, nf - 1, args.n_rdf).round().astype(int)
     rdf_idx = np.unique(rdf_idx)
@@ -140,7 +139,7 @@ def main():
     if liq.sum() > 5:
         slope = float(np.polyfit(ftime[liq], msd[liq], 1)[0])      # A^2/fs
         if slope > 0:
-            D = slope / 6.0 * 1e-10                                 # A^2/fs -> m^2/s
+            D = slope / 6.0 * 1e-5   # A^2/fs -> m^2/s  (1 A^2/fs = 1e-20 m^2 / 1e-15 s)
 
     np.savez(args.out,
              time_fs=t, temp_K=T, epot_ev_atom=epot, ekin_ev_atom=ekin, etot_ev_atom=etot,
