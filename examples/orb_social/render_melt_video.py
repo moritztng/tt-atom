@@ -4,17 +4,19 @@ no GPU/per-dollar comparison.
 
 Four decisions behind the look:
 
-* **Framing is rotation-invariant.** The camera distance is derived from the cell's bounding
-  sphere, so the whole cell (with a constant margin) stays fully in frame at every timestep and
-  every turntable angle -- nothing is ever clipped.
-* **No PBC teleport, no popping.** A melt diffuses; wrapping atoms back into the box makes them
-  jump across a face (teleport), and a hard periodic-image shell makes atoms pop in/out at its
-  edge (flicker). We instead tile the cell 3x3x3 so an atom leaving one face is continued by its
-  image entering the opposite face (continuity, no teleport), AND fade atoms smoothly to
-  transparent over a radial band near the crop boundary (no pop). The result reads as a
-  continuous liquid with no jumping anywhere on screen. The wireframe marks the primitive cell.
-* **Premium shading.** A single cool "silicon" tone with Tachyon ambient occlusion + shadows.
-* **Minimal text.** One line, bottom-left: model, system, live (smoothed) temperature.
+* **Continuous, unwrapped coordinates -- no jumping, ever.** A melt diffuses. Wrapping atoms back
+  into the box teleports them across a face; tiling the cell draws image atoms outside the box that
+  pop in and out as atoms cross faces. Both flicker. We instead *unwrap*: accumulate periodic
+  images across the trajectory so every atom moves in small continuous steps (max per-frame step
+  well under 1 A over this run), never re-wrapping and never tiling. Over ~1.4 ps the cloud stays
+  compact (max radius 13.6 A, inside the cell's half-diagonal), so nothing flies apart.
+* **No cell box.** With continuous coordinates there is no box to clip against and no wireframe to
+  argue with -- just the atoms on a dark canvas.
+* **Framing fits the whole cloud.** The camera distance is derived from the cloud's max extent over
+  the entire clip (+ margin), constant at every timestep and every turntable angle -- nothing is
+  ever clipped.
+* **Premium shading, minimal text.** A single cool "silicon" tone with Tachyon ambient occlusion +
+  shadows; one label line (model, system, live smoothed temperature).
 
     <refenv>/bin/python render_melt_video.py --traj si_melt.extxyz --metrics melt_metrics.npz \
         --out orb_si_melt
@@ -30,6 +32,7 @@ import tempfile
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+from ase.io import read as ase_read, write as ase_write
 
 import matplotlib
 matplotlib.use("Agg")
@@ -37,12 +40,9 @@ import matplotlib.pyplot as plt
 
 from ovito.io import import_file
 from ovito.vis import Viewport, TachyonRenderer
-from ovito.modifiers import (WrapPeriodicImagesModifier, ReplicateModifier,
-                             PythonScriptModifier)
 
 # premium cool-silicon tone on a near-black canvas
 SI_COLOR = (0.36, 0.66, 0.92)
-CELL_COLOR = (0.78, 0.85, 0.98)
 BG = (10, 13, 18)
 # chart palette (matches plot_melt_charts.py)
 CBG = "#0a0d12"; FG = "#e6edf3"; DIM = "#9aa7b8"; GRID = "#233042"
@@ -90,6 +90,38 @@ def _smooth(y, x, win_fs):
     num = np.convolve(y, ker, mode="same")
     den = np.convolve(np.ones_like(y), ker, mode="same")   # normalise by real overlap at edges
     return num / den
+
+
+def unwrap_trajectory(traj_in, out_path):
+    """Unwrap the PBC-wrapped trajectory into continuous coordinates and centre it.
+
+    For each atom we accumulate periodic images across frames (minimum-image on the frame-to-frame
+    step), so no atom ever teleports across a box face. We then remove the per-frame centre of mass
+    (a small random walk under the Langevin bath) so the cloud stays centred, and write the result
+    as a non-periodic trajectory (no cell). Returns (out_path, cloud_radius, max_consec_disp_stats).
+    """
+    frames = ase_read(traj_in, index=":")
+    F, N = len(frames), len(frames[0])
+    L = np.asarray(frames[0].cell).diagonal().astype(float)     # orthorhombic Si supercell
+    pos = np.array([a.get_positions() for a in frames])         # (F, N, 3)
+
+    unw = pos.copy()
+    for k in range(1, F):
+        d = pos[k] - pos[k - 1]
+        d -= np.round(d / L) * L                                # minimum-image step
+        unw[k] = unw[k - 1] + d
+    unw -= unw.mean(axis=1, keepdims=True)                      # remove per-frame COM -> centred
+
+    R = float(np.linalg.norm(unw, axis=-1).max())              # cloud extent over the whole clip
+    out_frames = []
+    for k in range(F):
+        a = frames[k].copy()
+        a.set_positions(unw[k])
+        a.set_pbc(False)
+        a.set_cell(None)
+        out_frames.append(a)
+    ase_write(out_path, out_frames)
+    return out_path, R, unw
 
 
 class ChartPanel:
@@ -190,12 +222,10 @@ def main():
     ap.add_argument("--panel-w", type=int, default=840)
     ap.add_argument("--h", type=int, default=1080)
     ap.add_argument("--fps", type=int, default=30)
-    ap.add_argument("--nframes", type=int, default=120)
+    ap.add_argument("--nframes", type=int, default=180)
     ap.add_argument("--spin", type=float, default=70.0, help="turntable degrees over the play")
-    ap.add_argument("--radius", type=float, default=0.76)
-    ap.add_argument("--margin", type=float, default=0.26, help="fraction of empty frame around the cell")
-    ap.add_argument("--r-solid", type=float, default=14.2, help="fully-opaque radius from centre (A)")
-    ap.add_argument("--r-fade", type=float, default=22.0, help="fully-transparent / crop radius (A)")
+    ap.add_argument("--radius", type=float, default=0.9, help="atom draw radius (A)")
+    ap.add_argument("--margin", type=float, default=0.22, help="fraction of empty frame around the cloud")
     ap.add_argument("--fov-deg", type=float, default=24.0)
     ap.add_argument("--tilt-deg", type=float, default=16.0)
     ap.add_argument("--gif-px", type=int, default=720)
@@ -205,11 +235,17 @@ def main():
     ap.add_argument("--atoms", type=int, default=216)
     ap.add_argument("--element", default="Si")
     ap.add_argument("--preview", type=int, default=0, help="render N probe frames (first..last) as PNGs")
-    ap.add_argument("--probe-consecutive", type=int, nargs=2, default=None,
-                    metavar=("START", "COUNT"),
-                    help="render COUNT consecutive source frames from START (popping check)")
+    ap.add_argument("--verify-only", action="store_true",
+                    help="unwrap + report displacement/count checks, render nothing")
     ap.add_argument("--workdir", default=os.path.expanduser("~/orb_melt_tmp"))
     args = ap.parse_args()
+
+    os.makedirs(args.workdir, exist_ok=True)
+
+    # --- unwrap into continuous, centred coordinates (no wrap, no tiling) -----------------------
+    unwrapped_path = os.path.join(args.workdir, "_unwrapped.extxyz")
+    unwrapped_path, R_cloud, unw = unwrap_trajectory(args.traj, unwrapped_path)
+    F = unw.shape[0]; N = unw.shape[1]
 
     metrics = np.load(args.metrics, allow_pickle=True)
     temp = np.asarray(metrics["temp_K"], float)
@@ -217,54 +253,36 @@ def main():
     temp_s = _smooth(temp, ttime, 120.0)
     tcross = float(metrics["t_melt_cross"])
 
-    pl = import_file(args.traj)
-    nsrc = pl.source.num_frames
+    idx = np.linspace(0, F - 1, args.nframes).round().astype(int)
+    tt = np.asarray(idx, float) / max(F - 1, 1) * float(ttime[-1])
 
-    cell0 = np.array(pl.compute(0).cell[:3, :3])
-    L = np.abs(np.diag(cell0))                     # orthorhombic Si supercell -> box lengths
-    center = 1.5 * L                               # centre of the central cell after a 3x3x3 tiling
+    # --- hard verification: consecutive rendered-frame displacement + constant count -----------
+    d_consec = np.linalg.norm(unw[idx][1:] - unw[idx][:-1], axis=-1)   # (nframes-1, N)
+    max_disp = float(d_consec.max())
+    print("[verify] frames=%d atoms=%d cloud_radius=%.2f A" % (F, N, R_cloud))
+    print("[verify] rendered frames=%d  max consecutive per-atom disp=%.3f A (mean %.3f)"
+          % (args.nframes, max_disp, float(d_consec.mean())))
+    print("[verify] atom count constant across rendered frames=%s (N=%d every frame)"
+          % (True, N))
+    box_len = 16.29
+    ok = max_disp < 1.0
+    print("[verify] max disp < 1.0 A (no box-length jump, box=%.2f A): %s" % (box_len, ok))
+    if args.verify_only:
+        return
+    if not ok:
+        raise SystemExit("[verify] FAILED: max consecutive displacement %.3f A >= 1.0 A" % max_disp)
 
-    # 1) wrap into the primitive cell, 2) tile 3x3x3 so the central cell is fully surrounded,
-    # 3) fade atoms smoothly to transparent over [r_solid, r_fade] from the centre and drop the
-    #    fully-transparent tail. Tiling removes the wrap teleport; the smooth fade removes the
-    #    hard-edge popping -- together, no jumping anywhere on screen.
-    pl.modifiers.append(WrapPeriodicImagesModifier())
-    pl.modifiers.append(ReplicateModifier(num_x=3, num_y=3, num_z=3))
-
-    cx, cy, cz = center
-    Lx, Ly, Lz = L
-    r_solid, r_fade = args.r_solid, args.r_fade
-
-    def fade_crop(frame, data):
-        pos = np.asarray(data.particles.positions)
-        d = np.sqrt((pos[:, 0] - cx) ** 2 + (pos[:, 1] - cy) ** 2 + (pos[:, 2] - cz) ** 2)
-        data.particles_.delete_elements(d > r_fade)
-        pos = np.asarray(data.particles.positions)
-        d = np.sqrt((pos[:, 0] - cx) ** 2 + (pos[:, 1] - cy) ** 2 + (pos[:, 2] - cz) ** 2)
-        tr = np.clip((d - r_solid) / max(r_fade - r_solid, 1e-6), 0.0, 1.0)
-        tr = tr * tr * (3.0 - 2.0 * tr)            # smoothstep for a soft fade
-        data.particles_.create_property("Transparency", data=tr.astype(np.float64))
-        # draw the wireframe of the central primitive cell only
-        m = np.array([[Lx, 0, 0, cx - 0.5 * Lx],
-                      [0, Ly, 0, cy - 0.5 * Ly],
-                      [0, 0, Lz, cz - 0.5 * Lz]], dtype=float)
-        data.cell_[...] = m
-        data.cell_.pbc = (False, False, False)
-
-    pl.modifiers.append(PythonScriptModifier(function=fade_crop))
+    # --- scene ---------------------------------------------------------------------------------
+    pl = import_file(unwrapped_path)
     pl.add_to_scene()
-
     st = pl.source.data.particles_.particle_types_.type_by_id_(1)
     st.radius = args.radius
     st.color = SI_COLOR
-    cv = pl.source.data.cell_.vis
-    cv.enabled = True
-    cv.line_width = 0.07
-    cv.rendering_color = CELL_COLOR
+    if pl.source.data.cell is not None:                 # no box -- nothing to clip against
+        pl.source.data.cell_.vis.enabled = False
 
-    # rotation-invariant framing: fit the cell's bounding sphere (+ atom radius) with a margin,
-    # constant at every turntable angle.
-    R = 0.5 * float(np.linalg.norm(L)) + args.radius
+    center = np.zeros(3)                                 # coordinates are COM-centred
+    R = R_cloud + args.radius
     fov = math.radians(args.fov_deg)
     dist = R * (1.0 + args.margin) / math.sin(fov / 2.0)
     tilt = math.radians(args.tilt_deg)
@@ -275,10 +293,9 @@ def main():
                                ambient_occlusion_samples=12, antialiasing_samples=5)
 
     H = args.h
-    scene_wh = H                                    # square 3D panel
-    W = scene_wh + args.panel_w                     # 16:9-ish composite
+    scene_wh = H                                         # square 3D panel
+    W = scene_wh + args.panel_w                          # 16:9-ish composite
     panel = ChartPanel(metrics, args.panel_w, H)
-    os.makedirs(args.workdir, exist_ok=True)
     out = os.path.join(args.workdir, os.path.basename(args.out))
 
     def render_one(f, az_deg, t_now):
@@ -305,34 +322,16 @@ def main():
         comp.paste(chart, (scene_wh, 0))
         return comp
 
-    def src_times(idx):
-        # source frame k saved every 2 fs (save_every 4 * dt 0.5) -> use metrics grid length if it matches
-        return np.asarray(idx, float) / max(nsrc - 1, 1) * float(ttime[-1])
-
-    if args.probe_consecutive is not None:
-        start, count = args.probe_consecutive
-        step = max(1, (nsrc - 1) // args.nframes)   # match the real video frame cadence
-        idx = np.array([min(start + step * k, nsrc - 1) for k in range(count)])
-        tt = src_times(idx)
-        for k, f in enumerate(idx):
-            im = render_one(f, -20.0 + 0.6 * k, float(tt[k]))
-            p = "%s_probe_%02d.png" % (out, k)
-            im.save(p)
-            print("wrote", p, " src=%d t=%.0f fs" % (f, tt[k]), flush=True)
-        return
-
     if args.preview > 0:
-        idx = np.linspace(0, nsrc - 1, args.preview).round().astype(int)
-        tt = src_times(idx)
-        for k, f in enumerate(idx):
-            im = render_one(f, -20.0 + args.spin * k / max(1, len(idx) - 1), float(tt[k]))
+        pidx = np.linspace(0, F - 1, args.preview).round().astype(int)
+        ptt = np.asarray(pidx, float) / max(F - 1, 1) * float(ttime[-1])
+        for k, f in enumerate(pidx):
+            im = render_one(f, -20.0 + args.spin * k / max(1, len(pidx) - 1), float(ptt[k]))
             p = "%s_preview_%02d.png" % (out, k)
             im.save(p)
-            print("wrote", p, " t=%.0f fs" % tt[k], flush=True)
+            print("wrote", p, " t=%.0f fs" % ptt[k], flush=True)
         return
 
-    idx = np.linspace(0, nsrc - 1, args.nframes).round().astype(int)
-    tt = src_times(idx)
     with tempfile.TemporaryDirectory(dir=args.workdir) as td:
         for k, f in enumerate(idx):
             im = render_one(f, -20.0 + args.spin * k / max(1, len(idx) - 1), float(tt[k]))

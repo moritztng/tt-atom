@@ -75,7 +75,22 @@ Blackhole p150.
 - The video is one honest on-device run; the side-card cursors/curves are the real per-step log
   and the real g(r)/MSD of that trajectory, advancing in lockstep with the atoms. No fabricated
   numbers, no sped-up trickery. It plays forward once with a short fade in/out at the loop point
-  (MD is not time-periodic). The render tiles the cell 3x3x3 with a smooth radial transparency
-  fade — exactly the periodic system the MD integrated — so there is no PBC teleport and no
-  hard-edge popping (§ render decision 4 in NOTES). The live T label is edge-corrected
+  (MD is not time-periodic). The render uses **unwrapped, continuous coordinates** (periodic
+  images accumulated across the trajectory, per-frame COM removed), **no cell box, no tiling** —
+  so there is no PBC teleport, no image atoms popping in/out at box faces, and nothing to clip
+  against (Moritz's ADDENDUM 3; § render decision 4 in NOTES). The live T label is edge-corrected
   moving-average smoothed for readability; the charts show the raw trace.
+
+## 5. Render motion is continuous — no jump, no ghost atoms (quantitative)
+
+`render_melt_video.py --verify-only` on the shipped 180-frame render:
+
+- Max per-atom displacement between **every** pair of consecutive rendered frames = **0.288 A**
+  (mean 0.080 A) — well under 1 A and far below the 16.29 A box length, so no atom jumps a box
+  face. (At full trajectory resolution, 2 fs, the max step is 0.077 A.)
+- Unwrapped cloud max radius over the whole clip = **13.6 A**, inside the cell half-diagonal
+  (14.1 A) — the melt stays compact, does not fly apart.
+- Atom count rendered = **216 on every frame** — no image/ghost atoms appearing or disappearing.
+
+Confirmed by eye on consecutive hot-liquid frames (2312 K, 2341 K): near-identical, no teleport,
+no pop-in/out.

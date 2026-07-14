@@ -83,25 +83,28 @@ reference is the hottest frame (~2311 K, clearly above T_m), not the cooled NVE 
 1920x1080 MP4 + 720px GIF: a square 3D scene on the left, a synced physics side-card on the right
 (T-ramp, MSD, g(r)) whose cursors/curves advance in lockstep with the melt. The decisions:
 
-1. **Framing** — camera distance is derived from the cell's bounding sphere, so the whole cell +
-   margin stays in frame at every timestep and every turntable angle. Verified by eye: nothing
-   clipped.
+4. **The jump — final approach (Moritz's ADDENDUM 3): unwrapped continuous coordinates, no box,
+   no tiling.** ADDENDUM 2 tiled the cell 3x3x3; that draws image atoms *outside* the cell that
+   pop in/out as atoms cross faces — still a flicker. So tiling is abandoned. Instead we unwrap:
+   for each atom we accumulate periodic images across the trajectory (minimum-image on each
+   frame-to-frame step), never re-wrapping and never tiling, then remove the per-frame centre of
+   mass so the cloud stays centred. Over the ~1.4 ps run each atom moves in small continuous steps
+   and the cloud stays compact (max radius 13.6 A, inside the cell half-diagonal 14.1 A), so it
+   neither teleports nor flies apart. The cell box is dropped entirely — with continuous
+   coordinates there is nothing to clip against and no "atoms outside the box".
+   *Hard verification (quantitative, `--verify-only`):* max per-atom displacement between every
+   pair of consecutive rendered frames = **0.288 A** (mean 0.080), well under 1 A and far below a
+   box length (16.29 A) — no jump. Atom count = **216 every frame** (no ghost atoms). Confirmed by
+   eye on consecutive hot-liquid frames: near-identical, no teleport, no pop-in/out.
+1. **Framing** — camera distance is derived from the unwrapped cloud's max extent over the whole
+   clip (+ margin), constant at every timestep and every turntable angle. Verified by eye on
+   first/mid/last frames: nothing clipped.
 2. **Minimal text** — one line only: `Orb-v3 . 216-atom Si . T = <live> K`, plus a small
    sub-line (state). No stats paragraph. The numbers live in the side-card and the docs. The live
    T is edge-corrected moving-average smoothed (raw instantaneous T of 216 atoms swings ±150 K
    frame-to-frame and reads as unstable).
 3. **Atom colour** — a premium cool "silicon" blue with Tachyon ambient occlusion + shadows on a
    near-black canvas.
-4. **The jump (Moritz's ADDENDUM 2)** — chose *periodic-image tiling with a smooth radial fade*.
-   Two artifacts had to go: the wrap "teleport" (an atom crossing a box face jumps to the far
-   side) and the shell "pop" (atoms flickering in/out at a hard periodic-image crop). We tile the
-   cell 3x3x3 so an atom leaving one face is continued by its image entering the opposite face
-   (continuity, no teleport), AND fade atoms smoothly to transparent over a radial band
-   [r_solid=14.2 A, r_fade=22 A] from the cell centre, dropping the fully-transparent tail
-   (no hard edge, no pop). The central primitive cell stays fully opaque and reads as the subject,
-   framed by a dim periodic-image halo. Verified by eye across consecutive frames: the liquid
-   moves coherently, no atom jumps anywhere on screen. This is exactly the periodic system the MD
-   integrated; the wireframe marks the primitive cell.
 
 Charts included in the video (Moritz's ADDENDUM 2): T-ramp (heating through T_m), MSD (diffusion
 onset), g(r) (crystal -> liquid). Energy conservation was dropped from the video panel (kept in
