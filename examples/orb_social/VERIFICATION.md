@@ -14,8 +14,10 @@ From `md_melt.csv` / `melt_metrics.npz`:
 - **g(r)** (PBC minimum image, from the trajectory):
   - crystalline frame (276 K): sharp shells, first-neighbour peak g ~ 17 at 2.35 A and resolved
     2nd/3rd shells (diamond Si).
-  - liquid frame (1589 K): broad single-peak liquid envelope, g ~ 2.5 at ~2.4 A; the long-range
-    crystalline order is gone.
+  - liquid frame (hottest, 2311 K, well above T_m): broad liquid envelope, first peak g ~ 3 at
+    ~2.4 A decaying to ~1, resolved shells gone. The charts/video use this hottest frame as the
+    liquid g(r) reference (not the cooled ~1589 K NVE tail, which is supercooled and invites a
+    "below T_m" objection).
 - **MSD** (PBC-unwrapped, referenced to frame 0): flat in the solid, rising to ~2.6 A^2 once
   atoms leave their lattice sites — the diffusion onset. A diffusion coefficient is computed
   (corrected units: D ~ 8.3e-9 m^2/s, the right order for liquid Si) but treated as **indicative
@@ -70,6 +72,25 @@ Blackhole p150.
 - The diffusion coefficient (§1) is indicative only; the MSD curve and g(r) are the honest
   structural signatures shown.
 - The frame-0 9 meV/atom absolute-energy offset (§3) is disclosed as a bf16 artifact.
-- The video is one honest on-device run. The loop is a boomerang purely so it seams cleanly; MD
-  is not time-periodic. The periodic-image shell in the render is exactly the periodic system the
-  MD integrated (§ render decision 4 in NOTES).
+- The video is one honest on-device run; the side-card cursors/curves are the real per-step log
+  and the real g(r)/MSD of that trajectory, advancing in lockstep with the atoms. No fabricated
+  numbers, no sped-up trickery. It plays forward once with a short fade in/out at the loop point
+  (MD is not time-periodic). The render uses **unwrapped, continuous coordinates** (periodic
+  images accumulated across the trajectory, per-frame COM removed), **no cell box, no tiling** —
+  so there is no PBC teleport, no image atoms popping in/out at box faces, and nothing to clip
+  against (Moritz's ADDENDUM 3; § render decision 4 in NOTES). The live T label is edge-corrected
+  moving-average smoothed for readability; the charts show the raw trace.
+
+## 5. Render motion is continuous — no jump, no ghost atoms (quantitative)
+
+`render_melt_video.py --verify-only` on the shipped 180-frame render:
+
+- Max per-atom displacement between **every** pair of consecutive rendered frames = **0.288 A**
+  (mean 0.080 A) — well under 1 A and far below the 16.29 A box length, so no atom jumps a box
+  face. (At full trajectory resolution, 2 fs, the max step is 0.077 A.)
+- Unwrapped cloud max radius over the whole clip = **13.6 A**, inside the cell half-diagonal
+  (14.1 A) — the melt stays compact, does not fly apart.
+- Atom count rendered = **216 on every frame** — no image/ghost atoms appearing or disappearing.
+
+Confirmed by eye on consecutive hot-liquid frames (2312 K, 2341 K): near-identical, no teleport,
+no pop-in/out.

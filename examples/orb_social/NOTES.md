@@ -72,27 +72,45 @@ solid.
     <refenv> plot_melt_charts.py --metrics $TMP/melt_metrics.npz --out $TMP/melt_charts.png
 
 4 panels: T-ramp crossing T_m, E_tot conservation (rises under NVT, flat under NVE), MSD (flat
-solid -> rising diffusion), g(r) (sharp crystal -> broad liquid). Verified by eye.
+solid -> rising diffusion), g(r) (sharp crystal -> broad liquid). Verified by eye. The g(r) liquid
+reference is the hottest frame (~2311 K, clearly above T_m), not the cooled NVE tail.
 
-## 6. Render — clean premium 3D video (Moritz's four fixes)
+## 6. Render — clean premium video with a synced physics side-card
 
     <refenv> render_melt_video.py --traj $TMP/si_melt.extxyz --metrics $TMP/melt_metrics.npz \
         --out orb_si_melt --workdir $TMP
 
-1080x1080 MP4 + 560px GIF, boomerang loop. The four fixes (see the video's own docstring):
+1920x1080 MP4 + 720px GIF: a square 3D scene on the left, a synced physics side-card on the right
+(T-ramp, MSD, g(r)) whose cursors/curves advance in lockstep with the melt. The decisions:
 
-1. **Framing** — camera distance is derived from the cell's bounding sphere, so the whole cell +
-   ~16% margin stays in frame at every timestep and every turntable angle. Verified by eye on
+4. **The jump — final approach (Moritz's ADDENDUM 3): unwrapped continuous coordinates, no box,
+   no tiling.** ADDENDUM 2 tiled the cell 3x3x3; that draws image atoms *outside* the cell that
+   pop in/out as atoms cross faces — still a flicker. So tiling is abandoned. Instead we unwrap:
+   for each atom we accumulate periodic images across the trajectory (minimum-image on each
+   frame-to-frame step), never re-wrapping and never tiling, then remove the per-frame centre of
+   mass so the cloud stays centred. Over the ~1.4 ps run each atom moves in small continuous steps
+   and the cloud stays compact (max radius 13.6 A, inside the cell half-diagonal 14.1 A), so it
+   neither teleports nor flies apart. The cell box is dropped entirely — with continuous
+   coordinates there is nothing to clip against and no "atoms outside the box".
+   *Hard verification (quantitative, `--verify-only`):* max per-atom displacement between every
+   pair of consecutive rendered frames = **0.288 A** (mean 0.080), well under 1 A and far below a
+   box length (16.29 A) — no jump. Atom count = **216 every frame** (no ghost atoms). Confirmed by
+   eye on consecutive hot-liquid frames: near-identical, no teleport, no pop-in/out.
+1. **Framing** — camera distance is derived from the unwrapped cloud's max extent over the whole
+   clip (+ margin), constant at every timestep and every turntable angle. Verified by eye on
    first/mid/last frames: nothing clipped.
 2. **Minimal text** — one line only: `Orb-v3 . 216-atom Si . T = <live> K`, plus a small
-   sub-line (state). No stats paragraph. The numbers live in the charts figure and the docs.
+   sub-line (state). No stats paragraph. The numbers live in the side-card and the docs. The live
+   T is edge-corrected moving-average smoothed (raw instantaneous T of 216 atoms swings ±150 K
+   frame-to-frame and reads as unstable).
 3. **Atom colour** — a premium cool "silicon" blue with Tachyon ambient occlusion + shadows on a
-   near-black canvas (was pale tan).
-4. **The jump** — chose *periodic-image tiling*: render the primitive cell surrounded by a thin
-   shell of its periodic images (tile 3x3x3, keep the central cell + a 3.2 A shell). An atom
-   leaving one face is matched by its image entering the opposite face, so the liquid reads
-   continuous and there is no wrap "teleport" — while staying exactly the periodic system the MD
-   integrated. The wireframe marks the primitive cell.
+   near-black canvas.
+
+Charts included in the video (Moritz's ADDENDUM 2): T-ramp (heating through T_m), MSD (diffusion
+onset), g(r) (crystal -> liquid). Energy conservation was dropped from the video panel (kept in
+the standalone 4-panel figure) — the two structural signatures are the compelling ones. The loop
+plays forward once with a short fade in/out so the restart is not a hard snap (MD is not
+time-periodic; a boomerang would rewind the ramp, which reads as cooling — misleading).
 
 **No GPU / NVIDIA / per-dollar comparison anywhere in the video** (per Moritz).
 

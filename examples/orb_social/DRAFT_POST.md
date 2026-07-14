@@ -79,14 +79,19 @@ directly; the raw Tenstorrent throughput (21 steps/s, 0.90 ns/day) is also in th
   atoms leave their lattice sites. Both evolve frame-by-frame alongside the atoms.
 
 ## Notes for Moritz
-- The video is one honest on-device melt; the HUD is composited from the real per-step log and the
-  real g(r)/MSD of that trajectory — no fabricated numbers, no sped-up trickery. The loop is a
-  boomerang (forward then reverse) so it seams cleanly; MD is not time-periodic.
-- The periodic-cell wireframe is deliberately shown (a periodic MD system is displayed with its
-  cell box — it reads the boundary and the scale); thin and subtle so it frames the melt without
-  fighting it.
-- Rendered in OVITO (Tachyon): shaded Jmol-Si spheres, the diamond bond network, the cell box,
-  ambient occlusion + shadows. MP4 1280×720 for the post (6.1 MB); GIF 540 px for preview (5.8 MB).
+- The video is one honest on-device melt; the side-card (T-ramp, MSD, g(r)) is composited from the
+  real per-step log and the real g(r)/MSD of that trajectory, advancing in lockstep with the atoms
+  — no fabricated numbers, no sped-up trickery. It plays forward once with a short fade in/out at
+  the loop point (MD is not time-periodic; a boomerang would rewind the ramp = look like cooling).
+- No jumping: the render uses unwrapped, continuous coordinates (periodic images accumulated across
+  the trajectory, per-frame centre of mass removed) with no cell box and no tiling — so no atom
+  teleports across a face and no image atoms pop in/out. Verified quantitatively: max per-atom
+  displacement between consecutive rendered frames 0.288 Å (box is 16.29 Å), constant 216 atoms.
+- No GPU / NVIDIA / per-dollar comparison anywhere in the video (the label is model + system + T
+  only), per Moritz. The per-dollar angle above is for the post text only, optional.
+- Rendered in OVITO (Tachyon): shaded cool-silicon spheres on a near-black canvas, ambient
+  occlusion + shadows, no cell box. MP4 1920×1080 (~3 MB), GIF 720 px for preview. Standalone
+  4-panel physics figure in `melt_charts.png` for scientific scrutiny.
 - Reproduction: `NOTES.md`. Full verification + honesty caveats: `VERIFICATION.md`.
 - The earlier 900 K solid-vibration demo (the first Orb social post draft) is archived under
   `prev_solid_demo/` — this melt version supersedes it.
