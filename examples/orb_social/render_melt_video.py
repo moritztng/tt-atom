@@ -234,9 +234,19 @@ def main():
     ap.add_argument("--model", default="Orb-v3")
     ap.add_argument("--atoms", type=int, default=216)
     ap.add_argument("--element", default="Si")
+    ap.add_argument("--logo", default="", help="path to a logo PNG (RGBA) composited top-left")
+    ap.add_argument("--logo-h", type=float, default=0.052,
+                    help="logo height as a fraction of frame height")
     ap.add_argument("--preview", type=int, default=0, help="render N probe frames (first..last) as PNGs")
     ap.add_argument("--verify-only", action="store_true",
                     help="unwrap + report displacement/count checks, render nothing")
+    ap.add_argument("--max-disp", type=float, default=8.0,
+                    help="teleport guard (A): fail if any atom moves more than this between "
+                         "rendered frames. Set to ~box/2 — a real unwrap failure / pop-in shows as "
+                         "a ~box-length jump, whereas fast continuous churn is ~1-2 A.")
+    ap.add_argument("--tmax-fs", type=float, default=0.0,
+                    help="window the 3D scene to [0, tmax_fs] so the unwrapped cloud stays cohesive "
+                         "(no fliers); 0 = full trajectory. Charts still span the full run.")
     ap.add_argument("--workdir", default=os.path.expanduser("~/orb_melt_tmp"))
     args = ap.parse_args()
 
@@ -253,24 +263,36 @@ def main():
     temp_s = _smooth(temp, ttime, 120.0)
     tcross = float(metrics["t_melt_cross"])
 
-    idx = np.linspace(0, F - 1, args.nframes).round().astype(int)
+    # Window the 3D scene to a cohesive melt+churn interval. Unwrapped continuous coordinates only
+    # stay visually clean while the diffusion cloud is smaller than ~one box; past that, atoms that
+    # have diffused beyond the (removed) periodic boundary read as detached fliers. The charts still
+    # show the full run (cursor sweeps this window); the 3D scene shows the cohesive portion.
+    top = F - 1
+    if args.tmax_fs and args.tmax_fs > 0:
+        top = max(1, int(round(min(args.tmax_fs, float(ttime[-1])) / float(ttime[-1]) * (F - 1))))
+    idx = np.linspace(0, top, args.nframes).round().astype(int)
     tt = np.asarray(idx, float) / max(F - 1, 1) * float(ttime[-1])
+
+    # camera frames the windowed cloud (not the fully-diffused end state)
+    R_cloud = float(np.linalg.norm(unw[idx], axis=-1).max())
 
     # --- hard verification: consecutive rendered-frame displacement + constant count -----------
     d_consec = np.linalg.norm(unw[idx][1:] - unw[idx][:-1], axis=-1)   # (nframes-1, N)
     max_disp = float(d_consec.max())
-    print("[verify] frames=%d atoms=%d cloud_radius=%.2f A" % (F, N, R_cloud))
+    print("[verify] frames=%d atoms=%d windowed[0..%.0f fs] cloud_radius=%.2f A" % (F, N, tt[-1], R_cloud))
     print("[verify] rendered frames=%d  max consecutive per-atom disp=%.3f A (mean %.3f)"
           % (args.nframes, max_disp, float(d_consec.mean())))
     print("[verify] atom count constant across rendered frames=%s (N=%d every frame)"
           % (True, N))
     box_len = 16.29
-    ok = max_disp < 1.0
-    print("[verify] max disp < 1.0 A (no box-length jump, box=%.2f A): %s" % (box_len, ok))
+    ok = max_disp < args.max_disp
+    print("[verify] max consec disp %.3f A < teleport guard %.2f A (box=%.2f A, box/2=%.2f A): %s"
+          % (max_disp, args.max_disp, box_len, box_len / 2.0, ok))
     if args.verify_only:
         return
     if not ok:
-        raise SystemExit("[verify] FAILED: max consecutive displacement %.3f A >= 1.0 A" % max_disp)
+        raise SystemExit("[verify] FAILED: max consecutive displacement %.3f A >= guard %.2f A "
+                         "(teleport / unwrap failure)" % (max_disp, args.max_disp))
 
     # --- scene ---------------------------------------------------------------------------------
     pl = import_file(unwrapped_path)
@@ -298,6 +320,17 @@ def main():
     panel = ChartPanel(metrics, args.panel_w, H)
     out = os.path.join(args.workdir, os.path.basename(args.out))
 
+    # optional logo, scaled to a fraction of the frame height, composited top-left of the 3D panel
+    logo_img = None
+    logo_xy = (0, 0)
+    if args.logo and os.path.exists(args.logo):
+        lg = Image.open(args.logo).convert("RGBA")
+        lh = max(1, int(H * args.logo_h))
+        lw = max(1, int(lg.width * lh / lg.height))
+        logo_img = lg.resize((lw, lh), Image.LANCZOS)
+        m = int(H * 0.030)
+        logo_xy = (m, m)
+
     def render_one(f, az_deg, t_now):
         az = math.radians(az_deg)
         eye = center + dist * np.array([math.cos(tilt) * math.sin(az),
@@ -310,7 +343,10 @@ def main():
                         renderer=renderer, alpha=True)
         rimg = Image.open(raw).convert("RGBA")
         scene = Image.new("RGBA", (scene_wh, scene_wh), BG + (255,))
-        scene = Image.alpha_composite(scene, rimg).convert("RGB")
+        scene = Image.alpha_composite(scene, rimg)
+        if logo_img is not None:                        # brand mark, top-left
+            scene.alpha_composite(logo_img, logo_xy)
+        scene = scene.convert("RGB")
         Tk = float(np.interp(t_now, ttime, temp_s))
         state = "crystalline" if t_now < tcross else "liquid"
         _label(scene, int(H * 0.026),
@@ -323,7 +359,7 @@ def main():
         return comp
 
     if args.preview > 0:
-        pidx = np.linspace(0, F - 1, args.preview).round().astype(int)
+        pidx = np.linspace(0, top, args.preview).round().astype(int)
         ptt = np.asarray(pidx, float) / max(F - 1, 1) * float(ttime[-1])
         for k, f in enumerate(pidx):
             im = render_one(f, -20.0 + args.spin * k / max(1, len(pidx) - 1), float(ptt[k]))

@@ -163,6 +163,17 @@ def main():
     ap.add_argument("--nz", type=int, default=3)
     ap.add_argument("--ramp-steps", type=int, default=1800)
     ap.add_argument("--nve-steps", type=int, default=500)
+    ap.add_argument("--hold-steps", type=int, default=0,
+                    help="constant-T NVT liquid hold between the ramp and the NVE tail — the "
+                         "many-picosecond window over which the melt actually diffuses/flows")
+    ap.add_argument("--t-hold", type=float, default=None,
+                    help="liquid-hold temperature in K (default: --t-end)")
+    ap.add_argument("--prehold-steps", type=int, default=0,
+                    help="constant-T NVT crystalline hold BEFORE the ramp — the lattice sits and "
+                         "vibrates at --t-prehold (stays ordered/crystalline) for this many steps "
+                         "so the render dwells on the crystal before it melts")
+    ap.add_argument("--t-prehold", type=float, default=None,
+                    help="crystalline pre-hold temperature in K (default: --t-start)")
     ap.add_argument("--dt", type=float, default=0.5, help="timestep (fs)")
     ap.add_argument("--t-start", type=float, default=300.0)
     ap.add_argument("--t-end", type=float, default=2800.0)
@@ -209,13 +220,40 @@ def main():
         atoms.calc = calc
 
         _snap()
-        _record("rmp")
-        total = args.ramp_steps + args.nve_steps
+        _record("xtl" if args.prehold_steps > 0 else "rmp")
+        total = args.prehold_steps + args.ramp_steps + args.hold_steps + args.nve_steps
         log_every = max(1, total // 12)
+
+        # ---- phase 0: constant-T NVT crystalline pre-hold (before any heating) ----
+        # The bare ramp starts melting almost immediately, so a render barely shows the ordered
+        # crystal before it goes. Holding at a low temperature first lets the diamond lattice sit
+        # and vibrate in place — it stays crystalline (atoms rattle about their sites, no
+        # diffusion) — so the video dwells on the solid before the melt. The device calculator /
+        # neighbour-list state carries straight into the ramp.
+        prehold_wall = 0.0
+        if args.prehold_steps > 0:
+            t_pre = args.t_prehold if args.t_prehold is not None else args.t_start
+            pdyn = Langevin(atoms, timestep=args.dt * units.fs, temperature_K=t_pre,
+                            friction=args.friction / units.fs)
+            pdyn.attach(_snap, interval=args.save_every)
+
+            def _pre_record():
+                _record("xtl")
+                state["step"] += 1
+            pdyn.attach(_pre_record, interval=1)
+            pdyn.attach(_log, interval=log_every)
+
+            tp = time.perf_counter()
+            pdyn.run(args.prehold_steps)
+            prehold_wall = time.perf_counter() - tp
+            print(f"[prehold done] {args.prehold_steps} steps at {t_pre:.0f} K in "
+                  f"{prehold_wall:.1f}s (rebuilds={calc.n_rebuilds})", flush=True)
 
         # ---- phase 1: NVT Langevin temperature ramp ----
         # state["step"] is advanced inside _ramp_record (an interval=1 observer), so the
-        # temperature target for the *next* integration step tracks the ramp schedule.
+        # temperature target for the *next* integration step tracks the ramp schedule. The ramp
+        # progress is measured from the ramp's own start (state["step"] carries any pre-hold steps).
+        ramp_start = state["step"]
         dyn = Langevin(atoms, timestep=args.dt * units.fs, temperature_K=args.t_start,
                        friction=args.friction / units.fs)
         dyn.attach(_snap, interval=args.save_every)
@@ -223,7 +261,8 @@ def main():
         def _ramp_record():
             _record("rmp")
             state["step"] += 1
-            dyn.set_temperature(temperature_K=_ramp_target(state["step"], args.ramp_steps,
+            dyn.set_temperature(temperature_K=_ramp_target(state["step"] - ramp_start,
+                                                           args.ramp_steps,
                                                            args.t_start, args.t_end))
         dyn.attach(_ramp_record, interval=1)
         dyn.attach(_log, interval=log_every)
@@ -233,6 +272,32 @@ def main():
         ramp_wall = time.perf_counter() - t0
         print(f"[ramp done] {args.ramp_steps} steps in {ramp_wall:.1f}s "
               f"(rebuilds={calc.n_rebuilds})", flush=True)
+
+        # ---- phase 1b: constant-T NVT liquid hold — real diffusion / visible flow ----
+        # The ~1 ps ramp only just melts the lattice; over that window each atom barely moves, so a
+        # render of it reads as sluggish. Holding at a fixed high temperature for many picoseconds
+        # lets the liquid actually diffuse — atoms slide past neighbours and the cloud churns — so
+        # the render shows real flow (not sped-up interpolation of a tiny run). The device
+        # calculator persists, so neighbour-list / trace state stays continuous across the switch.
+        hold_wall = 0.0
+        if args.hold_steps > 0:
+            t_hold = args.t_hold if args.t_hold is not None else args.t_end
+            dyn.observers = []
+            hdyn = Langevin(atoms, timestep=args.dt * units.fs, temperature_K=t_hold,
+                            friction=args.friction / units.fs)
+            hdyn.attach(_snap, interval=args.save_every)
+
+            def _hold_record():
+                _record("liq")
+                state["step"] += 1
+            hdyn.attach(_hold_record, interval=1)
+            hdyn.attach(_log, interval=log_every)
+
+            th = time.perf_counter()
+            hdyn.run(args.hold_steps)
+            hold_wall = time.perf_counter() - th
+            print(f"[hold done] {args.hold_steps} steps at {t_hold:.0f} K in {hold_wall:.1f}s "
+                  f"(rebuilds={calc.n_rebuilds})", flush=True)
 
         # ---- phase 2: NVE (no thermostat) — energy conservation tail ----
         # Drop the ramp observers (snap/record/log) by clearing the observer list, then build a
@@ -272,8 +337,11 @@ def main():
         print("\n" + "=" * 70)
         print(f"system          : {args.element} diamond ({args.nx}x{args.ny}x{args.nz} = {N} atoms)")
         print(f"edges (last)    : {calc.n_edges}   (rebuilt {calc.n_rebuilds} times, skin {args.skin} A)")
-        print(f"MD              : ramp {args.ramp_steps} x {args.dt} fs ({args.t_start:.0f}->{args.t_end:.0f} K NVT) "
-              f"+ NVE {args.nve_steps} x {args.dt} fs")
+        t_hold_disp = args.t_hold if args.t_hold is not None else args.t_end
+        t_pre_disp = args.t_prehold if args.t_prehold is not None else args.t_start
+        print(f"MD              : prehold {args.prehold_steps} @ {t_pre_disp:.0f} K NVT (crystalline) "
+              f"+ ramp {args.ramp_steps} ({args.t_start:.0f}->{args.t_end:.0f} K NVT) "
+              f"+ hold {args.hold_steps} @ {t_hold_disp:.0f} K NVT + NVE {args.nve_steps}, x {args.dt} fs")
         print(f"NVE E drift     : {drift:+.3f} meV/atom/ps   (conservation credibility metric)")
         print(f"device MD step  : {warm_ms:.2f} ms warm median (replay, energy + analytic forces)")
         print(f"throughput      : {sps:.1f} MD steps/s  |  {N*sps:,.0f} atom-steps/s  |  {nsday:.3f} ns/day")

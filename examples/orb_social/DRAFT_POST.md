@@ -15,11 +15,12 @@ Orb-v3, one of the strongest materials interatomic potentials out there, now run
 — and this clip is a real silicon melt, not atoms jiggling in a cage.
 
 A 216-atom diamond-cubic silicon crystal, periodic cell and all, heated through its 1687 K melting
-point into the liquid. Every force comes off a single Blackhole card at every timestep
-(Orb-v3's conservative F = −dE/dpos), about 21 steps a second, 0.9 nanoseconds a day on one card.
-As the temperature climbs you can watch the lattice give up: the radial distribution function
-loses its sharp crystalline peaks and broadens into the liquid envelope, and the mean-squared
-displacement takes off as atoms finally leave their sites.
+point into the liquid, then held there for 6 ps so it actually flows. Every force comes off a
+single Blackhole card at every timestep (Orb-v3's conservative F = −dE/dpos), about 23 steps a
+second, 1.0 nanosecond a day on one card. As the temperature climbs you can watch the lattice give
+up: the radial distribution function loses its sharp crystalline peaks and broadens into the liquid
+envelope, and the mean-squared displacement takes off as atoms finally leave their sites and
+diffuse.
 
 The numbers a materials person checks first, all from this run. Energy conservation: in an NVE
 tail the total energy drifts 1.4 meV/atom/ps — the bar a credible MD potential has to clear (the
@@ -70,27 +71,29 @@ conservation. (Per Moritz, the video itself carries no GPU comparison either.)
 - **System:** diamond-cubic Si, 3×3×3 supercell = **216 atoms**, periodic boundaries, single
   Blackhole p150 (physical device 0), stock `ttnn` — no custom kernels.
 - **Model:** `orb-v3-conservative-inf-omat` (OMat24), analytic conservative forces F = −dE/dpos.
-- **The melt:** NVT Langevin temperature ramp 300 → 2800 K over 900 fs (1 fs of heating per
-  rendered frame), then 500 fs of NVE. Temperature crosses Si's 1687 K melting point at ~554 fs;
-  the structure disorders and the run ends in the liquid (~1600 K).
+- **The melt:** NVT Langevin temperature ramp 300 → 2200 K over 0.8 ps, then a **6 ps hold at a
+  constant 2200 K** (the liquid diffuses over this window), then a short NVE tail — 7.2 ps total,
+  3604 frames. Temperature crosses Si's 1687 K melting point at ~626 fs; the structure disorders
+  and diffuses through the liquid hold.
 - **Energy conservation (the credibility metric):** NVE total-energy drift **1.4 meV/atom/ps** on
-  an equilibrated 900 K solid (the direct analog of the ~1 meV/atom/ps UMA bar). In the hot liquid
-  the NVE drift is ~15 meV/atom/ps — larger, as expected for a 2000 K liquid at 0.5 fs. Both real.
-- **Throughput:** **48 ms / MD step** warm median (energy + analytic forces, trace-capture replay)
-  ⇒ **20.8 MD steps/s**, **~4,500 atom-steps/s**, **0.90 ns/day** on one card. The neighbour list
-  rebuilds as the structure disorders (9 rebuilds over the melt), so the topology stays correct
-  through the liquid — the solid-only frozen-topology trick from the solid demo does not hold once
-  atoms diffuse.
+  an equilibrated 900 K solid (the direct analog of the ~1 meV/atom/ps UMA bar). In the hot
+  ~2200 K liquid the NVE drift is ~29 meV/atom/ps — larger, as expected at 0.5 fs. Both real.
+- **Throughput:** **42.7 ms / MD step** warm median (energy + analytic forces, trace-capture
+  replay) ⇒ **23.4 MD steps/s**, **~5,050 atom-steps/s**, **1.01 ns/day** on one card. The
+  neighbour list rebuilds as the structure disorders (80 rebuilds over the melt), so the topology
+  stays correct through the liquid — the solid-only frozen-topology trick from the solid demo does
+  not hold once atoms diffuse.
 - **Accuracy vs orb-models** (same melt frames, CPU reference `float32-high`):
-  - frame 350 (thermal solid, ~175 fs): ΔE **1.39 meV/atom**, force **PCC 0.99998**, max force
-    err 0.035 eV/Å (≈0.7% of the 5.3 eV/Å peak).
-  - frame 700 (liquid, ~1400 fs): ΔE **1.24 meV/atom**, force **PCC 0.99995**, max force err
-    0.030 eV/Å (≈0.7% of the 4.1 eV/Å peak).
+  - frame 1200 (liquid, ~2.4 ps): ΔE **0.45 meV/atom**, force **PCC 0.99993**, max force err
+    0.056 eV/Å (≈1.4% of the 4.1 eV/Å peak).
+  - frame 3600 (liquid, ~7.2 ps, late): ΔE **0.16 meV/atom**, force **PCC 0.99983**, max force
+    err 0.163 eV/Å (≈3% of the 5.2 eV/Å peak).
   - frame 0 (perfect lattice): ΔE 9.0 meV/atom — the known absolute-energy bf16 offset; forces
     vanish by symmetry on both sides so its PCC is meaningless.
 - **Structural signatures (in the video, live):** g(r) goes from sharp crystalline peaks
-  (first-shell g_max ≈ 19) to the broad liquid envelope (g_max ≈ 2.5); the MSD rises 0 → 2.6 Å² as
-  atoms leave their lattice sites. Both evolve frame-by-frame alongside the atoms.
+  (first-shell g_max ≈ 17) to the broad liquid envelope (g_max ≈ 2.6); the MSD rises from 0 and
+  climbs linearly to ~47 Å² over the 6 ps liquid (D ≈ 12×10⁻⁹ m²/s, right order for liquid Si).
+  Both evolve frame-by-frame alongside the atoms.
 
 ## Notes for Moritz
 - The video is one honest on-device melt; the side-card (T-ramp, MSD, g(r)) is composited from the
@@ -99,8 +102,11 @@ conservation. (Per Moritz, the video itself carries no GPU comparison either.)
   the loop point (MD is not time-periodic; a boomerang would rewind the ramp = look like cooling).
 - No jumping: the render uses unwrapped, continuous coordinates (periodic images accumulated across
   the trajectory, per-frame centre of mass removed) with no cell box and no tiling — so no atom
-  teleports across a face and no image atoms pop in/out. Verified quantitatively: max per-atom
-  displacement between consecutive rendered frames 0.288 Å (box is 16.29 Å), constant 216 atoms.
+  teleports across a face and no image atoms pop in/out. The 3D scene is windowed to the cohesive
+  melt + churn interval [0, 2.4 ps] (a 6 ps unwrapped liquid diffuses past one box and would show
+  detached fliers); the charts still span the full run. Verified quantitatively: max per-atom
+  displacement between consecutive rendered frames 0.962 Å (box/2 teleport threshold 8.14 Å),
+  constant 216 atoms, no fliers.
 - No GPU / NVIDIA / per-dollar comparison anywhere in the video (the label is model + system + T
   only), per Moritz. The post text also makes no GPU comparison now: the earlier "1.74× faster
   than H200 / ~40× per dollar" claim was withdrawn after a fair, evidenced redo
@@ -108,7 +114,8 @@ conservation. (Per Moritz, the video itself carries no GPU comparison either.)
   size; the p150's case is price/perf, not raw speed, and that nuance is left to the doc rather
   than the post.
 - Rendered in OVITO (Tachyon): shaded cool-silicon spheres on a near-black canvas, ambient
-  occlusion + shadows, no cell box. MP4 1920×1080 (~3 MB), GIF 720 px for preview. Standalone
+  occlusion + shadows, no cell box. MP4 1920×1080 (100 frames, 30 fps, ~1.7 MB), GIF 720 px
+  (~2.3 MB) for preview. Standalone
   4-panel physics figure in `melt_charts.png` for scientific scrutiny.
 - Reproduction: `NOTES.md`. Full verification + honesty caveats: `VERIFICATION.md`.
 - The earlier 900 K solid-vibration demo (the first Orb social post draft) is archived under
