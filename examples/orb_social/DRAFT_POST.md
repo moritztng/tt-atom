@@ -36,7 +36,7 @@ All open source in TT-Atom.
 > NVIDIA H200 / ~40× per dollar". That claim has been withdrawn — a fair, evidenced
 > redo (`docs/orb-port.md` "Performance per dollar") found the H200 is in fact faster
 > than the p150 on raw throughput at every size tested. The p150 still wins on
-> throughput-per-dollar (~3-9×, because it is ~23× cheaper), but the "faster than H200"
+> throughput-per-dollar (~3-8×, because it is ~23× cheaper), but the "faster than H200"
 > framing was wrong and is not in the post. This post now makes no GPU comparison.)*
 
 ---
@@ -54,14 +54,14 @@ Tenstorrent's optimized trace/replay path against the GPU's stock `orb_models` p
 (neighbour list rebuilt every step, no CUDA graph) and its H200 timings had no committed
 raw evidence, so it was not apples-to-apples and not verifiable. A fair, evidenced redo
 (branch `wk/tt-atom-orb-gpu-fair-comparison`, see `docs/orb-port.md` "Performance per
-dollar") with matched neighbour policy (frozen on both sides), a size sweep, and
-committed raw timings found the opposite: the H200 is faster than the p150 on raw
-throughput at every size tested (2.55× / 4.65× / 7.21× / 8.73× at 216 / 512 / 1000 /
-2016 atoms). The p150 still wins on throughput-per-dollar because it is ~23× cheaper
-(~9× at 216 atoms, falling to ~2.6× near 2000 atoms), but the "faster than H200" claim
-was wrong. **No GPU comparison is made in this post**; the post speaks only to the
-on-device melt, accuracy, and energy conservation. (Per Moritz, the video itself carries
-no GPU comparison either.)
+dollar") comparing the out-of-box path on each side (TT traced; stock `pip install
+orb-models` v0.7.0 `ORBCalculator`), with a size sweep and committed raw timings, found
+the opposite: the H200 is faster than the p150 on raw throughput at every size tested
+(3.0× / 5.5× / 5.3× / 6.7× at 216 / 512 / 1000 / 2016 atoms). The p150 still wins on
+throughput-per-dollar because it is ~23× cheaper (~7.6× at 216 atoms, falling to ~3.5×
+near 2000 atoms), but the "faster than H200" claim was wrong. **No GPU comparison is made
+in this post**; the post speaks only to the on-device melt, accuracy, and energy
+conservation. (Per Moritz, the video itself carries no GPU comparison either.)
 
 ---
 
