@@ -186,7 +186,7 @@ class ChartPanel:
         if sel.sum() > 1:
             b.plot(self.mt[sel], self.msd[sel], color=C_MSD, lw=2.0)
         b.axvline(self.tcross, color="#6b5641", ls="--", lw=1.0)
-        b.text(self.tcross + 14, self.msd.max() * 0.86, "melt onset", color="#c79a6a",
+        b.text(self.tcross + 14, self.msd.max() * 0.86, "T crosses $T_m$", color="#c79a6a",
                fontsize=10, rotation=90, va="top")
         b.plot([t_now], [mk], "o", color=FG, ms=7, mec=CBG, mew=1.0)
         b.set_xlim(0, self.mt[-1]); b.set_ylim(0, max(0.5, self.msd.max() * 1.1))
@@ -351,7 +351,7 @@ def main():
         state = "crystalline" if t_now < tcross else "liquid"
         _label(scene, int(H * 0.026),
                "%s   .   %d-atom %s   .   T = %.0f K" % (args.model, args.atoms, args.element, Tk),
-               "molecular dynamics on Tenstorrent Blackhole   .   %s" % state)
+               state)
         chart = panel.render(t_now).resize((args.panel_w, H))
         comp = Image.new("RGB", (W, H), BG)
         comp.paste(scene, (0, 0))

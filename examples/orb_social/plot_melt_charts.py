@@ -85,7 +85,7 @@ def main():
     c = ax[1, 0]; _style(c, "c   Mean-squared displacement")
     c.plot(mt, msd, color=C_MSD, lw=1.8)
     c.axvline(tcross, color="#6b5641", ls="--", lw=1.1)
-    c.text(tcross + 12, msd.max() * 0.2, "melt onset", color="#c79a6a", fontsize=8.5, rotation=90, va="bottom")
+    c.text(tcross + 12, msd.max() * 0.2, "T crosses $T_m$", color="#c79a6a", fontsize=8.5, rotation=90, va="bottom")
     c.set_xlabel("time (fs)", color=DIM, fontsize=10); c.set_ylabel(r"MSD (${\rm \AA}^2$)", color=DIM, fontsize=10)
     c.set_xlim(0, mt[-1]); c.set_ylim(0, max(0.5, msd.max() * 1.1))
     c.text(0.03, 0.94,
