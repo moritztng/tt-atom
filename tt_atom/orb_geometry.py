@@ -9,10 +9,9 @@ with a real spherical-harmonic angular descriptor (lmax=3, ``normalize=True``,
 module needs no dependency on ``orb_models``/``fairchem`` -- it must coexist with ttnn
 (numpy<2) exactly like ``tt_atom/geometry.py`` does for UMA.
 
-This is <1% of the compute, so for the analytic force we keep it on host where
-``torch.autograd`` supplies the cheap Jacobian ``d(edge_feat, cutoff)/dpos`` -- the device VJP
-(``tt_atom/orb_forces.py``) produces the adjoints at ``edge_feat``/``cutoff``, and
-``torch.autograd.grad`` finishes the chain to ``-dE/dpos``.
+The geometry stays on the host. The eager path lets ``torch.autograd`` finish
+``d(edge_feat, cutoff)/dpos``; the fixed-topology trace path uses the equivalent
+closed-form VJP below to avoid rebuilding a large host autograd graph every step.
 
 Sign convention: Orb's own ``vectors = pos[receivers] - pos[senders] + cell_shift``
 (``featurization_utilities.compute_supercell_neighbors``) -- the opposite of fairchem/UMA's
@@ -96,3 +95,122 @@ def host_edge_features(pos: torch.Tensor, senders: torch.Tensor, receivers: torc
     outer = rbf[:, :, None] * ang[:, None, :]
     edge_feat = cutoff * outer.reshape(vectors.shape[0], -1)
     return edge_feat, cutoff, vectors
+
+
+def host_edge_features_vjp(vectors: torch.Tensor, senders: torch.Tensor, receivers: torch.Tensor,
+                           num_nodes: int, g_edge_feat: torch.Tensor, g_cutoff: torch.Tensor, *,
+                           r_max: float = 6.0, num_bases: int = 8) -> torch.Tensor:
+    """Analytic VJP of :func:`host_edge_features`, returning ``-dE/dpos``.
+
+    The traced MD path receives the two upstream adjoints from the device.  Replaying
+    PyTorch autograd through the 128-component RBF × spherical-harmonic descriptor was
+    a substantial host-side cost at large edge counts.  This closed-form VJP evaluates
+    the same derivatives directly and avoids constructing an autograd graph each step.
+    """
+    dtype, device = vectors.dtype, vectors.device
+    r = vectors.norm(dim=-1)
+    unit = vectors / r[:, None]
+    rbf = bessel_basis(r, r_max=r_max, num_bases=num_bases)
+    ang = spherical_harmonics_l3(unit)
+    cutoff = _cutoff_value(r, r_max)
+    grad = g_edge_feat.to(dtype=dtype, device=device).reshape(-1, num_bases, 16)
+    g_cut = g_cutoff.to(dtype=dtype, device=device).reshape(-1)
+
+    # edge_feat[e,n,m] = cutoff[e] * rbf[e,n] * ang[e,m]
+    g_rbf = cutoff[:, None] * torch.einsum("enm,em->en", grad, ang)
+    g_ang = cutoff[:, None] * torch.einsum("enm,en->em", grad, rbf)
+    g_cut = g_cut + torch.einsum("enm,en,em->e", grad, rbf, ang)
+
+    n = torch.arange(1, num_bases + 1, dtype=dtype, device=device)
+    w = math.pi / r_max * n
+    wr = r[:, None] * w
+    pre = math.sqrt(2.0 / r_max)
+    drbf = pre * (w * torch.cos(wr) * r[:, None] - torch.sin(wr)) / r[:, None].square()
+    g_r = (g_rbf * drbf).sum(dim=-1) + g_cut * _cutoff_derivative(r, r_max)
+
+    g_unit = _spherical_harmonics_l3_vjp(unit, g_ang)
+    radial_unit = (g_unit * unit).sum(dim=-1, keepdim=True)
+    g_vectors = unit * g_r[:, None] + (g_unit - unit * radial_unit) / r[:, None]
+
+    # vectors = pos[receivers] - pos[senders] + constant shift; return forces=-grad(pos).
+    forces = torch.zeros((num_nodes, 3), dtype=dtype, device=device)
+    forces.index_add_(0, senders, g_vectors)
+    forces.index_add_(0, receivers, -g_vectors)
+    return forces
+
+
+def _cutoff_value(r: torch.Tensor, r_max: float) -> torch.Tensor:
+    p = 4
+    q = r / r_max
+    value = (
+        1.0
+        - ((p + 1.0) * (p + 2.0) / 2.0) * q.pow(p)
+        + p * (p + 2.0) * q.pow(p + 1)
+        - (p * (p + 1.0) / 2.0) * q.pow(p + 2)
+    )
+    return value * (r < r_max)
+
+
+def _cutoff_derivative(r: torch.Tensor, r_max: float) -> torch.Tensor:
+    p = 4
+    q = r / r_max
+    derivative = (
+        -((p + 1.0) * (p + 2.0) / 2.0) * p * q.pow(p - 1)
+        + p * (p + 2.0) * (p + 1) * q.pow(p)
+        - (p * (p + 1.0) / 2.0) * (p + 2) * q.pow(p + 1)
+    ) / r_max
+    return derivative * (r < r_max)
+
+
+def _spherical_harmonics_l3_vjp(unit: torch.Tensor, grad: torch.Tensor) -> torch.Tensor:
+    """VJP of :func:`spherical_harmonics_l3` with respect to its unit-vector input."""
+    x, y, z = unit.unbind(dim=-1)
+    mult = torch.cat([
+        torch.full((2 * l + 1,), math.sqrt(2 * l + 1), dtype=unit.dtype, device=unit.device)
+        for l in range(4)
+    ])
+    q = grad * mult
+    gx = torch.zeros_like(x)
+    gy = torch.zeros_like(y)
+    gz = torch.zeros_like(z)
+    sqrt3 = math.sqrt(3.0)
+    sqrt15 = math.sqrt(15.0)
+    c = math.sqrt(3.0 / 8.0)
+    b = math.sqrt(5.0 / 6.0) * sqrt3 / 2.0
+
+    gx += q[:, 1]
+    gy += q[:, 2]
+    gz += q[:, 3]
+
+    gx += q[:, 4] * sqrt3 * z
+    gz += q[:, 4] * sqrt3 * x
+    gx += q[:, 5] * sqrt3 * y
+    gy += q[:, 5] * sqrt3 * x
+    gx -= q[:, 6] * x
+    gy += q[:, 6] * 2.0 * y
+    gz -= q[:, 6] * z
+    gy += q[:, 7] * sqrt3 * z
+    gz += q[:, 7] * sqrt3 * y
+    gx -= q[:, 8] * sqrt3 * x
+    gz += q[:, 8] * sqrt3 * z
+
+    gx += q[:, 9] * b * (3.0 * z.square() - 3.0 * x.square())
+    gz += q[:, 9] * b * (6.0 * x * z)
+    gx += q[:, 10] * sqrt15 * y * z
+    gy += q[:, 10] * sqrt15 * x * z
+    gz += q[:, 10] * sqrt15 * x * y
+    gx += q[:, 11] * c * (4.0 * y.square() - 3.0 * x.square() - z.square())
+    gy += q[:, 11] * c * (8.0 * x * y)
+    gz -= q[:, 11] * c * (2.0 * x * z)
+    gx -= q[:, 12] * 3.0 * x * y
+    gy += q[:, 12] * (3.0 * y.square() - 1.5 * (x.square() + z.square()))
+    gz -= q[:, 12] * 3.0 * y * z
+    gx -= q[:, 13] * c * (2.0 * x * z)
+    gy += q[:, 13] * c * (8.0 * y * z)
+    gz += q[:, 13] * c * (4.0 * y.square() - x.square() - 3.0 * z.square())
+    gx -= q[:, 14] * sqrt15 * x * y
+    gy += q[:, 14] * (sqrt15 / 2.0) * (z.square() - x.square())
+    gz += q[:, 14] * sqrt15 * z * y
+    gx -= q[:, 15] * b * (6.0 * x * z)
+    gz += q[:, 15] * b * (3.0 * z.square() - 3.0 * x.square())
+    return torch.stack([gx, gy, gz], dim=-1)

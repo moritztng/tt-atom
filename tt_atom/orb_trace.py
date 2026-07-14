@@ -17,9 +17,8 @@ and is uploaded once, never refreshed.
 
 Two modes, selected by which head(s) are given:
   * ``ehead`` only (conservative, e.g. ``orb-v3-conservative-inf-omat``): the trace also captures
-    the device reverse VJP (``orb_forces.backbone_bw``); forces are ``-dE/dpos`` via a host
-    ``torch.autograd.grad`` finish through the differentiable edge geometry, same as
-    ``energy_and_forces``.
+    the device reverse VJP (``orb_forces.backbone_bw``); a closed-form host geometry VJP finishes
+    ``-dE/dpos`` without rebuilding an autograd graph.
   * ``ehead`` + ``fhead`` (direct, e.g. ``orb-v3-direct-20-omat``): forward-only, both heads read
     off the same backbone output -- there is no device backward to capture at all.
 """
@@ -60,13 +59,13 @@ class OrbTracedEngine(TraceEngineBase):
     def _prepare(self, pos):
         from .orb_geometry import host_edge_features
 
-        edge_feat, cutoff, _vectors = host_edge_features(pos, self.senders, self.receivers,
-                                                         self.shift, r_max=self.r_max,
-                                                         num_bases=self.num_bases)
-        return edge_feat, cutoff
+        # The finish uses a closed-form geometry VJP, so no host autograd graph is needed.
+        with torch.no_grad():
+            return host_edge_features(pos, self.senders, self.receivers, self.shift,
+                                      r_max=self.r_max, num_bases=self.num_bases)
 
     def _refresh(self, ctx):
-        edge_feat, cutoff = ctx
+        edge_feat, cutoff = ctx[:2]
         ttnn = self.ttnn
         ttnn.copy_host_to_device_tensor(_host_like(ttnn, self.edge_dev, edge_feat.detach()),
                                         self.edge_dev)
@@ -74,7 +73,7 @@ class OrbTracedEngine(TraceEngineBase):
                                         self.graph.cutoff)
 
     def _capture(self, ctx):
-        edge_feat, cutoff = ctx
+        edge_feat, cutoff = ctx[:2]
         ttnn = self.ttnn
         from .orb_forces import backbone_bw
         from .orb_model import OrbGraphContext, _to_dev
@@ -112,7 +111,7 @@ class OrbTracedEngine(TraceEngineBase):
         """Energy + forces from the replayed outputs. Conservative: analytic ``-dE/dpos``, matching
         ``energy_and_forces``'s return. Direct: raw per-node ForceHead prediction (still normalized-
         space, un-denormalized, matching ``ForceHead.__call__``)."""
-        edge_feat, cutoff = ctx
+        edge_feat, cutoff, vectors = ctx
         ttnn = self.ttnn
         raw_pred = ttnn.to_torch(self.raw_pred_t).double().view(())
         if not self.conservative:
@@ -121,6 +120,9 @@ class OrbTracedEngine(TraceEngineBase):
 
         g_edge_feat = ttnn.to_torch(self.g_edge_feat_t).float()
         g_cutoff = ttnn.to_torch(self.g_cutoff_t).float()
-        forces = -torch.autograd.grad([edge_feat, cutoff], pos,
-                                      grad_outputs=[g_edge_feat, g_cutoff])[0]
+        from .orb_geometry import host_edge_features_vjp
+
+        forces = host_edge_features_vjp(
+            vectors, self.senders, self.receivers, self.Z.shape[0], g_edge_feat, g_cutoff,
+            r_max=self.r_max, num_bases=self.num_bases)
         return float(raw_pred), forces
