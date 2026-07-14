@@ -102,6 +102,16 @@ def fused_lnbw() -> bool:
     return _flag("TT_ATOM_FUSED_LNBW", default_on=True, cap=_cap("fused_ln_bw"))
 
 
+def orb_fused_silu_bw() -> bool:
+    """Use ``fused_gate`` for Orb's edge-MLP SiLU VJP when available.
+
+    This replaces six DRAM-backed elementwise programs with one fused device program. It is
+    profitable for the edge-sized tensors and defaults on in the source-ttnn build; stock wheels
+    keep the ordinary ttnn path. ``TT_ATOM_ORB_FUSED_SILU_BW=0/1`` overrides.
+    """
+    return _flag("TT_ATOM_ORB_FUSED_SILU_BW", default_on=True, cap=_cap("fused_gate"))
+
+
 def edge_dtype(ttnn):
     """bfloat8_b when bf8_edge() else bfloat16 — the working dtype of the edgewise E-sized flow."""
     return ttnn.bfloat8_b if bf8_edge() else ttnn.bfloat16

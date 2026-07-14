@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import torch
 
+from .device import orb_fused_silu_bw
+
 
 def _mm(ttnn, g, W, kcfg):
     """grad wrt x of ``y = x @ W`` (W stored [in,out]): ``g @ W^T``."""
@@ -28,6 +30,37 @@ def _mm(ttnn, g, W, kcfg):
 
 
 def silu_bw(ttnn, g, x):
+    # Stock ttnn.silu_bw materializes sigmoid, grad*sigmoid, rsub, multiply,
+    # add, and the final multiply as six DRAM-backed ops.  The source-ttnn
+    # build used by TT-Atom already carries fused_gate, whose backward mode
+    # computes g*silu'(x) in one device program.  fused_gate reserves one
+    # tile for its SO(3) vector branch, so use it for all but the final tile
+    # and finish that tile with stock ttnn.  Small/node tensors stay on the
+    # stock path because the slice/concat wrapper costs more than it saves.
+    rows, width = x.shape[-2], x.shape[-1]
+
+    can_fuse = (
+        orb_fused_silu_bw()
+        and len(x.shape) == 2
+        and rows >= 2048
+        and width >= 64
+        and width % 32 == 0
+        and g.dtype == x.dtype
+        and x.dtype in (ttnn.bfloat16, ttnn.bfloat8_b)
+    )
+    if can_fuse:
+        wt = width // 32
+        prefix_width = width - 32
+        # The one-tile gate is consumed only by the ignored final output tile.
+        dummy_gate = ttnn.slice(g, [0, 0], [rows, 32])
+        fused = ttnn._ttnn.operations.experimental.fused_gate(
+            g, dummy_gate, x, wt, 1, wt - 1, 1)
+        tail = ttnn.silu_bw(
+            ttnn.slice(g, [0, prefix_width], [rows, width]),
+            ttnn.slice(x, [0, prefix_width], [rows, width]),
+        )[0]
+        return ttnn.concat(
+            [ttnn.slice(fused, [0, 0], [rows, prefix_width]), tail], dim=1)
     return ttnn.silu_bw(g, x)[0]
 
 

@@ -1,0 +1,327 @@
+{
+  "platform": "Tenstorrent Blackhole p150 (one card, device 0)",
+  "model": "orb-v3-conservative-inf-omat",
+  "scope": "first interaction layer edge MLPNorm with real weights",
+  "precision": "bf8 hidden/weights",
+  "candidate": "ttnn.linear SiLU epilogue; forward-only because conservative VJP requires pre-SiLU tensors",
+  "orb_fused_silu_bw": "0",
+  "timestamp_utc": "2026-07-14T15:05:22.974182+00:00",
+  "records": [
+    {
+      "tag": "3x3x3",
+      "edges": 9936,
+      "baseline": {
+        "median_ms": 0.9707851568236947,
+        "min_ms": 0.9630159474909306,
+        "max_ms": 0.9994830470532179,
+        "raw_ms": [
+          0.9865,
+          0.9654,
+          0.963,
+          0.9726,
+          0.9992,
+          0.9995,
+          0.969,
+          0.9641
+        ]
+      },
+      "linear_silu_epilogue": {
+        "median_ms": 0.980844022706151,
+        "min_ms": 0.9647989645600319,
+        "max_ms": 1.0607759468257427,
+        "raw_ms": [
+          0.9876,
+          0.969,
+          0.9741,
+          1.0608,
+          1.0002,
+          0.9978,
+          0.9687,
+          0.9648
+        ]
+      },
+      "forward_only_speedup": 0.9897446835076755,
+      "parity": {
+        "pcc": 1.0,
+        "max_abs": 0.0,
+        "mean_abs": 0.0
+      },
+      "backward": {
+        "median_ms": 2.428563078865409,
+        "min_ms": 2.421489916741848,
+        "max_ms": 2.5153839960694313,
+        "raw_ms": [
+          2.4291,
+          2.4241,
+          2.4215,
+          2.4233,
+          2.457,
+          2.4281,
+          2.5154,
+          2.4996
+        ]
+      },
+      "synchronized_baseline_stage_ms": {
+        "linear0": 0.30916393734514713,
+        "silu0": 0.15786290168762207,
+        "linear1": 0.29373494908213615,
+        "silu1": 0.13958895578980446,
+        "linear2": 0.1660378184169531,
+        "rmsnorm": 0.3194918390363455
+      },
+      "synchronized_backward_stage_ms": {
+        "rmsnorm_bw": 0.4329429939389229,
+        "linear2_bw": 0.23165997117757797,
+        "silu1_bw": 0.755400862544775,
+        "linear1_bw": 0.2881349064409733,
+        "silu0_bw": 0.6996269803494215,
+        "linear0_bw": 0.23861206136643887
+      },
+      "logical_work": {
+        "matmul_flops": 41674604544,
+        "current_logical_bytes": 114065936,
+        "weight_bytes_included": 2097152,
+        "epilogue_silu_saved_bytes": 40697856
+      },
+      "effective_matmul_tflops": 42.928761581352205,
+      "effective_logical_bandwidth_gbs": 117.49864035129208
+    },
+    {
+      "tag": "4x4x4",
+      "edges": 23552,
+      "baseline": {
+        "median_ms": 1.9070259295403957,
+        "min_ms": 1.888100989162922,
+        "max_ms": 1.9457780290395021,
+        "raw_ms": [
+          1.9458,
+          1.9092,
+          1.9064,
+          1.8881,
+          1.8977,
+          1.9014,
+          1.9076,
+          1.9112
+        ]
+      },
+      "linear_silu_epilogue": {
+        "median_ms": 1.9097165204584599,
+        "min_ms": 1.8942330498248339,
+        "max_ms": 1.9352580420672894,
+        "raw_ms": [
+          1.922,
+          1.9353,
+          1.905,
+          1.9088,
+          1.8942,
+          1.9107,
+          1.9304,
+          1.8967
+        ]
+      },
+      "forward_only_speedup": 0.998591104549162,
+      "parity": {
+        "pcc": 1.0,
+        "max_abs": 0.0,
+        "mean_abs": 0.0
+      },
+      "backward": {
+        "median_ms": 4.940079990774393,
+        "min_ms": 4.93609206750989,
+        "max_ms": 5.02574909478426,
+        "raw_ms": [
+          4.9361,
+          4.9389,
+          4.9405,
+          4.9365,
+          5.0169,
+          5.0257,
+          4.9396,
+          4.9531
+        ]
+      },
+      "synchronized_baseline_stage_ms": {
+        "linear0": 0.47651282511651516,
+        "silu0": 0.23320200853049755,
+        "linear1": 0.5322268698364496,
+        "silu1": 0.22551813162863255,
+        "linear2": 0.28258422389626503,
+        "rmsnorm": 0.3439078573137522
+      },
+      "synchronized_backward_stage_ms": {
+        "rmsnorm_bw": 0.5801059305667877,
+        "linear2_bw": 0.43320306576788425,
+        "silu1_bw": 1.6496989410370588,
+        "linear1_bw": 0.5236109718680382,
+        "silu0_bw": 1.5249080024659634,
+        "linear0_bw": 0.40948018431663513
+      },
+      "logical_work": {
+        "matmul_flops": 98784247808,
+        "current_logical_bytes": 267504640,
+        "weight_bytes_included": 2097152,
+        "epilogue_silu_saved_bytes": 96468992
+      },
+      "effective_matmul_tflops": 51.800159755461515,
+      "effective_logical_bandwidth_gbs": 140.27320544323703
+    },
+    {
+      "tag": "5x5x5",
+      "edges": 46000,
+      "baseline": {
+        "median_ms": 4.4730184599757195,
+        "min_ms": 4.415967967361212,
+        "max_ms": 4.5154530089348555,
+        "raw_ms": [
+          4.431,
+          4.4223,
+          4.4724,
+          4.5155,
+          4.4896,
+          4.4736,
+          4.416,
+          4.4778
+        ]
+      },
+      "linear_silu_epilogue": {
+        "median_ms": 4.482776392251253,
+        "min_ms": 4.43503400310874,
+        "max_ms": 4.517395980656147,
+        "raw_ms": [
+          4.4842,
+          4.5174,
+          4.435,
+          4.4814,
+          4.4528,
+          4.4931,
+          4.5147,
+          4.4557
+        ]
+      },
+      "forward_only_speedup": 0.9978232391219868,
+      "parity": {
+        "pcc": 1.0,
+        "max_abs": 0.0,
+        "mean_abs": 0.0
+      },
+      "backward": {
+        "median_ms": 10.280346614308655,
+        "min_ms": 10.239416034892201,
+        "max_ms": 10.328000877052546,
+        "raw_ms": [
+          10.2554,
+          10.2494,
+          10.309,
+          10.2636,
+          10.328,
+          10.2971,
+          10.2394,
+          10.3018
+        ]
+      },
+      "synchronized_baseline_stage_ms": {
+        "linear0": 1.3535190373659134,
+        "silu0": 0.48902700655162334,
+        "linear1": 1.2079400476068258,
+        "silu1": 0.4925129469484091,
+        "linear2": 0.5986799951642752,
+        "rmsnorm": 1.0683611035346985
+      },
+      "synchronized_backward_stage_ms": {
+        "rmsnorm_bw": 1.5159498434513807,
+        "linear2_bw": 0.9769410826265812,
+        "silu1_bw": 3.2326141372323036,
+        "linear1_bw": 1.1716431472450495,
+        "silu0_bw": 3.0082580633461475,
+        "linear0_bw": 1.1612128000706434
+      },
+      "logical_work": {
+        "matmul_flops": 192937984000,
+        "current_logical_bytes": 520471152,
+        "weight_bytes_included": 2097152,
+        "epilogue_silu_saved_bytes": 188416000
+      },
+      "effective_matmul_tflops": 43.13373300968834,
+      "effective_logical_bandwidth_gbs": 116.35792623194881
+    },
+    {
+      "tag": "6x6x7",
+      "edges": 92736,
+      "baseline": {
+        "median_ms": 9.983917465433478,
+        "min_ms": 9.891209891065955,
+        "max_ms": 10.242462158203125,
+        "raw_ms": [
+          9.9854,
+          9.9824,
+          9.8912,
+          10.2425,
+          10.1188,
+          9.9115,
+          10.054,
+          9.9527
+        ]
+      },
+      "linear_silu_epilogue": {
+        "median_ms": 10.169020621106029,
+        "min_ms": 10.016161948442459,
+        "max_ms": 10.301601141691208,
+        "raw_ms": [
+          10.3016,
+          10.0755,
+          10.0162,
+          10.0996,
+          10.1055,
+          10.2883,
+          10.2325,
+          10.2627
+        ]
+      },
+      "forward_only_speedup": 0.981797346807581,
+      "parity": {
+        "pcc": 1.0,
+        "max_abs": 0.0,
+        "mean_abs": 0.0
+      },
+      "backward": {
+        "median_ms": 20.740367122925818,
+        "min_ms": 20.676808897405863,
+        "max_ms": 20.898880902677774,
+        "raw_ms": [
+          20.6768,
+          20.7512,
+          20.7303,
+          20.7122,
+          20.8656,
+          20.8989,
+          20.7209,
+          20.7505
+        ]
+      },
+      "synchronized_baseline_stage_ms": {
+        "linear0": 3.7147479597479105,
+        "silu0": 0.8503762073814869,
+        "linear1": 3.1165978871285915,
+        "silu1": 0.8634109981358051,
+        "linear2": 1.097183907404542,
+        "rmsnorm": 1.2979470193386078
+      },
+      "synchronized_backward_stage_ms": {
+        "rmsnorm_bw": 2.057204954326153,
+        "linear2_bw": 1.7259700689464808,
+        "silu1_bw": 6.373386830091476,
+        "linear1_bw": 3.0529710929840803,
+        "silu0_bw": 5.898626986891031,
+        "linear0_bw": 2.317356877028942
+      },
+      "logical_work": {
+        "matmul_flops": 388962975744,
+        "current_logical_bytes": 1047139136,
+        "weight_bytes_included": 2097152,
+        "epilogue_silu_saved_bytes": 379846656
+      },
+      "effective_matmul_tflops": 38.958953445946996,
+      "effective_logical_bandwidth_gbs": 104.88259139014583
+    }
+  ]
+}

@@ -297,6 +297,13 @@ instead of rebuilding a PyTorch autograd graph. It is mathematically equivalent 
 normalized-force difference below 3e-7 in the trace parity test) and reduces the current bf16
 curve to 45.46 / 107.90 / 210.23 / 424.61 ms per step.
 
+On the source-ttnn build, the Orb edge-MLP backward also routes its SiLU derivatives through the
+available fused device program. This removes six DRAM-backed elementwise programs per derivative
+and reduces the current bf16 curve further to 42.68 / 91.80 / 188.27 / 372.13 ms per step at
+216 / 512 / 1000 / 2016 atoms. Stock ttnn wheels fall back to the ordinary path. A forward
+Linear+SiLU epilogue was measured but rejected: it was 0.996x / 0.998x / 0.994x / 0.988x at the
+same sizes and does not preserve the pre-activation tensors needed by conservative forces.
+
 ## `--fast` (bf8) mode
 
 Weight-only bf8 remains a dead end. The useful mode also stores the two 1024-wide hidden MLP
@@ -406,7 +413,7 @@ a single Blackhole p150 deliver relative to a single NVIDIA data-centre GPU, and
 does that look like once you divide by what the card costs? The honest answer, comparing
 the software a user actually runs out of the box on each side: the NVIDIA H200 is faster
 than the p150 on raw throughput at every system size tested. The p150 still wins on
-throughput-per-dollar because it costs roughly twenty-three times less, but by ~3.8-8.5x, not
+throughput-per-dollar because it costs roughly twenty-three times less, but by ~4.4-9.1x, not
 ~40x, and that edge shrinks as systems grow. The p150's value proposition here is
 price/performance, not raw speed.
 
@@ -457,19 +464,19 @@ pays per-step host dispatch that the TT traced path does not -- a residual asymm
 
 | system (Si diamond) | N | edges | p150 (bf16, traced) | H200 (fp32, stock `ORBCalculator`) | H200 vs p150 |
 |---|---|---|---|---|---|
-| 3x3x3 cells | 216 | 9936 | 45.46 ms/step, 22.0 steps/s | 16.85 ms/step, 59.4 steps/s | H200 **2.7x faster** |
-| 4x4x4 cells | 512 | 23552 | 107.90 ms/step, 9.3 steps/s | 19.43 ms/step, 51.5 steps/s | H200 **5.6x faster** |
-| 5x5x5 cells | 1000 | 46000 | 210.23 ms/step, 4.8 steps/s | 44.47 ms/step, 22.5 steps/s | H200 **4.7x faster** |
-| 6x6x7 cells | 2016 | 92736 | 424.61 ms/step, 2.4 steps/s | 70.51 ms/step, 14.2 steps/s | H200 **6.0x faster** |
+| 3x3x3 cells | 216 | 9936 | 42.68 ms/step, 23.4 steps/s | 16.85 ms/step, 59.4 steps/s | H200 **2.5x faster** |
+| 4x4x4 cells | 512 | 23552 | 91.80 ms/step, 10.9 steps/s | 19.43 ms/step, 51.5 steps/s | H200 **4.7x faster** |
+| 5x5x5 cells | 1000 | 46000 | 188.27 ms/step, 5.3 steps/s | 44.47 ms/step, 22.5 steps/s | H200 **4.2x faster** |
+| 6x6x7 cells | 2016 | 92736 | 372.13 ms/step, 2.7 steps/s | 70.51 ms/step, 14.2 steps/s | H200 **5.3x faster** |
 
-(Median of 50-60 timed steps after warmup, jittered positions each step. The H200 was
+(p150: median of 40 timed steps after warmup, jittered positions each step. The H200 was
 rented on-demand on vast.ai; GPU spend across both legs of the redo was ~$2.05 of a
 ~$10.36 credit, instances destroyed and teardown verified -- `vastai show instances` ->
 `[]`. No H100 on-demand inventory was available the day of the run, so the H200 stands in
 for the H100 class, labelled exactly. torch 2.13.0+cu130, orb_models 0.7.0, edge_method
 `knn_alchemi` (package default). Raw per-step timings in
 `benchmarks/orb_perf_dollar_gpu_v0.7.0.json` and
-`benchmarks/orb_perf_dollar_tt_analytic_vjp.json`.)
+`benchmarks/orb_perf_edge_mlp_fused.json`.)
 
 The H200 leads at every size. Why: the p150 traced step still recomputes the per-edge
 geometry on host and uploads it every step (`host_edge_features` +
@@ -485,7 +492,7 @@ For transparency, freezing the neighbour list on the GPU too (calling
 not a user path) isolates the per-step rebuild cost and gives a hardware-vs-hardware
 view. Measured on orb_models v0.5.5 (`benchmarks/orb_perf_dollar_gpu.json`,
 `benchmarks/orb_perf_dollar_gpu_v0.5.5_crosscheck.json`): 20.0 / 23.2 / 32.5 / 53.8 ms,
-i.e. the H200 is 2.3x / 4.7x / 6.5x / 7.9x faster than the p150 traced path. The
+i.e. the H200 is 2.1x / 4.0x / 5.8x / 6.9x faster than the p150 traced path. The
 stock-out-of-box H200 numbers in the headline table above are the GPU's *slowest*
 reasonable out-of-box case (they include the per-call rebuild and the un-removed host
 dispatch); the hand-tuned frozen path is faster still, so the p150's out-of-box
@@ -515,14 +522,14 @@ H200_speedup, using the out-of-box numbers above:
 
 | system | p150 throughput | H200 throughput | H200 raw speedup | cost ratio | p150 perf-per-dollar edge |
 |---|---|---|---|---|---|
-| 216 atoms | 22.0 steps/s | 59.4 steps/s | 2.7x | ~23x | **~8.5x** |
-| 512 atoms | 9.3 steps/s | 51.5 steps/s | 5.6x | ~23x | **~4.1x** |
-| 1000 atoms | 4.8 steps/s | 22.5 steps/s | 4.7x | ~23x | **~4.8x** |
-| 2016 atoms | 2.4 steps/s | 14.2 steps/s | 6.0x | ~23x | **~3.8x** |
+| 216 atoms | 23.4 steps/s | 59.4 steps/s | 2.5x | ~23x | **~9.1x** |
+| 512 atoms | 10.9 steps/s | 51.5 steps/s | 4.7x | ~23x | **~4.9x** |
+| 1000 atoms | 5.3 steps/s | 22.5 steps/s | 4.2x | ~23x | **~5.4x** |
+| 2016 atoms | 2.7 steps/s | 14.2 steps/s | 5.3x | ~23x | **~4.4x** |
 
-Read plainly: the H200 is the faster card outright at every size, by 2.7x to 6.0x on the
+Read plainly: the H200 is the faster card outright at every size, by 2.5x to 5.3x on the
 software a user actually runs; the p150 is ~23x cheaper, so it still delivers more
-throughput per dollar -- ~8.5x at 216 atoms falling toward ~3.8x near 2000 atoms. The
+throughput per dollar -- ~9.1x at 216 atoms falling toward ~4.4x near 2000 atoms. The
 earlier "~40x per dollar" was wrong by roughly an order of magnitude in the small-N
 regime and falls further at larger N. This is one model
 (`orb-v3-conservative-inf-omat`), one system family (periodic Si diamond), and the
@@ -536,8 +543,9 @@ not a benchmark report, and the p150's edge is price/perf, not raw throughput.
 TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python \
     benchmarks/bench_orb_perf_dollar_tt.py \
     --weights ~/.ttatom_run/goldens_real/si_supercell_orb.npz \
-    --warmup 12 --steps 60 --out benchmarks/orb_perf_dollar_tt_analytic_vjp.json
-#   -> 216: 45.46 ms / 22.0 steps/s ; 512: 107.90 ms / 9.3 ; 1000: 210.23 ; 2016: 424.61
+    --warmup 10 --steps 40 --out benchmarks/orb_perf_edge_mlp_fused.json
+#   -> 216: 42.68 ms / 23.4 steps/s ; 512: 91.80 ms / 10.9 ;
+#      1000: 188.27 ms / 5.3 ; 2016: 372.13 ms / 2.7
 
 # NVIDIA side (one H200, rented on vast.ai) -- out-of-box stock ORBCalculator sweep:
 #   on the GPU box: conda create -n orb python=3.12 && conda activate orb \

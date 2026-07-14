@@ -80,6 +80,7 @@ def main():
             "execution_model": "trace/replay (OrbTracedEngine) -- zero per-step host dispatch, bit-exact vs eager",
             "load_and_first_compile_excluded": True,
             "positions_jittered_each_step": True,
+            "orb_fused_silu_bw": os.environ.get("TT_ATOM_ORB_FUSED_SILU_BW", "auto"),
             "git_sha": _git_sha(),
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "env_python": sys.executable,
