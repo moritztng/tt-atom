@@ -1,18 +1,11 @@
-"""bf8-weight ("--fast") accuracy check for Orb-v3, both checkpoints -- see
-``docs/orb-port.md``'s "`--fast` (bf8) mode" section for the full verdict: accuracy holds
-comfortably (this test), but the companion perf measurement (``benchmarks/bench_orb_profile.py``)
-found NO throughput win (Orb's forward is dispatch-bound, not bandwidth-bound, so halving weight
-bytes does nothing) and UMA's real bf8 win (bandwidth-bound edge activations through the custom
-``fused_rotate``/``fused_gate`` kernels) has no Orb equivalent. **This is a measured dead end --
-no `--fast` CLI flag exists for Orb.** This test exists only so the accuracy half of that
-conclusion (and the ``fast=True`` kwarg threaded through ``tt_atom/orb_model.py`` to reach it)
-stays cheaply reproducible.
+"""Orb-v3 ``--fast`` accuracy check for both checkpoints.
 
-Reuses UMA's existing weight-dtype policy as-is (``tt_atom/device.py``'s
-``compute_kernel_config`` -- HiFi4 + fp32 dest-accumulate always -- plus the ``fast=True`` ->
-``ttnn.bfloat8_b`` weight-dtype selection already used by ``grid.py``/``so2.py``/``model.py``):
-only the persistent weight tensors go bf8, activations/residual stream stay bf16, matmul
-accumulation stays fp32. No new dtype policy invented.
+Weight-only bf8 was a measured dead end.  The accelerated mode also stores the two 1024-wide
+hidden MLP activations in bf8 while keeping the 256-wide residual stream bf16 and matmul
+accumulation fp32.  This test is the real-weight release gate for that numerics policy.
+
+``tt_atom/device.py`` keeps HiFi4 + fp32 destination accumulation.  Only weights and hidden
+MLP activations use bf8; outputs entering residual connections stay bf16.
 
 Bar: UMA's own real-weight ``--fast`` bar (commit 836af75: "forward+forces PCC 0.99997, no
 accuracy loss") -- same energy/force/stress thresholds as the existing bf16 real-weight tests

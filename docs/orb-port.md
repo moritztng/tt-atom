@@ -292,46 +292,28 @@ with no accuracy cost — there's no calculator/CLI surface for Orb yet (unlike 
 `orb_forces.energy_and_forces` already is: a direct, documented API a caller's own MD/relaxation
 loop constructs once per fixed topology and calls per step.
 
-## `--fast` (bf8) mode: accuracy-safe, but a measured dead end (branch `wk/tt-atom-orb-bf8-mode`)
+The production trace path now finishes the host geometry derivative with a closed-form VJP
+instead of rebuilding a PyTorch autograd graph. It is mathematically equivalent (maximum
+normalized-force difference below 3e-7 in the trace parity test) and reduces the current bf16
+curve to 45.46 / 107.90 / 210.23 / 424.61 ms per step.
 
-Applied UMA's existing weight-dtype policy as-is (`fast=True` -> `ttnn.bfloat8_b` for the
-persistent Linear/attention weights in `tt_atom/orb_model.py`'s `MLPNorm`/`AttentionInteractionLayer`/
-`EnergyHead`/`ForceHead`/`StressHead`; `compute_kernel_config`'s HiFi4 + fp32 dest-accumulate is
-unchanged either way — same split as UMA's `grid.py`/`so2.py`). No new policy invented.
+## `--fast` (bf8) mode
 
-**Accuracy** (`tests/test_orb_bf8_fast.py`, real weights, both checkpoints) holds comfortably
-inside UMA's own `--fast` bar (commit `836af75`: "PCC 0.99997, no accuracy loss") and this port's
-existing bf16 real-weight thresholds:
+Weight-only bf8 remains a dead end. The useful mode also stores the two 1024-wide hidden MLP
+activations in bf8, while keeping the 256-wide residual stream in bf16 and matmul accumulation
+in fp32. This targets the actual large-graph cost: repeatedly moving hidden edge activations
+through DRAM.
 
-| checkpoint | quantity | bf16 (existing) | bf8 weights (`fast=True`) |
-|---|---|---|---|
-| conservative | energy rel err | 1.19e-4 | 1.03e-3 |
-| conservative | forces PCC / MAE | 0.999975 / 0.0089 eV/Å | 0.999963 / 0.0095 eV/Å |
-| conservative | stress PCC / max err | (untested at bf16 in isolation) | 0.999920 / 9.25e-4 |
-| direct-20 | energy rel err | 5.79e-4 | 5.79e-4 |
-| direct-20 | forces PCC / MAE | 0.999966 / 0.0079 eV/Å | 0.999974 / 0.0093 eV/Å |
+On the same traced conservative-force benchmark as the performance-per-dollar comparison,
+`--fast` gives 49.29 / 89.39 / 190.79 / 383.06 ms per step at 216 / 512 / 1000 / 2016 atoms.
+That is 1.03x / 1.21x / 1.23x / 1.23x faster than bf16. The full measurements are in
+`benchmarks/orb_perf_dollar_tt_accel.json`.
 
-**Perf** (`benchmarks/bench_orb_profile.py`, warm eager forward, median of 30, real weights):
-
-| case | bf16 | bf8 weights | ratio |
-|---|---|---|---|
-| conservative toy (N=4, E=172) | 4.231 ms | 4.214 ms | 1.00x |
-| conservative production (N=24, E=1064) | 4.434 ms | 4.489 ms | 0.99x |
-| direct-20 toy (N=4, E=80) | 4.236 ms | 4.199 ms | 1.01x |
-
-**No measurable win — a dead end, not adopted.** This is exactly what the profiling section above
-predicts: the forward is dispatch-bound (fixed ~9 ops/layer regardless of graph size), not
-DRAM-bandwidth-bound, so halving the weight tensors' bytes does nothing (matches
-`tt_atom/device.py`'s own `bf8_edge()` docstring: "bf8 weights alone = 1.00x" is the exact same
-null result UMA itself measured for weight-only bf8). UMA's *real* bf8 win comes from a different,
-non-transferable axis — `TT_ATOM_BF8_EDGE`'s bandwidth-bound edge-activation dataflow through the
-custom `fused_rotate`/`fused_gate` kernels — and this port's own "Architecture verdict" section
-already established that none of those four custom kernels apply to Orb (no equivariant hidden
-representation to rotate or gate). So there is no analogous lever here at all, transferable or
-otherwise: **no `--fast` CLI flag added for Orb.** The `fast=` kwarg is left threaded through
-`tt_atom/orb_model.py` (default `False`, zero behavior change) purely so this null result stays
-cheaply reproducible; nothing calls it with `fast=True` outside `tests/test_orb_bf8_fast.py` and
-the benchmark.
+Real-weight parity remains within the port's release bar: conservative force PCC 0.999906,
+energy relative error 1.84e-3, and stress PCC 0.999590. A 2000-step, 1 ps solid-Si NVE run at
+900 K measured -0.005 meV/atom/ps total-energy drift. The mode is still release-gated because
+its force MAE is 0.0490 eV/Å versus 0.0089 eV/Å for bf16. Use `examples/orb_md.py --fast` only
+when that accuracy/performance trade-off is acceptable.
 
 ## OrbMol: the OMol25-trained, charge/spin-conditioned checkpoints (branch `wk/tt-atom-orbmol-port`)
 
@@ -413,9 +395,9 @@ OrbMol checkpoint (`tests/test_orb_evaluate_batch.py::test_evaluate_batch_conser
 > narration was later proven false). The fair, evidenced redo below compares the
 > out-of-box path on each side (TT traced; stock `pip install orb-models` v0.7.0
 > `ORBCalculator`) and refutes the old claim: the H200 is faster than the p150 on raw
-> throughput at *every* size tested; the p150 wins only on throughput-per-dollar (~3-8x,
+> throughput at *every* size tested; the p150 wins only on throughput-per-dollar (~3.8-8.5x,
 > not ~40x). Raw per-step timings for both legs are committed in
-> `benchmarks/orb_perf_dollar_tt.json`, `benchmarks/orb_perf_dollar_gpu_v0.7.0.json`
+> `benchmarks/orb_perf_dollar_tt_analytic_vjp.json`, `benchmarks/orb_perf_dollar_gpu_v0.7.0.json`
 > (headline) and `benchmarks/orb_perf_dollar_gpu.json` (v0.5.5 matched-policy
 > transparency).
 
@@ -424,7 +406,7 @@ a single Blackhole p150 deliver relative to a single NVIDIA data-centre GPU, and
 does that look like once you divide by what the card costs? The honest answer, comparing
 the software a user actually runs out of the box on each side: the NVIDIA H200 is faster
 than the p150 on raw throughput at every system size tested. The p150 still wins on
-throughput-per-dollar because it costs roughly twenty-three times less, but by ~3-8x, not
+throughput-per-dollar because it costs roughly twenty-three times less, but by ~3.8-8.5x, not
 ~40x, and that edge shrinks as systems grow. The p150's value proposition here is
 price/performance, not raw speed.
 
@@ -475,10 +457,10 @@ pays per-step host dispatch that the TT traced path does not -- a residual asymm
 
 | system (Si diamond) | N | edges | p150 (bf16, traced) | H200 (fp32, stock `ORBCalculator`) | H200 vs p150 |
 |---|---|---|---|---|---|
-| 3x3x3 cells | 216 | 9936 | 50.97 ms/step, 19.6 steps/s | 16.85 ms/step, 59.4 steps/s | H200 **3.0x faster** |
-| 4x4x4 cells | 512 | 23552 | 107.77 ms/step, 9.3 steps/s | 19.43 ms/step, 51.5 steps/s | H200 **5.5x faster** |
-| 5x5x5 cells | 1000 | 46000 | 234.38 ms/step, 4.3 steps/s | 44.47 ms/step, 22.5 steps/s | H200 **5.3x faster** |
-| 6x6x7 cells | 2016 | 92736 | 469.70 ms/step, 2.1 steps/s | 70.51 ms/step, 14.2 steps/s | H200 **6.7x faster** |
+| 3x3x3 cells | 216 | 9936 | 45.46 ms/step, 22.0 steps/s | 16.85 ms/step, 59.4 steps/s | H200 **2.7x faster** |
+| 4x4x4 cells | 512 | 23552 | 107.90 ms/step, 9.3 steps/s | 19.43 ms/step, 51.5 steps/s | H200 **5.6x faster** |
+| 5x5x5 cells | 1000 | 46000 | 210.23 ms/step, 4.8 steps/s | 44.47 ms/step, 22.5 steps/s | H200 **4.7x faster** |
+| 6x6x7 cells | 2016 | 92736 | 424.61 ms/step, 2.4 steps/s | 70.51 ms/step, 14.2 steps/s | H200 **6.0x faster** |
 
 (Median of 50-60 timed steps after warmup, jittered positions each step. The H200 was
 rented on-demand on vast.ai; GPU spend across both legs of the redo was ~$2.05 of a
@@ -486,7 +468,8 @@ rented on-demand on vast.ai; GPU spend across both legs of the redo was ~$2.05 o
 `[]`. No H100 on-demand inventory was available the day of the run, so the H200 stands in
 for the H100 class, labelled exactly. torch 2.13.0+cu130, orb_models 0.7.0, edge_method
 `knn_alchemi` (package default). Raw per-step timings in
-`benchmarks/orb_perf_dollar_gpu_v0.7.0.json` and `benchmarks/orb_perf_dollar_tt.json`.)
+`benchmarks/orb_perf_dollar_gpu_v0.7.0.json` and
+`benchmarks/orb_perf_dollar_tt_analytic_vjp.json`.)
 
 The H200 leads at every size. Why: the p150 traced step still recomputes the per-edge
 geometry on host and uploads it every step (`host_edge_features` +
@@ -502,7 +485,7 @@ For transparency, freezing the neighbour list on the GPU too (calling
 not a user path) isolates the per-step rebuild cost and gives a hardware-vs-hardware
 view. Measured on orb_models v0.5.5 (`benchmarks/orb_perf_dollar_gpu.json`,
 `benchmarks/orb_perf_dollar_gpu_v0.5.5_crosscheck.json`): 20.0 / 23.2 / 32.5 / 53.8 ms,
-i.e. the H200 is 2.6x / 4.7x / 7.2x / 8.7x faster than the p150 traced path. The
+i.e. the H200 is 2.3x / 4.7x / 6.5x / 7.9x faster than the p150 traced path. The
 stock-out-of-box H200 numbers in the headline table above are the GPU's *slowest*
 reasonable out-of-box case (they include the per-call rebuild and the un-removed host
 dispatch); the hand-tuned frozen path is faster still, so the p150's out-of-box
@@ -532,14 +515,14 @@ H200_speedup, using the out-of-box numbers above:
 
 | system | p150 throughput | H200 throughput | H200 raw speedup | cost ratio | p150 perf-per-dollar edge |
 |---|---|---|---|---|---|
-| 216 atoms | 19.6 steps/s | 59.4 steps/s | 3.0x | ~23x | **~7.6x** |
-| 512 atoms | 9.3 steps/s | 51.5 steps/s | 5.5x | ~23x | **~4.1x** |
-| 1000 atoms | 4.3 steps/s | 22.5 steps/s | 5.3x | ~23x | **~4.4x** |
-| 2016 atoms | 2.1 steps/s | 14.2 steps/s | 6.7x | ~23x | **~3.5x** |
+| 216 atoms | 22.0 steps/s | 59.4 steps/s | 2.7x | ~23x | **~8.5x** |
+| 512 atoms | 9.3 steps/s | 51.5 steps/s | 5.6x | ~23x | **~4.1x** |
+| 1000 atoms | 4.8 steps/s | 22.5 steps/s | 4.7x | ~23x | **~4.8x** |
+| 2016 atoms | 2.4 steps/s | 14.2 steps/s | 6.0x | ~23x | **~3.8x** |
 
-Read plainly: the H200 is the faster card outright at every size, by 3x to 6.7x on the
+Read plainly: the H200 is the faster card outright at every size, by 2.7x to 6.0x on the
 software a user actually runs; the p150 is ~23x cheaper, so it still delivers more
-throughput per dollar -- ~7.6x at 216 atoms falling toward ~3.5x near 2000 atoms. The
+throughput per dollar -- ~8.5x at 216 atoms falling toward ~3.8x near 2000 atoms. The
 earlier "~40x per dollar" was wrong by roughly an order of magnitude in the small-N
 regime and falls further at larger N. This is one model
 (`orb-v3-conservative-inf-omat`), one system family (periodic Si diamond), and the
@@ -553,8 +536,8 @@ not a benchmark report, and the p150's edge is price/perf, not raw throughput.
 TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python \
     benchmarks/bench_orb_perf_dollar_tt.py \
     --weights ~/.ttatom_run/goldens_real/si_supercell_orb.npz \
-    --warmup 12 --steps 60 --out benchmarks/orb_perf_dollar_tt.json
-#   -> 216: 50.97 ms / 19.6 steps/s ; 512: 107.77 ms / 9.3 ; 1000: 234.38 ; 2016: 469.70
+    --warmup 12 --steps 60 --out benchmarks/orb_perf_dollar_tt_analytic_vjp.json
+#   -> 216: 45.46 ms / 22.0 steps/s ; 512: 107.90 ms / 9.3 ; 1000: 210.23 ; 2016: 424.61
 
 # NVIDIA side (one H200, rented on vast.ai) -- out-of-box stock ORBCalculator sweep:
 #   on the GPU box: conda create -n orb python=3.12 && conda activate orb \

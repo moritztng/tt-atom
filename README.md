@@ -162,10 +162,10 @@ dispatch overhead. Both ship `calc.evaluate_batch`:
 |---|---|---|
 | Batch independent systems (`calc.evaluate_batch`) | ~13x vs looping on one card (many small molecules) | ~19x (conservative-omol); ~12x (direct-omol), at K=128 9-atom molecules |
 | Multi-card fan-out (`tt_atom.batch.MultiCard`) | one process per card | inherits the same scheduler |
-| Trace-captured single-system MD/relax step | ~2x, bit-identical forces (`trace=True`) | 1.30–1.51x, bit-exact vs eager |
+| Trace-captured single-system MD/relax step | ~2x, bit-identical forces (`trace=True`) | 1.30–1.51x; energy bit-exact, analytic force finish within 1e-6 of eager |
 | Trace-captured batched MD ensemble | K=4: 4.2x; K=16: 2.6x | not implemented |
 | Source-build perf flags | ~2x traced MD step at large systems; opt-in env vars; regress small molecules. Details in [`custom_kernels/README.md`](custom_kernels/README.md) | n/a (stock `ttnn`) |
-| bf8 weights (`fast=`) | no win on their own; the real lever is the edge-activation dataflow above | dead end: Orb is dispatch-bound, not bandwidth-bound (see [`docs/orb-port.md`](docs/orb-port.md)) |
+| bf8 (`fast=` / `examples/orb_md.py --fast`) | no win from weights alone; the real lever is the edge-activation dataflow above | 1.21–1.23x at 512–2016 atoms by compressing hidden MLP activations; release-gated accuracy trade-off ([details](docs/orb-port.md)) |
 
 Batching (either model):
 

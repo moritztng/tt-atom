@@ -1,0 +1,46 @@
+{
+  "platform": "Tenstorrent Blackhole p150 (one card, device 0)",
+  "timestamp_utc": "2026-07-14T13:55:52.217866+00:00",
+  "records": [
+    {
+      "N": 216,
+      "edges": 9936,
+      "width": 256,
+      "gather_reduce_ms": 0.3933844855055213,
+      "scatter_add_ms": 2.507752040401101,
+      "gather_over_scatter_speedup": 0.15686737730361955,
+      "pcc": 1.0,
+      "max_abs": 0.125
+    },
+    {
+      "N": 512,
+      "edges": 23552,
+      "width": 256,
+      "gather_reduce_ms": 0.7477565668523312,
+      "scatter_add_ms": 5.792749463580549,
+      "gather_over_scatter_speedup": 0.1290849140901972,
+      "pcc": 1.0,
+      "max_abs": 0.125
+    },
+    {
+      "N": 1000,
+      "edges": 46000,
+      "width": 256,
+      "gather_reduce_ms": 1.5548084629699588,
+      "scatter_add_ms": 11.396363493986428,
+      "gather_over_scatter_speedup": 0.13643022739581726,
+      "pcc": 1.0,
+      "max_abs": 0.125
+    },
+    {
+      "N": 2016,
+      "edges": 92736,
+      "width": 256,
+      "gather_reduce_ms": 2.7948740171268582,
+      "scatter_add_ms": 22.7636945201084,
+      "gather_over_scatter_speedup": 0.12277769826237982,
+      "pcc": 0.999999463558197,
+      "max_abs": 0.125
+    }
+  ]
+}

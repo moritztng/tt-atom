@@ -51,7 +51,7 @@ class OrbMeltCalculator(Calculator):
 
     implemented_properties = ["energy", "forces"]
 
-    def __init__(self, weights_path, device_id=0, r_max=6.0, skin=1.5):
+    def __init__(self, weights_path, device_id=0, r_max=6.0, skin=1.5, *, fast=False):
         super().__init__()
         from tt_atom.device import open_device
         from tt_atom.orb_weights import OrbWeights
@@ -67,11 +67,13 @@ class OrbMeltCalculator(Calculator):
         L = cfg["num_message_passing_steps"]
         self.enc = Encoder(w, self.device, node_in=cfg["node_embed_size"],
                            edge_in=cfg["edge_embed_size"], latent_dim=cfg["latent_dim"],
-                           hidden_dim=1024)
+                           hidden_dim=1024, fast=fast)
         self.layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", self.device,
-                                                 latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                                                 latent_dim=cfg["latent_dim"], hidden_dim=1024,
+                                                 fast=fast)
                        for i in range(L)]
-        self.ehead = EnergyHead(w, self.device, latent_dim=cfg["latent_dim"], hidden_dim=1024)
+        self.ehead = EnergyHead(w, self.device, latent_dim=cfg["latent_dim"], hidden_dim=1024,
+                                fast=fast)
         self._node_row = gw.host("node_feat")[0:1]      # monatomic Si => one row tiled to N
         self.engine = None
         self._build_pos = None
@@ -184,6 +186,7 @@ def main():
     ap.add_argument("--log-csv", default=None)
     ap.add_argument("--device-id", type=int, default=0)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--fast", action="store_true", help="use bf8 weights and hidden MLP activations")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -191,7 +194,7 @@ def main():
 
     atoms = bulk(args.element, "diamond", a=args.a, cubic=True) * (args.nx, args.ny, args.nz)
     N = len(atoms)
-    calc = OrbMeltCalculator(args.weights, device_id=args.device_id, skin=args.skin)
+    calc = OrbMeltCalculator(args.weights, device_id=args.device_id, skin=args.skin, fast=args.fast)
     atoms.calc = calc
 
     frames = []

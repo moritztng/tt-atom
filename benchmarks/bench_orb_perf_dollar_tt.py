@@ -54,6 +54,8 @@ def main():
     ap.add_argument("--warmup", type=int, default=12)
     ap.add_argument("--steps", type=int, default=80)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--fast", action="store_true",
+                    help="use bf8 weights and hidden MLP activations (release-gated)")
     ap.add_argument("--out", default="benchmarks/orb_perf_dollar_tt.json")
     ap.add_argument("--sizes", default=",".join(s[0] for s in SIZES),
                     help="comma list of size tags from: " + ",".join(s[0] for s in SIZES))
@@ -93,7 +95,7 @@ def main():
             atoms0 = bulk(args.element, "diamond", a=args.a, cubic=True) * (nx, ny, nz)
             N = len(atoms0)
             calc = OrbDeviceCalculator(args.weights, device_id=int(
-                os.environ.get("TT_VISIBLE_DEVICES", "0")))
+                os.environ.get("TT_VISIBLE_DEVICES", "0")), fast=args.fast)
             atoms = atoms0.copy()
             atoms.calc = calc
 
@@ -129,7 +131,9 @@ def main():
                 "steps_per_s": 1000.0 / med,
                 "energy_sample_eV": e0,
                 "energy_sample_eV_per_atom": (e0 / N) if e0 is not None else None,
-                "precision": "bf16 weights/activations, fp32-accumulate matmul",
+                "precision": ("bf8 weights/hidden MLP activations, bf16 residual stream, "
+                              "fp32-accumulate matmul" if args.fast else
+                              "bf16 weights/activations, fp32-accumulate matmul"),
                 "path": "OrbTracedEngine trace/replay, neighbour list frozen, energy+conservative forces (no stress)",
             }
             records.append(rec)

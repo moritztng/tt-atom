@@ -4,8 +4,9 @@ quick exploratory attempt wired raw ``begin_trace_capture``/``execute_trace`` wi
 logic and measured a real 1.28x replay speedup, but the replayed output did NOT match eager
 (missing the UMA ``TracedEngine`` pattern of explicit captured-tensor handles + in-place
 ``copy_host_to_device_tensor`` refreshes). This test is the correctness gate for the proper port:
-the trace-replayed forward(+backward) must be BIT-EXACT vs the eager forward(+backward) -- a
-trace only removes host dispatch, it is the same device op stream -- for both checkpoints
+the trace-replayed device forward(+backward) must match eager -- a trace only removes host
+dispatch, so energy is bit-exact; the optimized analytic host geometry VJP is checked to 1e-6
+against eager autograd -- for both checkpoints
 (conservative-inf-omat: analytic-VJP forces; direct-20-omat: forward-only ForceHead) at both the
 toy 4-atom golden and the 24-atom/1064-edge production-scale supercell golden.
 
@@ -85,7 +86,7 @@ def test_conservative_trace_matches_eager(system, device):
     print(f"\n[orb-trace] conservative/{system}: E eager={raw_e_eager:.6f} cap={raw_e_cap:.6f} "
           f"(err {e_err:.2e}); F max abs diff={f_err:.2e}")
     assert e_err == 0, f"traced E != eager: {raw_e_cap} vs {raw_e_eager}"
-    assert f_err == 0, f"traced forces != eager (max abs diff {f_err:.2e})"
+    assert f_err < 1e-6, f"analytic geometry VJP != eager autograd (max abs diff {f_err:.2e})"
     assert raw_e_cap == raw_e_replay and torch.equal(forces_cap, forces_replay), \
         "replay not deterministic"
 

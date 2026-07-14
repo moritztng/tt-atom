@@ -45,7 +45,7 @@ class OrbDeviceCalculator(Calculator):
 
     implemented_properties = ["energy", "forces"]
 
-    def __init__(self, weights_path, device_id=0, r_max=6.0):
+    def __init__(self, weights_path, device_id=0, r_max=6.0, *, fast=False):
         super().__init__()
         from tt_atom.device import open_device
         from tt_atom.orb_weights import OrbWeights
@@ -59,11 +59,13 @@ class OrbDeviceCalculator(Calculator):
         L = cfg["num_message_passing_steps"]
         self.enc = Encoder(w, self.device, node_in=cfg["node_embed_size"],
                            edge_in=cfg["edge_embed_size"], latent_dim=cfg["latent_dim"],
-                           hidden_dim=1024)
+                           hidden_dim=1024, fast=fast)
         self.layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", self.device,
-                                                 latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                                                 latent_dim=cfg["latent_dim"], hidden_dim=1024,
+                                                 fast=fast)
                        for i in range(L)]
-        self.ehead = EnergyHead(w, self.device, latent_dim=cfg["latent_dim"], hidden_dim=1024)
+        self.ehead = EnergyHead(w, self.device, latent_dim=cfg["latent_dim"], hidden_dim=1024,
+                                fast=fast)
         self._node_row = gw.host("node_feat")[0:1]     # atomic-number-only => identical per atom
         self.engine = None
         self.step_ms = []
@@ -132,12 +134,14 @@ def main():
     ap.add_argument("--out", help="write the trajectory (extxyz) here")
     ap.add_argument("--device-id", type=int, default=0)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--fast", action="store_true",
+                    help="use bf8 weights and hidden MLP activations (release-gated)")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
     atoms = bulk(args.element, "diamond", a=args.a, cubic=True) * (args.nx, args.ny, args.nz)
     N = len(atoms)
-    calc = OrbDeviceCalculator(args.weights, device_id=args.device_id)
+    calc = OrbDeviceCalculator(args.weights, device_id=args.device_id, fast=args.fast)
     atoms.calc = calc
 
     frames = []
