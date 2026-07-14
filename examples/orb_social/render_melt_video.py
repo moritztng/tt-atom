@@ -234,6 +234,9 @@ def main():
     ap.add_argument("--model", default="Orb-v3")
     ap.add_argument("--atoms", type=int, default=216)
     ap.add_argument("--element", default="Si")
+    ap.add_argument("--logo", default="", help="path to a logo PNG (RGBA) composited top-left")
+    ap.add_argument("--logo-h", type=float, default=0.052,
+                    help="logo height as a fraction of frame height")
     ap.add_argument("--preview", type=int, default=0, help="render N probe frames (first..last) as PNGs")
     ap.add_argument("--verify-only", action="store_true",
                     help="unwrap + report displacement/count checks, render nothing")
@@ -317,6 +320,17 @@ def main():
     panel = ChartPanel(metrics, args.panel_w, H)
     out = os.path.join(args.workdir, os.path.basename(args.out))
 
+    # optional logo, scaled to a fraction of the frame height, composited top-left of the 3D panel
+    logo_img = None
+    logo_xy = (0, 0)
+    if args.logo and os.path.exists(args.logo):
+        lg = Image.open(args.logo).convert("RGBA")
+        lh = max(1, int(H * args.logo_h))
+        lw = max(1, int(lg.width * lh / lg.height))
+        logo_img = lg.resize((lw, lh), Image.LANCZOS)
+        m = int(H * 0.030)
+        logo_xy = (m, m)
+
     def render_one(f, az_deg, t_now):
         az = math.radians(az_deg)
         eye = center + dist * np.array([math.cos(tilt) * math.sin(az),
@@ -329,7 +343,10 @@ def main():
                         renderer=renderer, alpha=True)
         rimg = Image.open(raw).convert("RGBA")
         scene = Image.new("RGBA", (scene_wh, scene_wh), BG + (255,))
-        scene = Image.alpha_composite(scene, rimg).convert("RGB")
+        scene = Image.alpha_composite(scene, rimg)
+        if logo_img is not None:                        # brand mark, top-left
+            scene.alpha_composite(logo_img, logo_xy)
+        scene = scene.convert("RGB")
         Tk = float(np.interp(t_now, ttime, temp_s))
         state = "crystalline" if t_now < tcross else "liquid"
         _label(scene, int(H * 0.026),
