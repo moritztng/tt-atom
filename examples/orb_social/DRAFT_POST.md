@@ -32,6 +32,9 @@ p150 runs Orb-v3 1.74× faster than an NVIDIA H200 — at roughly a twenty-third
 which is about 40× the simulation per dollar. Materials simulation has run on GPUs by default for
 a decade. It doesn't have to. All open source in TT-Atom.
 
+> *(2026-07-14) The GPU comparison in the paragraph above is under re-verification and should
+> not be cited yet — see the "On the GPU / per-dollar angle" note below.*
+
 ---
 
 ## Optional harder-up-top first line
@@ -40,6 +43,15 @@ A silicon crystal melting on a single Tenstorrent card — Orb-v3 forces at ever
 conserved to 1.4 meV/atom/ps, forces matching the reference at 0.9999.
 
 ## On the GPU / per-dollar angle
+
+> **Under re-verification (2026-07-14) — do not cite yet.** The "1.74x faster than H200 /
+> ~40x per dollar" figure below is from a comparison that paired Tenstorrent's optimized
+> trace/replay path against the GPU's stock eager `orb_models` path (neighbour list
+> rebuilt every step, no CUDA graph) and has no committed raw GPU timings, so it is not
+> apples-to-apples and not independently verifiable. A fair, evidenced redo is in progress
+> on branch `wk/tt-atom-orb-gpu-fair-comparison`; this GPU/per-dollar claim will be
+> corrected or removed once the verified result lands. The melt / accuracy /
+> energy-conservation content above is unaffected and stays.
 
 Cited from a measured same-system comparison (commit `57585bf`, `docs/orb-port.md`): the same
 `orb-v3-conservative-inf-omat` MD step on the same 216-atom Si diamond supercell, single

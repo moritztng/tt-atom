@@ -405,6 +405,15 @@ OrbMol checkpoint (`tests/test_orb_evaluate_batch.py::test_evaluate_batch_conser
 
 ## Performance per dollar: one Blackhole p150 vs an NVIDIA H100-class GPU
 
+> **Under re-verification (2026-07-14) — do not cite yet.** The numbers below compared
+> Tenstorrent's optimized trace/replay path against the GPU's stock eager `orb_models`
+> path (neighbour list rebuilt every step, no CUDA graph), which is not an
+> apples-to-apples execution model, and the H200 timings have no committed raw evidence.
+> A fair, evidenced redo (matched CUDA-graph/torch.compile execution model, matched
+> neighbour-list policy, size sweep, committed raw timings) is in progress on branch
+> `wk/tt-atom-orb-gpu-fair-comparison`; this section will be replaced with the verified
+> result.
+
 The question that matters for a buyer: for an Orb-v3 materials-MD workload, how much
 throughput does a single Tenstorrent Blackhole p150 deliver relative to a single
 NVIDIA data-centre GPU, and what does that look like once you divide by what the card
