@@ -1,0 +1,94 @@
+{
+  "platform": "Tenstorrent Blackhole p150 (one card, device 0)",
+  "model": "orb-v3-conservative-inf-omat",
+  "scope": "first interaction layer (gnn_stacks.0) forward + backward VJP, per-op with sync barriers",
+  "method": "eager per-op with ttnn.synchronize_device after every op; share-of-total is the signal",
+  "precision": "bf16",
+  "orb_fused_silu_bw": true,
+  "timestamp_utc": "2026-07-14T16:32:21.635089+00:00",
+  "record": {
+    "N": 2016,
+    "E": 92736,
+    "C": 256,
+    "H": 1024,
+    "L": 5,
+    "Dmax_s": 46,
+    "Dmax_t": 46,
+    "orb_fused_silu_bw": true,
+    "forward": {
+      "ms": {
+        "attn_linears": 0.5538,
+        "sigmoids": 0.1466,
+        "cutoff_mul": 0.1697,
+        "gather_nodes": 1.3042,
+        "concat_edge_in": 0.7411,
+        "edge_mlp": 14.1353,
+        "msg_mul": 0.6138,
+        "segment_sum_agg": 3.5002,
+        "concat_node_in": 0.0829,
+        "node_mlp": 0.4681,
+        "residual_adds": 0.4457
+      },
+      "share_pct": {
+        "attn_linears": 2.5,
+        "sigmoids": 0.7,
+        "cutoff_mul": 0.8,
+        "gather_nodes": 5.9,
+        "concat_edge_in": 3.3,
+        "edge_mlp": 63.8,
+        "msg_mul": 2.8,
+        "segment_sum_agg": 15.8,
+        "concat_node_in": 0.4,
+        "node_mlp": 2.1,
+        "residual_adds": 2.0
+      },
+      "total_ms": 22.1614,
+      "logical_bytes": {
+        "attn_linears": 95333632,
+        "sigmoids": 741888,
+        "cutoff_mul": 741888,
+        "gather_nodes": 189923328,
+        "concat_edge_in": 427327488,
+        "edge_mlp": 2093350912,
+        "msg_mul": 284884992,
+        "segment_sum_agg": 191987712,
+        "concat_node_in": 9289728,
+        "node_mlp": 49610752,
+        "residual_adds": 194052096
+      },
+      "logical_bytes_total": 3537244416
+    },
+    "backward": {
+      "ms": {
+        "node_mlp_bw": 1.2232,
+        "edge_gather_adj": 1.3221,
+        "msg_mul_bw": 2.1573,
+        "edge_mlp_bw": 20.7789,
+        "node_scatter_adj": 3.505,
+        "attn_sigmoid_bw": 1.6092,
+        "residual_adds_bw": 0.862
+      },
+      "share_pct": {
+        "node_mlp_bw": 3.9,
+        "edge_gather_adj": 4.2,
+        "msg_mul_bw": 6.9,
+        "edge_mlp_bw": 66.1,
+        "node_scatter_adj": 11.1,
+        "attn_sigmoid_bw": 5.1,
+        "residual_adds_bw": 2.7
+      },
+      "total_ms": 31.4578,
+      "logical_bytes": {
+        "node_mlp_bw": 67158016,
+        "edge_gather_adj": 189923328,
+        "msg_mul_bw": 379846656,
+        "edge_mlp_bw": 2900525056,
+        "node_scatter_adj": 191987712,
+        "attn_sigmoid_bw": 49707520,
+        "residual_adds_bw": 291078144
+      },
+      "logical_bytes_total": 4070226432
+    },
+    "forward_plus_backward_ms": 53.6192
+  }
+}
