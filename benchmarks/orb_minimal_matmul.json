@@ -1,0 +1,258 @@
+{
+  "platform": "Tenstorrent Blackhole p150 (one card, device 0)",
+  "timestamp_utc": "2026-07-15T18:53:43.007140+00:00",
+  "records": [
+    {
+      "tag": "3x3x3",
+      "edges": 9936,
+      "baseline_trace": {
+        "median_ms": 1.1664698831737041,
+        "raw_ms": [
+          1.1666,
+          1.1645,
+          1.1659,
+          1.1671,
+          1.1679,
+          1.164,
+          1.1663,
+          1.1678
+        ]
+      },
+      "minimal_full": {
+        "median_ms": 1.4396407641470432,
+        "raw_ms": [
+          1.4527,
+          1.4334,
+          1.4415,
+          1.4378,
+          1.4341,
+          1.4338,
+          1.4525,
+          1.4453
+        ]
+      },
+      "minimal_full_speedup": 0.8102506626816816,
+      "minimal_full_pcc": 1.0,
+      "minimal_contract": {
+        "median_ms": 1.0038232430815697,
+        "raw_ms": [
+          1.0131,
+          1.0111,
+          0.9852,
+          0.9942,
+          0.9871,
+          1.025,
+          1.0077,
+          0.9999
+        ]
+      },
+      "minimal_contract_speedup": 1.1620271708322238,
+      "minimal_contract_pcc": 0.9999998211860657,
+      "chunk_rows": 2560,
+      "minimal_chunked_trace": {
+        "median_ms": 2.1710197906941175,
+        "raw_ms": [
+          2.1982,
+          2.1274,
+          2.1297,
+          2.1266,
+          2.2164,
+          2.2004,
+          2.2,
+          2.1438
+        ]
+      },
+      "minimal_chunked_speedup": 0.5372912251531161,
+      "minimal_chunked_pcc": 1.0
+    },
+    {
+      "tag": "4x4x4",
+      "edges": 23552,
+      "baseline_trace": {
+        "median_ms": 2.973946975544095,
+        "raw_ms": [
+          2.9579,
+          2.9803,
+          2.9612,
+          2.9935,
+          2.9811,
+          2.9676,
+          2.9448,
+          2.9813
+        ]
+      },
+      "minimal_full": {
+        "median_ms": 3.709023119881749,
+        "raw_ms": [
+          3.5414,
+          3.83,
+          3.5811,
+          3.6987,
+          3.8197,
+          3.7193,
+          3.9926,
+          3.5635
+        ]
+      },
+      "minimal_full_speedup": 0.8018140840380931,
+      "minimal_full_pcc": 0.9999927878379822,
+      "minimal_contract": {
+        "median_ms": 2.1041459403932095,
+        "raw_ms": [
+          2.1034,
+          2.1086,
+          2.0834,
+          2.1005,
+          2.0749,
+          2.1303,
+          2.1179,
+          2.1049
+        ]
+      },
+      "minimal_contract_speedup": 1.413374860770514,
+      "minimal_contract_pcc": 1.0,
+      "chunk_rows": 2560,
+      "minimal_chunked_trace": {
+        "median_ms": 4.892514552921057,
+        "raw_ms": [
+          4.881,
+          4.8815,
+          4.9049,
+          4.8904,
+          4.912,
+          4.8939,
+          4.9111,
+          4.8911
+        ]
+      },
+      "minimal_chunked_speedup": 0.6078565415341507,
+      "minimal_chunked_pcc": 0.9999927878379822
+    },
+    {
+      "tag": "5x5x5",
+      "edges": 46000,
+      "baseline_trace": {
+        "median_ms": 5.924334982410073,
+        "raw_ms": [
+          5.9303,
+          5.9184,
+          6.0066,
+          5.8318,
+          5.8676,
+          5.9627,
+          5.8489,
+          5.937
+        ]
+      },
+      "minimal_full": {
+        "median_ms": 6.194716086611152,
+        "raw_ms": [
+          6.2047,
+          6.1605,
+          6.2005,
+          6.1699,
+          6.2018,
+          6.1903,
+          6.1888,
+          6.1991
+        ]
+      },
+      "minimal_full_speedup": 0.9563529465401228,
+      "minimal_full_pcc": 0.9999936819076538,
+      "minimal_contract": {
+        "median_ms": 3.989287419244647,
+        "raw_ms": [
+          4.0777,
+          4.0514,
+          3.967,
+          4.0061,
+          3.9594,
+          3.9348,
+          4.0357,
+          3.9725
+        ]
+      },
+      "minimal_contract_speedup": 1.4850609544528177,
+      "minimal_contract_pcc": 1.0,
+      "chunk_rows": 2560,
+      "minimal_chunked_trace": {
+        "median_ms": 9.429411496967077,
+        "raw_ms": [
+          9.4284,
+          9.4095,
+          9.4325,
+          9.4304,
+          9.4238,
+          9.4311,
+          9.4125,
+          9.4333
+        ]
+      },
+      "minimal_chunked_speedup": 0.6282825799166369,
+      "minimal_chunked_pcc": 0.9999936819076538
+    },
+    {
+      "tag": "6x6x7",
+      "edges": 92736,
+      "baseline_trace": {
+        "median_ms": 14.18154127895832,
+        "raw_ms": [
+          14.2552,
+          14.095,
+          14.1707,
+          14.2872,
+          14.1924,
+          14.4582,
+          14.0641,
+          14.0034
+        ]
+      },
+      "minimal_full": {
+        "median_ms": 12.300568167120218,
+        "raw_ms": [
+          12.325,
+          12.3148,
+          12.2864,
+          12.2642,
+          12.2439,
+          12.2732,
+          12.3328,
+          12.5858
+        ]
+      },
+      "minimal_full_speedup": 1.152917579601404,
+      "minimal_full_pcc": 1.0,
+      "minimal_contract": {
+        "median_ms": 8.048348827287555,
+        "raw_ms": [
+          8.0476,
+          7.9121,
+          8.0724,
+          8.0491,
+          8.0791,
+          7.9861,
+          8.0585,
+          7.9434
+        ]
+      },
+      "minimal_contract_speedup": 1.7620435673558854,
+      "minimal_contract_pcc": 1.0,
+      "chunk_rows": 2560,
+      "minimal_chunked_trace": {
+        "median_ms": 18.26987834647298,
+        "raw_ms": [
+          18.2694,
+          18.2529,
+          18.3322,
+          18.3063,
+          18.2704,
+          18.2379,
+          18.2197,
+          18.2936
+        ]
+      },
+      "minimal_chunked_speedup": 0.7762252714559582,
+      "minimal_chunked_pcc": 1.0
+    }
+  ]
+}

@@ -304,6 +304,22 @@ and reduces the current bf16 curve further to 42.68 / 91.80 / 188.27 / 372.13 ms
 Linear+SiLU epilogue was measured but rejected: it was 0.996x / 0.998x / 0.994x / 0.988x at the
 same sizes and does not preserve the pre-activation tensors needed by conservative forces.
 
+Source-ttnn builds now use `ttnn.experimental.minimal_matmul` for the interaction edge MLPs.
+Unlike the rejected SiLU epilogue, this is a drop-in matmul factory change: it keeps both
+pre-SiLU tensors and therefore preserves the analytic force path. Repeated whole-MD A/B reduced
+the 216 / 512 / 1000 / 2016-atom curve from 44.84 / 94.05 / 176.75 / 370.21 ms to
+39.70 / 84.61 / 164.36 / 341.03 ms, a 1.13x / 1.11x / 1.08x / 1.09x speedup. Force PCC against
+the prior path is 0.999973-0.999977, with zero sampled energy delta. A 2000-step, 1 ps solid-Si
+NVE run at 900 K measured -0.1725 meV/atom/ps drift versus +0.0913 for the control, both well
+inside the 1.4 meV/atom/ps release bar. It defaults on when the op is available;
+`TT_ATOM_ORB_MINIMAL_MATMUL=0` restores `ttnn.linear`, and `--fast` continues to use the existing
+mixed-dtype path.
+
+The edge-chunked L1 design was not shipped. Even with trace replay and no force-cache exports,
+the best measured chunk was slower at 216-1000 atoms and only broke even at 2016 atoms; preserving
+the force caches reduced the edge-MLP result to 0.42-0.78x. The faster whole-tensor matmul factory
+therefore gives the useful result without adding a bespoke cross-operation kernel.
+
 ## `--fast` (bf8) mode
 
 Weight-only bf8 remains a dead end. The useful mode also stores the two 1024-wide hidden MLP

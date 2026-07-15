@@ -81,6 +81,7 @@ def main():
             "load_and_first_compile_excluded": True,
             "positions_jittered_each_step": True,
             "orb_fused_silu_bw": os.environ.get("TT_ATOM_ORB_FUSED_SILU_BW", "auto"),
+            "orb_minimal_matmul": os.environ.get("TT_ATOM_ORB_MINIMAL_MATMUL", "auto"),
             "git_sha": _git_sha(),
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "env_python": sys.executable,
