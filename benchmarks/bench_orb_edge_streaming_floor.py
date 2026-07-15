@@ -61,16 +61,17 @@ def _trace_median_ms(ttnn, device, fn, warmup, iterations):
         ttnn.release_trace(device, trace_id)
 
 
-def _rmsnorm_l1(mlp, x):
+def _rmsnorm_l1(mlp, x, *, return_inv=False):
     ttnn = mlp.ttnn
     l1 = ttnn.L1_MEMORY_CONFIG
     ms = ttnn.mean(ttnn.multiply(x, x, memory_config=l1), dim=-1, keepdim=True, memory_config=l1)
     inv = ttnn.rsqrt(ttnn.add(ms, mlp.norm.eps, memory_config=l1), memory_config=l1)
-    return ttnn.multiply(
+    out = ttnn.multiply(
         ttnn.multiply(x, inv, memory_config=l1),
         mlp.norm.w,
         memory_config=l1,
     )
+    return (out, inv) if return_inv else out
 
 
 def _chunked_l1_floor(mlp, x, chunk_rows):
@@ -117,12 +118,54 @@ def _chunked_l1_floor(mlp, x, chunk_rows):
     return ttnn.concat(outputs, dim=0, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
 
+def _chunked_l1_contract(mlp, x, chunk_rows):
+    """Stock-op implementation of the full conservative forward cache contract.
+
+    Unlike :func:`_chunked_l1_floor`, this exports a0, a1, h2, and RMSNorm inv
+    to DRAM for the analytic VJP.  A custom program can use direct side writers
+    instead of these explicit copies/concats, but it cannot avoid these bytes.
+    """
+    ttnn = mlp.ttnn
+    l1 = ttnn.L1_MEMORY_CONFIG
+    dram = ttnn.DRAM_MEMORY_CONFIG
+    caches = [[] for _ in range(5)]  # output, a0, a1, h2, inv
+    rows = x.shape[0]
+    for start in range(0, rows, chunk_rows):
+        end = min(start + chunk_rows, rows)
+        xc = ttnn.slice(x, [start, 0], [end, x.shape[1]], memory_config=l1)
+        a0 = ttnn.linear(
+            xc, mlp.w[0], bias=mlp.b[0], compute_kernel_config=mlp.kcfg,
+            dtype=mlp.hidden_dtype, memory_config=l1)
+        h0 = ttnn.silu(a0, memory_config=l1)
+        a0_dram = ttnn.to_memory_config(a0, dram)
+        a1 = ttnn.linear(
+            h0, mlp.w[1], bias=mlp.b[1], compute_kernel_config=mlp.kcfg,
+            dtype=mlp.hidden_dtype, memory_config=l1)
+        h1 = ttnn.silu(a1, memory_config=l1)
+        a1_dram = ttnn.to_memory_config(a1, dram)
+        h2 = ttnn.linear(
+            h1, mlp.w[2], bias=mlp.b[2], compute_kernel_config=mlp.kcfg,
+            dtype=ttnn.bfloat16, memory_config=l1)
+        out, inv = _rmsnorm_l1(mlp, h2, return_inv=True)
+        values = (
+            ttnn.to_memory_config(out, dram),
+            a0_dram,
+            a1_dram,
+            ttnn.to_memory_config(h2, dram),
+            ttnn.to_memory_config(inv, dram),
+        )
+        for dst, value in zip(caches, values):
+            dst.append(value)
+    return tuple(ttnn.concat(parts, dim=0, memory_config=dram) for parts in caches)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--weights", required=True)
     parser.add_argument("--sizes", default=",".join(EDGE_COUNTS))
     parser.add_argument("--chunks", default="2048,4096,8192")
     parser.add_argument("--trace-chunks", default="2048")
+    parser.add_argument("--contract-chunks", default="2560")
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--iterations", type=int, default=5)
     parser.add_argument("--seed", type=int, default=17)
@@ -137,6 +180,7 @@ def main():
     torch.manual_seed(args.seed)
     chunks = [int(value) for value in args.chunks.split(",") if value]
     trace_chunks = {int(value) for value in args.trace_chunks.split(",") if value}
+    contract_chunks = {int(value) for value in args.contract_chunks.split(",") if value}
     device = open_device(0)
     records = []
     try:
@@ -187,18 +231,34 @@ def main():
                         candidate["traced_timing"] = traced
                         candidate["traced_optimistic_speedup"] = (
                             baseline_trace["median_ms"] / traced["median_ms"])
+                    if chunk_rows in contract_chunks:
+                        contract, _ = _trace_median_ms(
+                            ttnn,
+                            device,
+                            lambda c=chunk_rows: _chunked_l1_contract(mlp, x, c),
+                            args.warmup,
+                            args.iterations,
+                        )
+                        candidate["traced_cache_contract_timing"] = contract
+                        candidate["traced_cache_contract_speedup"] = (
+                            baseline_trace["median_ms"] / contract["median_ms"])
                     candidates.append(candidate)
                     traced_text = (
                         f" traced={candidate['traced_timing']['median_ms']:.3f} ms "
                         f"traced_speedup={candidate['traced_optimistic_speedup']:.3f}x"
                         if "traced_timing" in candidate else ""
                     )
+                    contract_text = (
+                        f" cache_contract={candidate['traced_cache_contract_timing']['median_ms']:.3f} ms "
+                        f"contract_speedup={candidate['traced_cache_contract_speedup']:.3f}x"
+                        if "traced_cache_contract_timing" in candidate else ""
+                    )
                     print(
                         f"{tag} E={rows} chunk={chunk_rows}: "
                         f"baseline={baseline['median_ms']:.3f} ms "
                         f"floor={timing['median_ms']:.3f} ms "
                         f"speedup={baseline['median_ms'] / timing['median_ms']:.3f}x"
-                        f"{traced_text} PCC={parity:.6f}",
+                        f"{traced_text}{contract_text} PCC={parity:.6f}",
                         flush=True,
                     )
                 except RuntimeError as exc:
