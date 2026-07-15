@@ -1,0 +1,108 @@
+{
+  "platform": "Tenstorrent Blackhole p150 (one card, device 0)",
+  "warmup": 8,
+  "steps": 40,
+  "reps": 3,
+  "records": [
+    {
+      "tag": "3x3x3",
+      "atoms": 216,
+      "edges": 9936,
+      "baseline_ms": 44.844953110441566,
+      "minimal_matmul_ms": 39.699125569313765,
+      "speedup": 1.1296206772147488,
+      "baseline_runs_ms": [
+        44.95934443548322,
+        40.96614709123969,
+        44.844953110441566
+      ],
+      "minimal_matmul_runs_ms": [
+        43.78505446948111,
+        39.509544149041176,
+        39.699125569313765
+      ],
+      "parity": {
+        "energy_abs_delta_eV": 0.0,
+        "force_pcc": 0.9999764321346568,
+        "force_mae_eV_per_A": 0.002547298161654318,
+        "force_max_abs_eV_per_A": 0.01087120210818654,
+        "forces_bit_exact": false
+      }
+    },
+    {
+      "tag": "4x4x4",
+      "atoms": 512,
+      "edges": 23552,
+      "baseline_ms": 94.04562949202955,
+      "minimal_matmul_ms": 84.61122773587704,
+      "speedup": 1.111502953078556,
+      "baseline_runs_ms": [
+        98.61082024872303,
+        94.04562949202955,
+        90.20711109042168
+      ],
+      "minimal_matmul_runs_ms": [
+        83.48094648681581,
+        84.61122773587704,
+        89.90814350545406
+      ],
+      "parity": {
+        "energy_abs_delta_eV": 0.0,
+        "force_pcc": 0.9999733339996897,
+        "force_mae_eV_per_A": 0.0026161025147303577,
+        "force_max_abs_eV_per_A": 0.011900964819424487,
+        "forces_bit_exact": false
+      }
+    },
+    {
+      "tag": "5x5x5",
+      "atoms": 1000,
+      "edges": 46000,
+      "baseline_ms": 176.7469933256507,
+      "minimal_matmul_ms": 164.3637758679688,
+      "speedup": 1.075340307755093,
+      "baseline_runs_ms": [
+        176.7469933256507,
+        175.0793675892055,
+        178.22540551424026
+      ],
+      "minimal_matmul_runs_ms": [
+        162.39645099267364,
+        168.84579812176526,
+        164.3637758679688
+      ],
+      "parity": {
+        "energy_abs_delta_eV": 0.0,
+        "force_pcc": 0.9999747955780199,
+        "force_mae_eV_per_A": 0.0026479016430182314,
+        "force_max_abs_eV_per_A": 0.012065171131441732,
+        "forces_bit_exact": false
+      }
+    },
+    {
+      "tag": "6x6x7",
+      "atoms": 2016,
+      "edges": 92736,
+      "baseline_ms": 370.20645500160754,
+      "minimal_matmul_ms": 341.0345809534192,
+      "speedup": 1.0855393431558567,
+      "baseline_runs_ms": [
+        372.1934324130416,
+        370.20645500160754,
+        369.60393097251654
+      ],
+      "minimal_matmul_runs_ms": [
+        342.7554510999471,
+        341.0345809534192,
+        336.06885746121407
+      ],
+      "parity": {
+        "energy_abs_delta_eV": 0.0,
+        "force_pcc": 0.9999766189432321,
+        "force_mae_eV_per_A": 0.002573143430207592,
+        "force_max_abs_eV_per_A": 0.015023670542632594,
+        "forces_bit_exact": false
+      }
+    }
+  ]
+}

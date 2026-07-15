@@ -22,6 +22,7 @@ Reference: ``orb_models.forcefield.gns.py`` (``Encoder`` / ``AttentionInteractio
 from __future__ import annotations
 
 import math
+import os
 
 import torch
 
@@ -111,19 +112,38 @@ class RMSNorm:
         return ttnn.multiply(ttnn.multiply(x, inv), self.w)
 
 
+def _orb_minimal_matmul_enabled(ttnn) -> bool:
+    """Use the lower-overhead matmul factory for Orb's large edge MLPs.
+
+    The old path remains available for A/B and installations without the experimental op.
+    """
+    return (
+        os.environ.get("TT_ATOM_ORB_MINIMAL_MATMUL", "1") != "0"
+        and hasattr(ttnn, "experimental")
+        and hasattr(ttnn.experimental, "minimal_matmul")
+    )
+
+
 class MLPNorm:
     """``orb_models...nn_util.mlp_and_layer_norm`` with ``num_mlp_layers=2``: 3 Linears
     (in->hidden->hidden->out, SiLU after the first two, none after the third) + RMSNorm.
     Weight keys ``{prefix}.mlp.NN-{0,1,2}.{weight,bias}`` + ``{prefix}.layer_norm.weight``.
     """
 
-    def __init__(self, weights, prefix, device, in_dim, hidden_dim, out_dim, *, fast=False):
+    def __init__(
+        self, weights, prefix, device, in_dim, hidden_dim, out_dim, *,
+        fast=False, minimal_matmul=False,
+    ):
         import ttnn
 
         self.ttnn = ttnn
         self.kcfg = compute_kernel_config()
         wdtype = ttnn.bfloat8_b if fast else ttnn.bfloat16
         self.hidden_dtype = wdtype
+        # minimal_matmul requires activation and weight dtypes to match, unlike linear.
+        self.use_minimal_matmul = (
+            minimal_matmul and not fast and _orb_minimal_matmul_enabled(ttnn)
+        )
         self.w = []
         self.b = []
         for i in range(3):
@@ -134,14 +154,21 @@ class MLPNorm:
 
     def __call__(self, x):
         ttnn = self.ttnn
-        a0 = ttnn.linear(x, self.w[0], bias=self.b[0], compute_kernel_config=self.kcfg,
-                         dtype=self.hidden_dtype)
+        if self.use_minimal_matmul:
+            def linear(value, weight, bias, dtype):
+                return ttnn.experimental.minimal_matmul(
+                    value, weight, bias_tensor=bias,
+                    compute_kernel_config=self.kcfg, dtype=dtype)
+        else:
+            def linear(value, weight, bias, dtype):
+                return ttnn.linear(
+                    value, weight, bias=bias,
+                    compute_kernel_config=self.kcfg, dtype=dtype)
+        a0 = linear(x, self.w[0], self.b[0], self.hidden_dtype)
         h0 = ttnn.silu(a0)
-        a1 = ttnn.linear(h0, self.w[1], bias=self.b[1], compute_kernel_config=self.kcfg,
-                         dtype=self.hidden_dtype)
+        a1 = linear(h0, self.w[1], self.b[1], self.hidden_dtype)
         h1 = ttnn.silu(a1)
-        h2 = ttnn.linear(h1, self.w[2], bias=self.b[2], compute_kernel_config=self.kcfg,
-                         dtype=ttnn.bfloat16)
+        h2 = linear(h1, self.w[2], self.b[2], ttnn.bfloat16)
         self._cache_a0, self._cache_a1 = a0, a1           # pre-SiLU activations, for orb_forces.mlpnorm_bw
         return self.norm(h2)
 
@@ -181,7 +208,7 @@ class AttentionInteractionLayer:
         self.C = latent_dim
         wdtype = ttnn.bfloat8_b if fast else ttnn.bfloat16
         self.edge_mlp = MLPNorm(weights, f"{prefix}._edge_mlp", device, 3 * latent_dim, hidden_dim,
-                                latent_dim, fast=fast)
+                                latent_dim, fast=fast, minimal_matmul=True)
         self.node_mlp = MLPNorm(weights, f"{prefix}._node_mlp", device, 3 * latent_dim, hidden_dim,
                                 latent_dim, fast=fast)
         self.receive_attn_w = _to_dev(weights[f"{prefix}._receive_attn.weight"].T.contiguous(), device, wdtype)
