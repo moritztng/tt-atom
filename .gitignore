@@ -26,3 +26,6 @@ benchmarks/results/
 dist/
 build/
 *.egg-info/
+
+# planning/status/coordination notes belong in the coworker system, not the repo
+/notes/
