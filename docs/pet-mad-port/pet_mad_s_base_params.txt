@@ -1,0 +1,133 @@
+4194304	(4096, 1024)	gnn_layers.0.trans.layers.0.center_mlp.w_in.weight
+4194304	(4096, 1024)	gnn_layers.1.trans.layers.0.center_mlp.w_in.weight
+4194304	(4096, 1024)	gnn_layers.2.trans.layers.0.center_mlp.w_in.weight
+2097152	(1024, 2048)	gnn_layers.0.trans.layers.0.center_mlp.w_out.weight
+2097152	(1024, 2048)	gnn_layers.1.trans.layers.0.center_mlp.w_out.weight
+2097152	(1024, 2048)	gnn_layers.2.trans.layers.0.center_mlp.w_out.weight
+262144	(1024, 256)	gnn_layers.0.trans.layers.0.mlp.w_in.weight
+262144	(256, 1024)	gnn_layers.0.trans.layers.0.center_contraction.weight
+262144	(1024, 256)	gnn_layers.0.trans.layers.0.center_expansion.weight
+262144	(1024, 256)	gnn_layers.1.trans.layers.0.mlp.w_in.weight
+262144	(256, 1024)	gnn_layers.1.trans.layers.0.center_contraction.weight
+262144	(1024, 256)	gnn_layers.1.trans.layers.0.center_expansion.weight
+262144	(1024, 256)	gnn_layers.2.trans.layers.0.mlp.w_in.weight
+262144	(256, 1024)	gnn_layers.2.trans.layers.0.center_contraction.weight
+262144	(1024, 256)	gnn_layers.2.trans.layers.0.center_expansion.weight
+262144	(512, 512)	combination_mlps.0.0.weight
+262144	(512, 512)	combination_mlps.1.0.weight
+262144	(512, 512)	combination_mlps.2.0.weight
+262144	(256, 1024)	node_heads.energy.0.0.weight
+262144	(256, 1024)	node_heads.non_conservative_forces.0.0.weight
+262144	(256, 1024)	node_heads.non_conservative_stress.0.0.weight
+196608	(768, 256)	gnn_layers.0.trans.layers.0.attention.input_linear.weight
+196608	(768, 256)	gnn_layers.1.trans.layers.0.attention.input_linear.weight
+196608	(256, 768)	gnn_layers.1.compress.0.weight
+196608	(768, 256)	gnn_layers.2.trans.layers.0.attention.input_linear.weight
+196608	(256, 768)	gnn_layers.2.compress.0.weight
+131072	(256, 512)	gnn_layers.0.trans.layers.0.mlp.w_out.weight
+131072	(256, 512)	gnn_layers.0.compress.0.weight
+131072	(256, 512)	gnn_layers.1.trans.layers.0.mlp.w_out.weight
+131072	(256, 512)	gnn_layers.2.trans.layers.0.mlp.w_out.weight
+131072	(256, 512)	combination_mlps.0.2.weight
+131072	(256, 512)	combination_mlps.1.2.weight
+131072	(256, 512)	combination_mlps.2.2.weight
+104448	(102, 1024)	node_embedders.0.weight
+65536	(256, 256)	gnn_layers.0.trans.layers.0.attention.output_linear.weight
+65536	(256, 256)	gnn_layers.0.compress.2.weight
+65536	(256, 256)	gnn_layers.1.trans.layers.0.attention.output_linear.weight
+65536	(256, 256)	gnn_layers.1.compress.2.weight
+65536	(256, 256)	gnn_layers.2.trans.layers.0.attention.output_linear.weight
+65536	(256, 256)	gnn_layers.2.compress.2.weight
+65536	(256, 256)	node_heads.energy.0.2.weight
+65536	(256, 256)	node_heads.non_conservative_forces.0.2.weight
+65536	(256, 256)	node_heads.non_conservative_stress.0.2.weight
+65536	(256, 256)	edge_heads.energy.0.0.weight
+65536	(256, 256)	edge_heads.energy.0.2.weight
+65536	(256, 256)	edge_heads.non_conservative_forces.0.0.weight
+65536	(256, 256)	edge_heads.non_conservative_forces.0.2.weight
+65536	(256, 256)	edge_heads.non_conservative_stress.0.0.weight
+65536	(256, 256)	edge_heads.non_conservative_stress.0.2.weight
+26112	(102, 256)	gnn_layers.1.neighbor_embedder.weight
+26112	(102, 256)	gnn_layers.2.neighbor_embedder.weight
+26112	(102, 256)	edge_embedder.weight
+4096	(4096,)	gnn_layers.0.trans.layers.0.center_mlp.w_in.bias
+4096	(4096,)	gnn_layers.1.trans.layers.0.center_mlp.w_in.bias
+4096	(4096,)	gnn_layers.2.trans.layers.0.center_mlp.w_in.bias
+2304	(9, 256)	node_last_layers.non_conservative_stress.0.non_conservative_stress___0.weight
+2304	(9, 256)	edge_last_layers.non_conservative_stress.0.non_conservative_stress___0.weight
+1024	(1024,)	gnn_layers.0.trans.layers.0.mlp.w_in.bias
+1024	(1024,)	gnn_layers.0.trans.layers.0.center_expansion.bias
+1024	(1024,)	gnn_layers.0.trans.layers.0.norm_center_features.weight
+1024	(1024,)	gnn_layers.0.trans.layers.0.center_mlp.w_out.bias
+1024	(256, 4)	gnn_layers.0.edge_embedder.weight
+1024	(1024,)	gnn_layers.1.trans.layers.0.mlp.w_in.bias
+1024	(1024,)	gnn_layers.1.trans.layers.0.center_expansion.bias
+1024	(1024,)	gnn_layers.1.trans.layers.0.norm_center_features.weight
+1024	(1024,)	gnn_layers.1.trans.layers.0.center_mlp.w_out.bias
+1024	(256, 4)	gnn_layers.1.edge_embedder.weight
+1024	(1024,)	gnn_layers.2.trans.layers.0.mlp.w_in.bias
+1024	(1024,)	gnn_layers.2.trans.layers.0.center_expansion.bias
+1024	(1024,)	gnn_layers.2.trans.layers.0.norm_center_features.weight
+1024	(1024,)	gnn_layers.2.trans.layers.0.center_mlp.w_out.bias
+1024	(256, 4)	gnn_layers.2.edge_embedder.weight
+768	(768,)	gnn_layers.0.trans.layers.0.attention.input_linear.bias
+768	(768,)	gnn_layers.1.trans.layers.0.attention.input_linear.bias
+768	(768,)	gnn_layers.2.trans.layers.0.attention.input_linear.bias
+768	(3, 256)	node_last_layers.non_conservative_forces.0.non_conservative_forces___0.weight
+768	(3, 256)	edge_last_layers.non_conservative_forces.0.non_conservative_forces___0.weight
+512	(512,)	combination_norms.0.weight
+512	(512,)	combination_norms.0.bias
+512	(512,)	combination_norms.1.weight
+512	(512,)	combination_norms.1.bias
+512	(512,)	combination_norms.2.weight
+512	(512,)	combination_norms.2.bias
+512	(512,)	combination_mlps.0.0.bias
+512	(512,)	combination_mlps.1.0.bias
+512	(512,)	combination_mlps.2.0.bias
+256	(256,)	gnn_layers.0.trans.layers.0.attention.output_linear.bias
+256	(256,)	gnn_layers.0.trans.layers.0.norm_attention.weight
+256	(256,)	gnn_layers.0.trans.layers.0.norm_mlp.weight
+256	(256,)	gnn_layers.0.trans.layers.0.mlp.w_out.bias
+256	(256,)	gnn_layers.0.trans.layers.0.center_contraction.bias
+256	(256,)	gnn_layers.0.edge_embedder.bias
+256	(256,)	gnn_layers.0.compress.0.bias
+256	(256,)	gnn_layers.0.compress.2.bias
+256	(256,)	gnn_layers.1.trans.layers.0.attention.output_linear.bias
+256	(256,)	gnn_layers.1.trans.layers.0.norm_attention.weight
+256	(256,)	gnn_layers.1.trans.layers.0.norm_mlp.weight
+256	(256,)	gnn_layers.1.trans.layers.0.mlp.w_out.bias
+256	(256,)	gnn_layers.1.trans.layers.0.center_contraction.bias
+256	(256,)	gnn_layers.1.edge_embedder.bias
+256	(256,)	gnn_layers.1.compress.0.bias
+256	(256,)	gnn_layers.1.compress.2.bias
+256	(256,)	gnn_layers.2.trans.layers.0.attention.output_linear.bias
+256	(256,)	gnn_layers.2.trans.layers.0.norm_attention.weight
+256	(256,)	gnn_layers.2.trans.layers.0.norm_mlp.weight
+256	(256,)	gnn_layers.2.trans.layers.0.mlp.w_out.bias
+256	(256,)	gnn_layers.2.trans.layers.0.center_contraction.bias
+256	(256,)	gnn_layers.2.edge_embedder.bias
+256	(256,)	gnn_layers.2.compress.0.bias
+256	(256,)	gnn_layers.2.compress.2.bias
+256	(256,)	combination_mlps.0.2.bias
+256	(256,)	combination_mlps.1.2.bias
+256	(256,)	combination_mlps.2.2.bias
+256	(256,)	node_heads.energy.0.0.bias
+256	(256,)	node_heads.energy.0.2.bias
+256	(256,)	node_heads.non_conservative_forces.0.0.bias
+256	(256,)	node_heads.non_conservative_forces.0.2.bias
+256	(256,)	node_heads.non_conservative_stress.0.0.bias
+256	(256,)	node_heads.non_conservative_stress.0.2.bias
+256	(256,)	edge_heads.energy.0.0.bias
+256	(256,)	edge_heads.energy.0.2.bias
+256	(256,)	edge_heads.non_conservative_forces.0.0.bias
+256	(256,)	edge_heads.non_conservative_forces.0.2.bias
+256	(256,)	edge_heads.non_conservative_stress.0.0.bias
+256	(256,)	edge_heads.non_conservative_stress.0.2.bias
+256	(1, 256)	node_last_layers.energy.0.energy___0.weight
+256	(1, 256)	edge_last_layers.energy.0.energy___0.weight
+9	(9,)	node_last_layers.non_conservative_stress.0.non_conservative_stress___0.bias
+9	(9,)	edge_last_layers.non_conservative_stress.0.non_conservative_stress___0.bias
+3	(3,)	node_last_layers.non_conservative_forces.0.non_conservative_forces___0.bias
+3	(3,)	edge_last_layers.non_conservative_forces.0.non_conservative_forces___0.bias
+1	(1,)	node_last_layers.energy.0.energy___0.bias
+1	(1,)	edge_last_layers.energy.0.energy___0.bias

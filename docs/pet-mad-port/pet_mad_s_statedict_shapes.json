@@ -1,0 +1,507 @@
+{
+ "species_to_species_index": [
+  103
+ ],
+ "gnn_layers.0.trans.layers.0.attention.input_linear.weight": [
+  768,
+  256
+ ],
+ "gnn_layers.0.trans.layers.0.attention.input_linear.bias": [
+  768
+ ],
+ "gnn_layers.0.trans.layers.0.attention.output_linear.weight": [
+  256,
+  256
+ ],
+ "gnn_layers.0.trans.layers.0.attention.output_linear.bias": [
+  256
+ ],
+ "gnn_layers.0.trans.layers.0.norm_attention.weight": [
+  256
+ ],
+ "gnn_layers.0.trans.layers.0.norm_mlp.weight": [
+  256
+ ],
+ "gnn_layers.0.trans.layers.0.mlp.w_in.weight": [
+  1024,
+  256
+ ],
+ "gnn_layers.0.trans.layers.0.mlp.w_in.bias": [
+  1024
+ ],
+ "gnn_layers.0.trans.layers.0.mlp.w_out.weight": [
+  256,
+  512
+ ],
+ "gnn_layers.0.trans.layers.0.mlp.w_out.bias": [
+  256
+ ],
+ "gnn_layers.0.trans.layers.0.center_contraction.weight": [
+  256,
+  1024
+ ],
+ "gnn_layers.0.trans.layers.0.center_contraction.bias": [
+  256
+ ],
+ "gnn_layers.0.trans.layers.0.center_expansion.weight": [
+  1024,
+  256
+ ],
+ "gnn_layers.0.trans.layers.0.center_expansion.bias": [
+  1024
+ ],
+ "gnn_layers.0.trans.layers.0.norm_center_features.weight": [
+  1024
+ ],
+ "gnn_layers.0.trans.layers.0.center_mlp.w_in.weight": [
+  4096,
+  1024
+ ],
+ "gnn_layers.0.trans.layers.0.center_mlp.w_in.bias": [
+  4096
+ ],
+ "gnn_layers.0.trans.layers.0.center_mlp.w_out.weight": [
+  1024,
+  2048
+ ],
+ "gnn_layers.0.trans.layers.0.center_mlp.w_out.bias": [
+  1024
+ ],
+ "gnn_layers.0.edge_embedder.weight": [
+  256,
+  4
+ ],
+ "gnn_layers.0.edge_embedder.bias": [
+  256
+ ],
+ "gnn_layers.0.compress.0.weight": [
+  256,
+  512
+ ],
+ "gnn_layers.0.compress.0.bias": [
+  256
+ ],
+ "gnn_layers.0.compress.2.weight": [
+  256,
+  256
+ ],
+ "gnn_layers.0.compress.2.bias": [
+  256
+ ],
+ "gnn_layers.1.trans.layers.0.attention.input_linear.weight": [
+  768,
+  256
+ ],
+ "gnn_layers.1.trans.layers.0.attention.input_linear.bias": [
+  768
+ ],
+ "gnn_layers.1.trans.layers.0.attention.output_linear.weight": [
+  256,
+  256
+ ],
+ "gnn_layers.1.trans.layers.0.attention.output_linear.bias": [
+  256
+ ],
+ "gnn_layers.1.trans.layers.0.norm_attention.weight": [
+  256
+ ],
+ "gnn_layers.1.trans.layers.0.norm_mlp.weight": [
+  256
+ ],
+ "gnn_layers.1.trans.layers.0.mlp.w_in.weight": [
+  1024,
+  256
+ ],
+ "gnn_layers.1.trans.layers.0.mlp.w_in.bias": [
+  1024
+ ],
+ "gnn_layers.1.trans.layers.0.mlp.w_out.weight": [
+  256,
+  512
+ ],
+ "gnn_layers.1.trans.layers.0.mlp.w_out.bias": [
+  256
+ ],
+ "gnn_layers.1.trans.layers.0.center_contraction.weight": [
+  256,
+  1024
+ ],
+ "gnn_layers.1.trans.layers.0.center_contraction.bias": [
+  256
+ ],
+ "gnn_layers.1.trans.layers.0.center_expansion.weight": [
+  1024,
+  256
+ ],
+ "gnn_layers.1.trans.layers.0.center_expansion.bias": [
+  1024
+ ],
+ "gnn_layers.1.trans.layers.0.norm_center_features.weight": [
+  1024
+ ],
+ "gnn_layers.1.trans.layers.0.center_mlp.w_in.weight": [
+  4096,
+  1024
+ ],
+ "gnn_layers.1.trans.layers.0.center_mlp.w_in.bias": [
+  4096
+ ],
+ "gnn_layers.1.trans.layers.0.center_mlp.w_out.weight": [
+  1024,
+  2048
+ ],
+ "gnn_layers.1.trans.layers.0.center_mlp.w_out.bias": [
+  1024
+ ],
+ "gnn_layers.1.edge_embedder.weight": [
+  256,
+  4
+ ],
+ "gnn_layers.1.edge_embedder.bias": [
+  256
+ ],
+ "gnn_layers.1.compress.0.weight": [
+  256,
+  768
+ ],
+ "gnn_layers.1.compress.0.bias": [
+  256
+ ],
+ "gnn_layers.1.compress.2.weight": [
+  256,
+  256
+ ],
+ "gnn_layers.1.compress.2.bias": [
+  256
+ ],
+ "gnn_layers.1.neighbor_embedder.weight": [
+  102,
+  256
+ ],
+ "gnn_layers.2.trans.layers.0.attention.input_linear.weight": [
+  768,
+  256
+ ],
+ "gnn_layers.2.trans.layers.0.attention.input_linear.bias": [
+  768
+ ],
+ "gnn_layers.2.trans.layers.0.attention.output_linear.weight": [
+  256,
+  256
+ ],
+ "gnn_layers.2.trans.layers.0.attention.output_linear.bias": [
+  256
+ ],
+ "gnn_layers.2.trans.layers.0.norm_attention.weight": [
+  256
+ ],
+ "gnn_layers.2.trans.layers.0.norm_mlp.weight": [
+  256
+ ],
+ "gnn_layers.2.trans.layers.0.mlp.w_in.weight": [
+  1024,
+  256
+ ],
+ "gnn_layers.2.trans.layers.0.mlp.w_in.bias": [
+  1024
+ ],
+ "gnn_layers.2.trans.layers.0.mlp.w_out.weight": [
+  256,
+  512
+ ],
+ "gnn_layers.2.trans.layers.0.mlp.w_out.bias": [
+  256
+ ],
+ "gnn_layers.2.trans.layers.0.center_contraction.weight": [
+  256,
+  1024
+ ],
+ "gnn_layers.2.trans.layers.0.center_contraction.bias": [
+  256
+ ],
+ "gnn_layers.2.trans.layers.0.center_expansion.weight": [
+  1024,
+  256
+ ],
+ "gnn_layers.2.trans.layers.0.center_expansion.bias": [
+  1024
+ ],
+ "gnn_layers.2.trans.layers.0.norm_center_features.weight": [
+  1024
+ ],
+ "gnn_layers.2.trans.layers.0.center_mlp.w_in.weight": [
+  4096,
+  1024
+ ],
+ "gnn_layers.2.trans.layers.0.center_mlp.w_in.bias": [
+  4096
+ ],
+ "gnn_layers.2.trans.layers.0.center_mlp.w_out.weight": [
+  1024,
+  2048
+ ],
+ "gnn_layers.2.trans.layers.0.center_mlp.w_out.bias": [
+  1024
+ ],
+ "gnn_layers.2.edge_embedder.weight": [
+  256,
+  4
+ ],
+ "gnn_layers.2.edge_embedder.bias": [
+  256
+ ],
+ "gnn_layers.2.compress.0.weight": [
+  256,
+  768
+ ],
+ "gnn_layers.2.compress.0.bias": [
+  256
+ ],
+ "gnn_layers.2.compress.2.weight": [
+  256,
+  256
+ ],
+ "gnn_layers.2.compress.2.bias": [
+  256
+ ],
+ "gnn_layers.2.neighbor_embedder.weight": [
+  102,
+  256
+ ],
+ "combination_norms.0.weight": [
+  512
+ ],
+ "combination_norms.0.bias": [
+  512
+ ],
+ "combination_norms.1.weight": [
+  512
+ ],
+ "combination_norms.1.bias": [
+  512
+ ],
+ "combination_norms.2.weight": [
+  512
+ ],
+ "combination_norms.2.bias": [
+  512
+ ],
+ "combination_mlps.0.0.weight": [
+  512,
+  512
+ ],
+ "combination_mlps.0.0.bias": [
+  512
+ ],
+ "combination_mlps.0.2.weight": [
+  256,
+  512
+ ],
+ "combination_mlps.0.2.bias": [
+  256
+ ],
+ "combination_mlps.1.0.weight": [
+  512,
+  512
+ ],
+ "combination_mlps.1.0.bias": [
+  512
+ ],
+ "combination_mlps.1.2.weight": [
+  256,
+  512
+ ],
+ "combination_mlps.1.2.bias": [
+  256
+ ],
+ "combination_mlps.2.0.weight": [
+  512,
+  512
+ ],
+ "combination_mlps.2.0.bias": [
+  512
+ ],
+ "combination_mlps.2.2.weight": [
+  256,
+  512
+ ],
+ "combination_mlps.2.2.bias": [
+  256
+ ],
+ "node_embedders.0.weight": [
+  102,
+  1024
+ ],
+ "edge_embedder.weight": [
+  102,
+  256
+ ],
+ "node_heads.energy.0.0.weight": [
+  256,
+  1024
+ ],
+ "node_heads.energy.0.0.bias": [
+  256
+ ],
+ "node_heads.energy.0.2.weight": [
+  256,
+  256
+ ],
+ "node_heads.energy.0.2.bias": [
+  256
+ ],
+ "node_heads.non_conservative_forces.0.0.weight": [
+  256,
+  1024
+ ],
+ "node_heads.non_conservative_forces.0.0.bias": [
+  256
+ ],
+ "node_heads.non_conservative_forces.0.2.weight": [
+  256,
+  256
+ ],
+ "node_heads.non_conservative_forces.0.2.bias": [
+  256
+ ],
+ "node_heads.non_conservative_stress.0.0.weight": [
+  256,
+  1024
+ ],
+ "node_heads.non_conservative_stress.0.0.bias": [
+  256
+ ],
+ "node_heads.non_conservative_stress.0.2.weight": [
+  256,
+  256
+ ],
+ "node_heads.non_conservative_stress.0.2.bias": [
+  256
+ ],
+ "edge_heads.energy.0.0.weight": [
+  256,
+  256
+ ],
+ "edge_heads.energy.0.0.bias": [
+  256
+ ],
+ "edge_heads.energy.0.2.weight": [
+  256,
+  256
+ ],
+ "edge_heads.energy.0.2.bias": [
+  256
+ ],
+ "edge_heads.non_conservative_forces.0.0.weight": [
+  256,
+  256
+ ],
+ "edge_heads.non_conservative_forces.0.0.bias": [
+  256
+ ],
+ "edge_heads.non_conservative_forces.0.2.weight": [
+  256,
+  256
+ ],
+ "edge_heads.non_conservative_forces.0.2.bias": [
+  256
+ ],
+ "edge_heads.non_conservative_stress.0.0.weight": [
+  256,
+  256
+ ],
+ "edge_heads.non_conservative_stress.0.0.bias": [
+  256
+ ],
+ "edge_heads.non_conservative_stress.0.2.weight": [
+  256,
+  256
+ ],
+ "edge_heads.non_conservative_stress.0.2.bias": [
+  256
+ ],
+ "node_last_layers.energy.0.energy___0.weight": [
+  1,
+  256
+ ],
+ "node_last_layers.energy.0.energy___0.bias": [
+  1
+ ],
+ "node_last_layers.non_conservative_forces.0.non_conservative_forces___0.weight": [
+  3,
+  256
+ ],
+ "node_last_layers.non_conservative_forces.0.non_conservative_forces___0.bias": [
+  3
+ ],
+ "node_last_layers.non_conservative_stress.0.non_conservative_stress___0.weight": [
+  9,
+  256
+ ],
+ "node_last_layers.non_conservative_stress.0.non_conservative_stress___0.bias": [
+  9
+ ],
+ "edge_last_layers.energy.0.energy___0.weight": [
+  1,
+  256
+ ],
+ "edge_last_layers.energy.0.energy___0.bias": [
+  1
+ ],
+ "edge_last_layers.non_conservative_forces.0.non_conservative_forces___0.weight": [
+  3,
+  256
+ ],
+ "edge_last_layers.non_conservative_forces.0.non_conservative_forces___0.bias": [
+  3
+ ],
+ "edge_last_layers.non_conservative_stress.0.non_conservative_stress___0.weight": [
+  9,
+  256
+ ],
+ "edge_last_layers.non_conservative_stress.0.non_conservative_stress___0.bias": [
+  9
+ ],
+ "additive_models.0.dummy_buffer": [
+  1
+ ],
+ "additive_models.0.energy_composition_buffer": [
+  2290
+ ],
+ "additive_models.0.model.type_to_index": [
+  103
+ ],
+ "scaler.dummy_buffer": [
+  1
+ ],
+ "scaler.energy_scaler_buffer": [
+  1078
+ ],
+ "scaler.energy_per_target_scaler_buffer": [
+  1078
+ ],
+ "scaler.energy_per_property_scaler_buffer": [
+  1078
+ ],
+ "scaler.non_conservative_forces_scaler_buffer": [
+  2290
+ ],
+ "scaler.non_conservative_forces_per_target_scaler_buffer": [
+  2290
+ ],
+ "scaler.non_conservative_forces_per_property_scaler_buffer": [
+  2290
+ ],
+ "scaler.non_conservative_stress_scaler_buffer": [
+  1078
+ ],
+ "scaler.non_conservative_stress_per_target_scaler_buffer": [
+  1078
+ ],
+ "scaler.non_conservative_stress_per_property_scaler_buffer": [
+  1078
+ ],
+ "scaler.model.type_to_index": [
+  103
+ ]
+}
