@@ -104,3 +104,48 @@ def test_energy(model_out, gw):
     # float32 floor; the real device number is ~0.026 eV. Assert < 0.05 eV (headroom for
     # nondeterministic tile-reduction order) and print the measured value.
     assert diff < 0.05, diff
+
+
+GOLDEN = "tests/data/pet_mad_s_si_golden.npz"
+
+
+def test_conservative_forces(gw, device):
+    """Step-4 gate: conservative forces ``F = -dE/dpos`` via host autograd through the
+    verified ``pet_model_host`` backbone + ``pet_geometry`` edge featurization, vs the
+    pass-1 bit-exact golden forces (``tests/data/pet_mad_s_si_golden.npz``). Target
+    PCC >= 0.999; the host backward is float64 so this is NOT noise-limited (unlike the
+    bf16 device energy) -- it should reproduce the golden at ~PCC 1.0 / max abs ~1e-6.
+
+    Also profiles the route-(b) trade-off (device-forward energy vs host-backward
+    forces) so the perf cost of not doing a full device VJP is quantified, not guessed.
+    """
+    import time
+
+    from tt_atom.pet_forces import host_energy_and_forces, profile_forces
+
+    fx = np.load(GOLDEN)
+    pos = torch.tensor(fx["positions"], dtype=torch.float64)
+    numbers = torch.tensor(fx["numbers"], dtype=torch.long)
+    cell = torch.tensor(fx["cell"], dtype=torch.float64)
+    pbc = torch.tensor(fx["pbc"], dtype=torch.bool)
+    ref_f = fx["forces"]
+
+    raw, F = host_energy_and_forces(pos, numbers, gw.weights, cfg=gw.config,
+                                   cell=cell, pbc=pbc)
+    scale = gw.energy_scale()
+    F = F * scale  # denormalize: dE_real/dpos = scale * dE_raw/dpos
+    pcc = _pcc(F, ref_f)
+    maxabs = float((F.double() - torch.tensor(ref_f)).abs().max())
+    print(f"\n[pet-forces] PCC={pcc:.8f} max abs={maxabs:.3e}  "
+          f"(ref max abs {np.abs(ref_f).max():.3f})")
+    print(f"[pet-forces] host raw energy = {raw:.6f} (golden raw via scale: "
+          f"{(float(fx['energy'][0]) - float(gw.composition_energy_by_z()[numbers].sum()))/scale:.6f})")
+    assert pcc > 0.999, pcc
+
+    # Profile: device-forward (energy) vs host-backward (forces) wall time.
+    prof = profile_forces(pos, numbers, gw.weights, cfg=gw.config, cell=cell, pbc=pbc,
+                          device=device, repeat=5)
+    print(f"[pet-forces] device_forward_ms={prof.get('device_forward_ms'):.2f}  "
+          f"host_force_ms={prof['host_force_ms']:.2f}  "
+          f"(host backward is {prof['host_force_ms']/prof.get('device_forward_ms', prof['host_force_ms']):.1f}x "
+          "the device forward -- the cost a future device VJP would erase)")

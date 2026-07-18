@@ -1,5 +1,6 @@
 """TT-Atom — high-performance Tenstorrent inference for ML interatomic potentials: Meta's UMA
-(eSEN / eSCN-MD, equivariant) and Orbital Materials' Orb-v3 / OrbMol (non-equivariant).
+(eSEN / eSCN-MD, equivariant), Orbital Materials' Orb-v3 / OrbMol (non-equivariant), and
+lab-cosmo's PET-MAD (UPET, scalar transformer).
 
 Public API is populated as modules land (model, calculator, orb_model, orb_calculator, ...).
 Submodules import ttnn lazily so that ``import tt_atom`` is cheap and never opens a device.
@@ -12,8 +13,8 @@ try:
 except PackageNotFoundError:  # running from a source tree, not an installed dist
     __version__ = "0+unknown"
 
-__all__ = ["Calculator", "TTAtomCalculator", "OrbCalculator", "WeightBundle", "Backbone",
-          "HostGeometry", "MultiCard"]
+__all__ = ["Calculator", "TTAtomCalculator", "OrbCalculator", "PETCalculator",
+          "WeightBundle", "Backbone", "HostGeometry", "MultiCard"]
 
 
 def __getattr__(name):
@@ -30,6 +31,10 @@ def __getattr__(name):
         from .orb_calculator import OrbCalculator
 
         return OrbCalculator
+    if name == "PETCalculator":
+        from .pet_calculator import PETCalculator
+
+        return PETCalculator
     if name == "WeightBundle":
         from .weights import WeightBundle
 

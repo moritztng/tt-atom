@@ -2,9 +2,32 @@
 
 Porting [lab-cosmo's PET-MAD](https://github.com/lab-cosmo/upet) (`pet-mad-s` v1.5.0, the r2SCAN refresh
 of early 2026) into TT-Atom as a third model family alongside UMA (eSEN/eSCN-MD) and Orb-v3/OrbMol.
-This pass (pass 1, branch `experimental/pet-mad-port`) is license verification, architecture scoping,
-real-checkpoint param count, and a reference-parity capture for pass 2. No device code is written
-this pass; nothing is merged to `master` (model-merge-approval-gate).
+Nothing is merged to `master` until Moritz's explicit go-ahead (model-merge-approval-gate).
+
+## Current state (pass 4)
+
+The port is reachable end-to-end as `Calculator(atoms, "pet-mad-s-v1.5.0")` (`tt_atom.pet_calculator`,
+wired through `tt_atom.auto`), with energy + conservative forces verified on the 16-atom rattled Si
+golden against the upstream `UPETCalculator` reference:
+
+| quantity | device/host source | vs upstream reference |
+| --- | --- | --- |
+| per-GNN-layer node/edge features | device backbone (`tt_atom.pet_model`, bf16) | PCC 0.9998–0.9999 (gate ≥ 0.999) |
+| energy | device backbone (bf16) | 0.026 eV (host float32 floor 1.15e-5 eV; gap is Blackhole bf16 matmul) |
+| forces (`F = -dE/dpos`) | host autograd through `tt_atom.pet_model_host` (float32) | PCC 1.0, max abs 1.7e-6 eV/Å |
+
+The energy comes from the device backbone; the forces come from host autograd through the verified
+pure-torch reference backbone (the device VJP through PET's manual-attention log-mask is the
+non-trivial new surface, deferred — see the conservative-forces section below). The reported forces
+are the gradient of the *host* energy, so the `(energy, forces)` pair is consistent to ~0.026 eV
+rather than bit-conservative; a full device VJP makes the force the gradient of the *device* energy
+and is the known gap a later pass closes. On the 16-atom golden the device forward is ~12 ms and the
+host backward ~32 ms (`tt_atom.pet_forces.profile_forces`), so the host backward is the cost path the
+device VJP would erase.
+
+Not yet implemented (documented gaps): conservative stress (needs a strain adjoint through the
+geometry), the non-conservative force/stress heads (not the ASE default), the LLPR uncertainty
+ensemble, disjoint-union batched evaluation, and trace capture.
 
 ## License (verified, not assumed)
 
@@ -113,6 +136,12 @@ backward through the transformer + the host edge-featurization), mirroring `tt_a
 (Orb-v3-conservative), **not** the direct `ForceHead` path. The non-conservative head exists in
 the weights but is not what ASE users get from `UPETCalculator`; it is out of scope for parity
 unless a caller explicitly opts into `non_conservative=True` (defer).
+
+Pass 4 ships the conservative forces via the **host-finish route** (device forward for the energy +
+host autograd through `pet_model_host` for the forces, PCC 1.0 vs the golden), not the full device
+VJP — the manual-attention log-mask backward is the one non-trivial new VJP vs Orb, and the
+bounded-turn SACRED-correctness bar prefers the already-verified host autograd path. The device VJP
+is the known perf-and-consistency gap a later pass closes (see *Current state* above).
 
 Stress (`non_conservative_stress`) is a non-conservative head only — there is no conservative
 stress path in the checkpoint, so variable-cell stress is a documented gap (same gap class as

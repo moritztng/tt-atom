@@ -2,7 +2,7 @@
 
 ![Caffeine molecular dynamics, uma-s-1 on a Tenstorrent Blackhole card](assets/caffeine_md.gif)
 
-Run ML interatomic potentials on [Tenstorrent](https://tenstorrent.com): Meta's [UMA](https://huggingface.co/facebook/UMA) and Orbital Materials' [Orb-v3 / OrbMol](https://github.com/orbital-materials/orb-models), both behind the same [ASE](https://wiki.fysik.dtu.dk/ase/) calculator interface (bring your own checkpoint). Energy, forces and stress for molecules and periodic materials.
+Run ML interatomic potentials on [Tenstorrent](https://tenstorrent.com): Meta's [UMA](https://huggingface.co/facebook/UMA), Orbital Materials' [Orb-v3 / OrbMol](https://github.com/orbital-materials/orb-models), and lab-cosmo's [PET-MAD](https://github.com/lab-cosmo/upet), all behind the same [ASE](https://wiki.fysik.dtu.dk/ase/) calculator interface (bring your own checkpoint). Energy and forces for molecules and periodic materials.
 
 ## Install
 
@@ -47,12 +47,13 @@ from tt_atom import Calculator
 
 atoms = molecule("H2O")                          # any ASE Atoms (e.g. ase.io.read("file.xyz"))
 atoms.calc = Calculator(atoms, "orb-v3-conservative-omol")   # an Orb checkpoint, by name
+# atoms.calc = Calculator(atoms, "pet-mad-s-v1.5.0")          # PET-MAD (port in progress, see below)
 # atoms.calc = Calculator(atoms, "uma-s-1")                  # UMA, by name (same as Calculator(atoms))
 atoms.get_potential_energy()
 atoms.get_forces()
 ```
 
-One entry point, one call, the model picked by name (like fairchem's `FAIRChemCalculator` or Hugging Face's `AutoModel.from_pretrained`). You never need to know whether it's a UMA or an Orb under the hood. The name selects the family: any `uma-*` routes to the equivariant eSCN-MD engine, any `orb-v3-*` to the Orb backbone (see [Model coverage](#model-coverage)). With no name, `Calculator(atoms)` is the default, `uma-s-1`.
+One entry point, one call, the model picked by name (like fairchem's `FAIRChemCalculator` or Hugging Face's `AutoModel.from_pretrained`). You never need to know whether it's UMA, Orb, or PET-MAD under the hood. The name selects the family: any `uma-*` routes to the equivariant eSCN-MD engine, any `orb-v3-*` to the Orb backbone, any `pet-*` to the PET-MAD backbone (see [Model coverage](#model-coverage)). With no name, `Calculator(atoms)` is the default, `uma-s-1`.
 
 UMA infers the task (`omat` if the cell is periodic, else `omol`) and builds a model for that composition on first use, then loads it from cache. Orb weights aren't composition-specific, so its cache is per checkpoint, not per structure. The example leads with an Orb checkpoint because its weights are ungated and it runs on stock `ttnn`; UMA needs the gated `uma-s-1` weights and a source `tt-metal` build (see [Install](#install)). Everything downstream is plain ASE either way.
 
@@ -67,19 +68,22 @@ Add `--trace` (or `Calculator(atoms, trace=True)`, UMA only) to reuse the captur
 
 ## What it supports
 
-- Models: UMA's `uma-s-1` and all four Orb-v3/OrbMol checkpoints (`orb-v3-{conservative,direct}-{omat,omol}`).
-  See [Model coverage](#model-coverage) for what else exists upstream and why this build doesn't run it.
-- Tasks: UMA: `omol`, `omat`, `oc20`, `odac`, `omc`. Orb-v3/OrbMol: `omat`, `omol`.
-- Systems: isolated molecules and periodic cells, both model families. Charge and spin: `Calculator(
+- Models: UMA's `uma-s-1` and all four Orb-v3/OrbMol checkpoints (`orb-v3-{conservative,direct}-{omat,omol}`);
+  PET-MAD `pet-mad-s-v1.5.0` is ported on a working branch (energy + conservative forces, no stress yet —
+  see [Model coverage](#model-coverage) and [`docs/pet-mad-port.md`](docs/pet-mad-port.md)).
+- Tasks: UMA: `omol`, `omat`, `oc20`, `odac`, `omc`. Orb-v3/OrbMol: `omat`, `omol`. PET-MAD: one checkpoint, no task selector.
+- Systems: isolated molecules and periodic cells, all three model families. Charge and spin: `Calculator(
   atoms, charge=-1, spin=2)` (all UMA tasks); `Calculator(atoms, "orb-v3-conservative-omol",
   charge=-1, spin=2)` (OrbMol checkpoints only; the Orb-v3 omat checkpoints were never trained with
-  conditioning and ignore both).
+  conditioning and ignore both); PET-MAD has no charge/spin conditioning.
 - Properties: energy always. Conservative analytic forces (`F = -dE/dpos`) for UMA and Orb-v3's
   `conservative` checkpoints; a direct MLP force head (no autograd, the fast path) for Orb-v3's
-  `direct` checkpoints. Stress for UMA (always) and Orb-v3 (`conservative` via the same autograd
-  pass; `direct-20-omat` via a dedicated stress head; `direct-omol` has none, consistent with
-  stress not being meaningful for isolated molecules), so variable-cell relaxation works for either
-  family (see [`examples/relax_cell.py`](examples/relax_cell.py)). Orb-v3 is not equivariant
+  `direct` checkpoints. PET-MAD's forces are conservative (`-dE/dpos`) via host autograd through the
+  verified reference backbone (the device VJP is a later perf pass). Stress for UMA (always) and
+  Orb-v3 (`conservative` via the same autograd pass; `direct-20-omat` via a dedicated stress head;
+  `direct-omol` has none, consistent with stress not being meaningful for isolated molecules), so
+  variable-cell relaxation works for either family (see [`examples/relax_cell.py`](examples/relax_cell.py)).
+  PET-MAD has no conservative stress path (documented gap). Orb-v3 is not equivariant
   (see [Model coverage](#model-coverage)), a real architectural difference from UMA, not a gap in
   this port.
 
@@ -118,6 +122,24 @@ otherwise). A structure that exceeds it raises a clear error rather than silentl
 different neighbour list; use the `-inf`/`omol` checkpoints (cap 120) or a smaller cell for denser
 systems.
 
+### PET-MAD (UPET)
+
+[lab-cosmo's PET-MAD](https://github.com/lab-cosmo/upet) (`pet-mad-s` v1.5.0) is an unconstrained
+scalar transformer — the same architectural class as Orb-v3, so it runs on stock `ttnn` ops with no
+custom kernel. The port is on a working branch (held out of `master` until Moritz's go-ahead), so
+`Calculator(atoms, "pet-mad-s-v1.5.0")` is reachable but not yet released:
+
+- **Energy** from the device backbone (bf16), ~0.026 eV from the upstream reference on the 16-atom
+  rattled Si golden (the host float32 floor is 1.15e-5 eV; the gap is Blackhole's bf16 matmul, see
+  [`docs/pet-mad-port.md`](docs/pet-mad-port.md)).
+- **Forces** are conservative (`F = -dE/dpos`) via host autograd through a verified pure-torch
+  reference backbone (PCC 1.0 / max abs ~1.7e-6 vs the upstream forces). The force is the gradient of
+  the *host* energy, so the reported `(energy, forces)` pair is consistent to ~0.026 eV rather than
+  bit-conservative; a full device VJP (so the force is the gradient of the *device* energy) is the
+  known perf-and-consistency gap a later pass closes.
+- **No stress, no batched evaluation, no trace capture yet** (documented gaps; see
+  [`docs/pet-mad-port.md`](docs/pet-mad-port.md)).
+
 ## Accuracy
 
 Every model/task is checked on-device against its own real upstream reference (fairchem for UMA,
@@ -134,6 +156,7 @@ Every model/task is checked on-device against its own real upstream reference (f
 | orb-v3-direct-20-omat | omat | bulk Si | 5.79e-4 | 0.999966 | PCC >0.99 (dedicated stress head) |
 | orb-v3-conservative-omol | omol | H2O / NH4+ / CH3• | 1.6e-6 – 9.2e-6 | 0.97 – 0.9997 | n/a (no stress head) |
 | orb-v3-direct-omol | omol | H2O / NH4+ / CH3• | 1.7e-6 – 3.9e-5 | 0.93 – 0.998 | n/a |
+| pet-mad-s-v1.5.0 | — | bulk Si (16-atom rattled) | 2.8e-4 (device bf16) | 1.00000000 (host autograd) | not implemented |
 
 The OrbMol rows span three systems (closed-shell, charged, open-shell radical). The low end of
 each force-PCC range is the open-shell radical, whose force magnitude is an order of magnitude
@@ -231,6 +254,18 @@ refenv/bin/python tools/export_orb_weights.py --ckpt conservative-inf-omat --out
 then `OrbCalculator(weights.npz)`. `Calculator(atoms, "orb-...")` calls this automatically on first
 use of a given checkpoint name; a cache hit needs no reference env, same as UMA's.
 
+PET-MAD is the same shape as Orb (no per-composition routing), so its bundle is one plain weight
+export per checkpoint, built in a separate upet reference env (`upet` + `metatrain` alongside the
+shared refenv torch/numpy via a `.pth` reuse — no numpy-2 conflict):
+
+```bash
+~/.ttatom_run/upetenv/bin/python tools/export_pet_weights.py --ckpt pet-mad-s-v1.5.0 --out weights.npz
+```
+
+then `PETCalculator(weights.npz)`. `Calculator(atoms, "pet-...")` calls this automatically on first
+use of a given checkpoint name; a cache hit needs no reference env. Set `TT_ATOM_UPETENV` to its
+python if it isn't found at `~/.ttatom_run/upetenv/bin/python`.
+
 ## Troubleshooting
 
 On some boards/firmware the tt-metal base commit's UMD misreads the board ID as a dual-chip P300
@@ -246,4 +281,4 @@ worker processes inherit it.
 
 ## License
 
-MIT for this code, which reimplements the UMA / eSCN-MD architecture from [fairchem](https://github.com/facebookresearch/fairchem) (also MIT) and the Orb-v3 architecture from [orb-models](https://github.com/orbital-materials/orb-models) (Apache-2.0). It depends on `ttnn` (Apache-2.0) and `ase` (LGPL-2.1+). The UMA weights are separately licensed under the [FAIR Chemistry License](https://huggingface.co/facebook/UMA), are gated, and are not included (bring your own). The Orb-v3/OrbMol weights are Apache-2.0 and ungated; `Calculator(atoms, "orb-...")` downloads them itself on first use of a given checkpoint.
+MIT for this code, which reimplements the UMA / eSCN-MD architecture from [fairchem](https://github.com/facebookresearch/fairchem) (also MIT), the Orb-v3 architecture from [orb-models](https://github.com/orbital-materials/orb-models) (Apache-2.0), and the PET-MAD architecture from [upet](https://github.com/lab-cosmo/upet) (BSD-3-Clause). It depends on `ttnn` (Apache-2.0) and `ase` (LGPL-2.1+). The UMA weights are separately licensed under the [FAIR Chemistry License](https://huggingface.co/facebook/UMA), are gated, and are not included (bring your own). The Orb-v3/OrbMol weights are Apache-2.0 and ungated; `Calculator(atoms, "orb-...")` downloads them itself on first use of a given checkpoint. The PET-MAD weights are BSD-3-Clause and ungated; `Calculator(atoms, "pet-...")` downloads them itself on first use.
