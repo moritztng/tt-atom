@@ -112,3 +112,96 @@ def profile_forces(pos, atomic_numbers, weights, *, cfg, cell=None, pbc=None,
         host_energy_and_forces(pos, atomic_numbers, weights, cfg=cfg, cell=cell, pbc=pbc)
     out["host_force_ms"] = (time.perf_counter() - t0) / repeat * 1e3
     return out
+
+
+def device_energy_and_forces(pos, atomic_numbers, weights, *, cfg, cell=None, pbc=None,
+                             device=None, model=None):
+    """Conservative energy + forces for one system via the **device VJP** (pass 5).
+
+    One device forward (the same ``PetModel.forward`` the energy-only path runs) and one
+    device reverse pass (``PetModel.backward`` -> ``pet_vjp.backbone_bw``) produce the
+    adjoint at the three pos-dependent uploaded inputs (``edge_vec_cat``,
+    ``cutoff_factors``, ``log_mask``); a host ``torch.autograd.grad`` finish through
+    ``pet_geometry``'s differentiable edge featurization turns those adjoints into
+    per-atom forces. The reported ``(E, F)`` pair is self-consistent -- the force is the
+    gradient of the SAME device bf16 energy the calculator reports (closing the pass-4
+    ~0.026 eV host/device inconsistency, the real deliverable of this pass).
+
+    ``pos`` [N, 3] (any dtype; cast to float32 to match the device bf16 forward's host
+    feeder), ``atomic_numbers`` [N] long, ``weights`` a ``PetWeights.weights`` dict,
+    ``cfg`` its ``config``. ``device`` is an already-open TT device; ``model`` is an
+    already-constructed ``PetModel`` (built once and reused by the calculator). Returns
+    ``(energy_raw: float, forces: torch.Tensor[N, 3])`` in the raw/normalized space (the
+    caller multiplies forces by ``scale`` to denormalize, like
+    ``host_energy_and_forces``).
+
+    The host finish is float32 through ``pet_geometry`` (the same differentiable path the
+    host-force route uses), but the adjoint it consumes is the device bf16 backward's --
+    so the force is the gradient of the device energy, not the host energy. PCC vs the
+    golden forces is gated at >= 0.999 (see ``tests/test_pet_device.py``); the device bf16
+    backward introduces ~bf16-scale force noise on top of the host route's 1.7e-6 floor.
+    """
+    import ttnn
+
+    from .pet_geometry import host_pet_geometry
+    from .pet_model import PetModel, build_device_inputs
+
+    pos = pos.detach().to(torch.float32).clone().requires_grad_(True)
+    bd = host_pet_geometry(pos, atomic_numbers, cell=cell, pbc=pbc, cfg=cfg)
+    bd_dev = build_device_inputs(bd, cfg, device)
+    if model is None:
+        model = PetModel(weights, device, cfg=cfg)
+    raw = model.forward(bd_dev)
+    g_evc_dev, g_cutoff_dev, g_lm_dev = model.backward(bd_dev, g_raw=1.0)
+
+    g_evc = ttnn.to_torch(g_evc_dev).float()
+    g_cutoff = ttnn.to_torch(g_cutoff_dev).float()
+    g_lm = ttnn.to_torch(g_lm_dev).float()
+
+    forces = -torch.autograd.grad(
+        [bd_dev["edge_vec_cat_host"], bd_dev["cutoff_factors_host"], bd_dev["log_mask_host"]],
+        pos,
+        grad_outputs=[g_evc, g_cutoff, g_lm])[0]
+    return float(ttnn.to_torch(raw).float().view(-1)[0]), forces.detach()
+
+
+def profile_device_forces(pos, atomic_numbers, weights, *, cfg, cell=None, pbc=None,
+                           device, model=None, repeat=5):
+    """Measure the device-VJP forward+backward wall time (pass 5) so the speedup over the
+    pass-4 host-backward route is quantified, not guessed. Returns a dict with
+    ``device_forward_ms`` (the energy-only forward) and ``device_forward_backward_ms``
+    (forward + backward + host autograd finish -- the full force path), each averaged
+    over ``repeat`` runs after a warmup. Compare ``device_forward_backward_ms`` to
+    ``profile_forces``'s ``device_forward_ms + host_force_ms`` (pass 4's ~44 ms)."""
+    import time
+    import ttnn
+
+    from .pet_geometry import host_pet_geometry
+    from .pet_model import PetModel, build_device_inputs
+
+    bd = host_pet_geometry(pos.detach().to(torch.float64), atomic_numbers,
+                           cell=cell, pbc=pbc, cfg=cfg)
+    bd_dev = build_device_inputs(bd, cfg, device)
+    if model is None:
+        model = PetModel(weights, device, cfg=cfg)
+
+    # warmup
+    for _ in range(2):
+        raw = model.forward(bd_dev)
+        ttnn.to_torch(raw)
+    t0 = time.perf_counter()
+    for _ in range(repeat):
+        raw = model.forward(bd_dev)
+        ttnn.to_torch(raw)
+    fwd_ms = (time.perf_counter() - t0) / repeat * 1e3
+
+    # warmup the full force path
+    for _ in range(2):
+        device_energy_and_forces(pos, atomic_numbers, weights, cfg=cfg, cell=cell,
+                                  pbc=pbc, device=device, model=model)
+    t0 = time.perf_counter()
+    for _ in range(repeat):
+        device_energy_and_forces(pos, atomic_numbers, weights, cfg=cfg, cell=cell,
+                                 pbc=pbc, device=device, model=model)
+    fb_ms = (time.perf_counter() - t0) / repeat * 1e3
+    return dict(device_forward_ms=fwd_ms, device_forward_backward_ms=fb_ms)

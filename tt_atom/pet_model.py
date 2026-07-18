@@ -53,6 +53,7 @@ class RMSNorm:
         self.ttnn = ttnn
         self.eps = eps
         self.dim = dim
+        self.device = device
         self.w = _to_dev(weights[f"{prefix}.weight"].view(1, dim).contiguous(),
                          device, ttnn.bfloat16)
 
@@ -60,6 +61,7 @@ class RMSNorm:
         ttnn = self.ttnn
         ms = ttnn.mean(ttnn.multiply(x, x), dim=-1, keepdim=True)
         inv = ttnn.rsqrt(ttnn.add(ms, self.eps))
+        self._cache_x, self._cache_inv = x, inv          # reused by pet_vjp.rmsnorm_bw
         return ttnn.multiply(ttnn.multiply(x, inv), self.w)
 
 
@@ -72,10 +74,12 @@ class LayerNorm:
 
         self.ttnn = ttnn
         self.eps = eps
+        self.dim = dim
         self.w = _to_dev(weights[f"{prefix}.weight"].view(1, dim).contiguous(),
                          device, ttnn.bfloat16)
         self.b = _to_dev(weights[f"{prefix}.bias"].view(1, dim).contiguous(),
                          device, ttnn.bfloat16)
+        self.device = device
 
     def __call__(self, x):
         ttnn = self.ttnn
@@ -83,15 +87,20 @@ class LayerNorm:
         xc = ttnn.subtract(x, mean)
         var = ttnn.mean(ttnn.multiply(xc, xc), dim=-1, keepdim=True)
         inv = ttnn.rsqrt(ttnn.add(var, self.eps))
+        self._cache_x, self._cache_mean, self._cache_inv = x, mean, inv  # for pet_vjp.layernorm_bw
         return ttnn.add(ttnn.multiply(ttnn.multiply(xc, inv), self.w), self.b)
 
 
-def _swiglu(ttnn, x, w_in_packed, w_in_bias, w_out_packed, w_out_bias, kcfg, dtype):
+def _swiglu(ttnn, x, w_in_packed, w_in_bias, w_out_packed, w_out_bias, kcfg, dtype, cache=None):
     """SwiGLU feedforward: ``w_in`` -> split (v, g) -> ``v * sigmoid(g)`` -> ``w_out``.
-    PET-MAD v1.5.0 uses SwiGLU everywhere."""
+    PET-MAD v1.5.0 uses SwiGLU everywhere. When ``cache`` is a dict, stores ``z`` (the
+    pre-split ``w_in`` output) and ``sig_g`` (= ``sigmoid(g)``) for ``pet_vjp._swiglu_bw``."""
     z = _linear(ttnn, x, w_in_packed, w_in_bias, kcfg, dtype)
     v, g = ttnn.chunk(z, 2, dim=-1)
-    h = ttnn.multiply(v, ttnn.sigmoid(g))
+    sig_g = ttnn.sigmoid(g)
+    h = ttnn.multiply(v, sig_g)
+    if cache is not None:
+        cache["z"], cache["sig_g"] = z, sig_g
     return _linear(ttnn, h, w_out_packed, w_out_bias, kcfg, ttnn.bfloat16)
 
 
@@ -118,6 +127,7 @@ class Attention:
 
         self.ttnn = ttnn
         self.kcfg = compute_kernel_config()
+        self.device = device
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
         self.scale = 1.0 / (math.sqrt(self.head_dim) * temperature)
@@ -160,6 +170,8 @@ class Attention:
         s = ttnn.sum(e, dim=-1, keepdim=True)
         attn = ttnn.multiply(e, ttnn.reciprocal(s))
         out = ttnn.matmul(attn, v, compute_kernel_config=self.kcfg)  # [N*heads, seq, head_dim]
+        # cache for pet_vjp._attention_bw: q, k, v (post head-split), attn, x shape
+        self._cache = dict(q=q, k=k, v=v, attn=attn, x_shape=(N, seq, self.d_model))
         out = self._merge_heads(out, N, seq)               # [N, seq, d_model]
         return _linear(ttnn, out, self.w_out, self.b_out, self.kcfg, ttnn.bfloat16)
 
@@ -175,6 +187,7 @@ class GnnLayer:
 
         self.ttnn = ttnn
         self.kcfg = compute_kernel_config()
+        self.device = device
         self.layer_idx = layer_idx
         self.is_first = layer_idx == 0
         d_pet = cfg["d_pet"]
@@ -217,12 +230,12 @@ class GnnLayer:
     def _linear(self, x, wb, dtype):
         return _linear(self.ttnn, x, wb[0], wb[1], self.kcfg, dtype)
 
-    def _swiglu(self, x, w_in, w_out):
+    def _swiglu(self, x, w_in, w_out, cache=None):
         return _swiglu(self.ttnn, x, w_in[0], w_in[1], w_out[0], w_out[1],
-                       self.kcfg, self.ttnn.bfloat16)
+                       self.kcfg, self.ttnn.bfloat16, cache=cache)
 
     def __call__(self, input_node, input_edge, edge_vec_cat, elem_nbr_dev,
-                 log_mask, rev_idx_dev):
+                 log_mask, rev_idx_dev, rev_idx_host=None):
         """``input_node`` [N, d_node], ``input_edge`` [N, Dmax, d_pet],
         ``edge_vec_cat`` [N, Dmax, 4], ``elem_nbr_dev`` [N*Dmax] uint32 (embedding index
         into ``neighbor_embedder.weight``), ``log_mask`` [N*heads, 1+Dmax, 1+Dmax] (the
@@ -230,10 +243,14 @@ class GnnLayer:
         ``rev_idx_dev`` [N*Dmax] uint32 (the flattened ``reverse_neighbor_index`` — a
         gather index into the flattened edge tensor; padded slots carry indices the host
         geometry already made unique in [0, N*Dmax), so no sentinel pad row is needed).
-        Returns (out_node [N, d_node], out_edge [N, Dmax, d_pet])."""
+        ``rev_idx_host`` is the same index as a host ``long`` tensor (cached for the
+        NEF-scatter adjoint in ``pet_vjp``). Returns (out_node [N, d_node],
+        out_edge [N, Dmax, d_pet])."""
         ttnn = self.ttnn
         N = input_node.shape[0]
         Dmax = input_edge.shape[1]
+        self._cache = dict(N=N, Dmax=Dmax)
+        self._rev_idx_host = rev_idx_host
 
         # --- CartesianTransformer: edge embed + compress ---
         edge_emb = self._linear(edge_vec_cat, (self.edge_emb_w, self.edge_emb_b), ttnn.bfloat16)
@@ -243,7 +260,9 @@ class GnnLayer:
             nbr_emb = ttnn.embedding(elem_nbr_dev, self.nbr_emb_w)            # [N*Dmax, d]
             nbr_emb = ttnn.reshape(nbr_emb, (N, Dmax, self.d_pet))
             edge_tokens = ttnn.concat([edge_emb, nbr_emb, input_edge], dim=-1)  # [N,Dmax,3*d]
-        h = ttnn.silu(self._linear(edge_tokens, (self.compress0_w, self.compress0_b), ttnn.bfloat16))
+        a_compress0 = self._linear(edge_tokens, (self.compress0_w, self.compress0_b), ttnn.bfloat16)
+        self._cache["a_compress0"] = a_compress0
+        h = ttnn.silu(a_compress0)
         edge_tokens = self._linear(h, (self.compress2_w, self.compress2_b), ttnn.bfloat16)  # [N,Dmax,d]
 
         # --- TransformerLayer (PreLN) ---
@@ -258,15 +277,21 @@ class GnnLayer:
         out_node = ttnn.add(node_tok,
                            self._linear(out_node_tok, (self.center_expansion_w, self.center_expansion_b),
                                         ttnn.bfloat16))                     # [N,1,d_node]
+        center_mlp_cache = {}
         out_node = ttnn.add(out_node,
                             self._swiglu(self.norm_center(out_node),
                                          (self.center_mlp_w_in, self.center_mlp_b_in),
-                                         (self.center_mlp_w_out, self.center_mlp_b_out)))
+                                         (self.center_mlp_w_out, self.center_mlp_b_out),
+                                         cache=center_mlp_cache))
         out_edge = ttnn.add(edge_tokens, out_edge)
+        mlp_cache = {}
         out_edge = ttnn.add(out_edge,
                             self._swiglu(self.norm_mlp(out_edge),
                                          (self.mlp_w_in, self.mlp_b_in),
-                                         (self.mlp_w_out, self.mlp_b_out)))
+                                         (self.mlp_w_out, self.mlp_b_out),
+                                         cache=mlp_cache))
+        self._cache["center_mlp_cache"] = center_mlp_cache
+        self._cache["mlp_cache"] = mlp_cache
 
         # --- combination: reversed-edge gather + LayerNorm + SwiGLU-ish (Linear-SiLU-Linear) ---
         flat = ttnn.reshape(out_edge, (N * Dmax, self.d_pet))                  # [N*Dmax, d]
@@ -274,7 +299,9 @@ class GnnLayer:
         new_input_edge = ttnn.reshape(rev, (N, Dmax, self.d_pet))
         concatenated = ttnn.concat([out_edge, new_input_edge], dim=-1)        # [N,Dmax,2*d]
         normed = self.comb_norm(concatenated)
-        h = ttnn.silu(self._linear(normed, (self.comb0_w, self.comb0_b), ttnn.bfloat16))
+        a_comb0 = self._linear(normed, (self.comb0_w, self.comb0_b), ttnn.bfloat16)
+        self._cache["a_comb0"] = a_comb0
+        h = ttnn.silu(a_comb0)
         comb = self._linear(h, (self.comb2_w, self.comb2_b), ttnn.bfloat16)    # [N,Dmax,d]
 
         next_input_edge = ttnn.add(ttnn.add(input_edge, out_edge), comb)
@@ -302,6 +329,7 @@ class EnergyHead:
 
         self.ttnn = ttnn
         self.kcfg = compute_kernel_config()
+        self.device = device
         wd = ttnn.bfloat16
 
         def lin(key):
@@ -324,15 +352,24 @@ class EnergyHead:
         contributions vanish without an explicit mask — same as the host reference's
         ``where``+``*cutoff`` pair, which is redundant given cutoff is already 0 there)."""
         ttnn = self.ttnn
-        h = ttnn.silu(self._lin(node_feat, (self.n0_w, self.n0_b)))
-        h = ttnn.silu(self._lin(h, (self.n2_w, self.n2_b)))
+        a_n0 = self._lin(node_feat, (self.n0_w, self.n0_b))
+        h = ttnn.silu(a_n0)
+        a_n2 = self._lin(h, (self.n2_w, self.n2_b))
+        h = ttnn.silu(a_n2)
         node_pred = self._lin(h, (self.nll_w, self.nll_b))                  # [N,1]
 
-        he = ttnn.silu(self._lin(edge_feat, (self.e0_w, self.e0_b)))
-        he = ttnn.silu(self._lin(he, (self.e2_w, self.e2_b)))
-        edge_pred = self._lin(he, (self.ell_w, self.ell_b))                 # [N,Dmax,1]
-        edge_pred = ttnn.multiply(edge_pred, cutoff_factors)                # zero on padded
+        a_e0 = self._lin(edge_feat, (self.e0_w, self.e0_b))
+        he = ttnn.silu(a_e0)
+        a_e2 = self._lin(he, (self.e2_w, self.e2_b))
+        he = ttnn.silu(a_e2)
+        edge_pred_pre = self._lin(he, (self.ell_w, self.ell_b))             # [N,Dmax,1]
+        edge_pred = ttnn.multiply(edge_pred_pre, cutoff_factors)           # zero on padded
         edge_pred = ttnn.sum(edge_pred, dim=1)                              # [N,1]
+        # cache pre-silu activations + pre-multiply edge_pred for pet_vjp._energy_head_bw
+        self._cache = dict(a_n0=a_n0, a_n2=a_n2, a_e0=a_e0, a_e2=a_e2,
+                           edge_pred_pre=edge_pred_pre,
+                           node_feat_shape=tuple(node_feat.shape),
+                           edge_feat_shape=tuple(edge_feat.shape))
         return ttnn.sum(ttnn.add(node_pred, edge_pred))                    # scalar
 
 
@@ -378,11 +415,17 @@ def build_device_inputs(bd, cfg, device):
     return dict(
         node_idx=_to_dev(elem_nodes.to(torch.int32), device, ttnn.uint32, rm),
         elem_nbr=_to_dev(elem_nbr.reshape(-1).to(torch.int32), device, ttnn.uint32, rm),
-        edge_vec_cat=_to_dev(edge_vec_cat, device, ttnn.bfloat16),
+        edge_vec_cat=_to_dev(edge_vec_cat.detach().contiguous(), device, ttnn.bfloat16),
         cutoff_factors=_to_dev(cutoff_factors.to(torch.float32)[..., None].contiguous(),
                                device, ttnn.bfloat16),
-        log_mask=_to_dev(log_mask, device, ttnn.bfloat16),
+        log_mask=_to_dev(log_mask.detach().contiguous(), device, ttnn.bfloat16),
         rev_idx=_to_dev(rev_idx.reshape(-1).to(torch.int32), device, ttnn.uint32, rm),
+        rev_idx_host=rev_idx.reshape(-1).contiguous(),                      # host long, for pet_vjp NEF scatter
+        # host-side differentiable copies (kept in the autograd graph when pos requires
+        # grad) for the device-VJP host finish in pet_forces.device_energy_and_forces.
+        edge_vec_cat_host=edge_vec_cat,
+        cutoff_factors_host=cutoff_factors.to(torch.float32)[..., None].contiguous(),
+        log_mask_host=log_mask,
         N=N, Dmax=Dmax,
     )
 
@@ -398,6 +441,7 @@ class PetModel:
 
         self.ttnn = ttnn
         self.cfg = cfg
+        self.device = device
         self.node_emb_w = _to_dev(weights["node_embedders.0.weight"], device, ttnn.bfloat16)
         self.edge_emb_w = _to_dev(weights["edge_embedder.weight"], device, ttnn.bfloat16)
         self.layers = [GnnLayer(weights, device, cfg=cfg, layer_idx=i)
@@ -421,7 +465,8 @@ class PetModel:
         for layer in self.layers:
             out_node, out_edge_pre, input_edge = layer(
                 node_emb, input_edge, bd_dev["edge_vec_cat"], bd_dev["elem_nbr"],
-                bd_dev["log_mask"], bd_dev["rev_idx"])
+                bd_dev["log_mask"], bd_dev["rev_idx"],
+                rev_idx_host=bd_dev.get("rev_idx_host"))
             node_emb = out_node
             if return_layers:
                 node_outs.append(ttnn.to_torch(out_node).float().cpu())
@@ -431,3 +476,12 @@ class PetModel:
         if return_layers:
             return raw, node_outs, edge_outs
         return raw
+
+    def backward(self, bd_dev, g_raw=1.0):
+        """Reverse-mode VJP through the forward just run. Returns ``(g_edge_vec_cat,
+        g_cutoff_factors, g_log_mask)`` -- the device adjoints at the three pos-dependent
+        uploaded inputs (``edge_vec_cat``, ``cutoff_factors``, ``log_mask``), ready for the
+        host ``torch.autograd.grad`` finish in ``pet_forces.device_energy_and_forces``.
+        ``g_raw`` is the scalar seed at the raw energy (1.0 for forces)."""
+        from .pet_vjp import backbone_bw
+        return backbone_bw(self, bd_dev, g_raw=g_raw)

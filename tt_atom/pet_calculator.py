@@ -10,15 +10,16 @@ there is no per-system bundle to build or cache — only a per-checkpoint weight
 
 Energy + forces. The energy comes from the device backbone (:class:`tt_atom.pet_model.PetModel`,
 bf16, ~0.026 eV from the host reference — see ``tests/test_pet_device.py``). The forces are
-conservative ``F = -dE/dpos`` via host autograd through the verified reference backbone
-(:mod:`tt_atom.pet_forces`, PCC 1.0 / max abs ~1.7e-6 vs the golden forces). The two come from
-*different* graphs (device bf16 for the energy, host float32 for the forces), so the reported
-forces are conservative w.r.t. the *host* energy, not the device energy — a ~0.026 eV
-inconsistency. For single-point evaluation and geometry optimization that is well within
-tolerance; for long MD runs that demand strict energy conservation, a full device VJP (so the
-force is the gradient of the *device* energy) is the known gap a future pass closes. The host
-backward is the cost path (~2.7x the device forward on the 16-atom golden, see
-``pet_forces.profile_forces``); the device VJP pass would erase it.
+conservative ``F = -dE/dpos`` via the **device VJP** (:mod:`tt_atom.pet_vjp`,
+:func:`tt_atom.pet_forces.device_energy_and_forces`): one device forward + one device reverse pass
+produce the adjoint at the pos-dependent uploaded inputs, and a short host ``torch.autograd.grad``
+finish through :mod:`tt_atom.pet_geometry`'s differentiable edge featurization turns it into
+per-atom forces. The force is the gradient of the *same* device bf16 energy reported above, so the
+``(E, F)`` pair is self-consistent (no ~0.026 eV host/device drift — the gap the pass-4 host-backward
+route left open). PCC vs the golden forces is ~0.99 (bf16 backward noise; the float32 host route
+hits 1.0 but is ~1.6x slower). The device VJP is also faster than the pass-4 host backward
+(~26 ms vs ~41 ms forward+backward on the 16-atom golden, see
+``pet_forces.profile_device_forces``).
 
 Out of scope (documented, not implemented): stress (PET-MAD has no stress head and the
 conservative stress would need a strain adjoint through the geometry — a later pass), the
@@ -79,33 +80,36 @@ class PETCalculator(DeviceCalculator):
         import ttnn
 
         from .disjoint import _as_atoms_fields
-        from .pet_forces import host_energy_and_forces
+        from .pet_forces import device_energy_and_forces
         from .pet_geometry import host_pet_geometry
         from .pet_model import build_device_inputs
 
         pos, Z, _charge, _spin, cell, pbc = _as_atoms_fields(atoms)
         want_forces = "forces" in properties
 
-        # --- energy: device backbone (bf16) ---
-        bd = host_pet_geometry(pos.double().requires_grad_(False), Z, cell=cell.double() if cell is not None else None,
-                               pbc=pbc, cfg=self.cfg)
-        bd_dev = build_device_inputs(bd, self.cfg, self.device)
-        raw_dev = self.model.forward(bd_dev)
-        raw_e = float(ttnn.to_torch(raw_dev).float().view(-1)[0])
         comp_sum = float(self.comp[Z.long()].sum())
-        E = raw_e * self.scale + comp_sum
 
-        # --- forces: host autograd through the verified reference backbone (float32) ---
         if want_forces:
-            _raw_host, F_raw = host_energy_and_forces(
+            # device VJP: one forward + one reverse pass -> (E, F) self-consistent
+            # (F is the gradient of the SAME device bf16 energy reported below).
+            raw_dev, F_raw = device_energy_and_forces(
                 pos, Z, self._w, cfg=self.cfg,
-                cell=cell.double() if cell is not None else None, pbc=pbc)
-            F = F_raw * self.scale  # dE_real/dpos = scale * dE_raw/dpos
-            F = F.double()
+                cell=cell.double() if cell is not None else None, pbc=pbc,
+                device=self.device, model=self.model)
+            E = raw_dev * self.scale + comp_sum
+            F = (F_raw * self.scale).double()
             self._store_results(atoms, E, F, stress=None)
         else:
-            # energy-only: do NOT populate results["forces"] (ASE caches results, so a
-            # later get_forces() must re-enter calculate to compute them for real).
+            # energy-only: device backbone (bf16), no backward pass needed.
+            bd = host_pet_geometry(pos.double().requires_grad_(False), Z,
+                                   cell=cell.double() if cell is not None else None,
+                                   pbc=pbc, cfg=self.cfg)
+            bd_dev = build_device_inputs(bd, self.cfg, self.device)
+            raw_dev = self.model.forward(bd_dev)
+            raw_e = float(ttnn.to_torch(raw_dev).float().view(-1)[0])
+            E = raw_e * self.scale + comp_sum
+            # do NOT populate results["forces"] (ASE caches results, so a later
+            # get_forces() must re-enter calculate to compute them for real).
             self.results["energy"] = E
             self.results["free_energy"] = E
             self.results["energies"] = np.full(Z.shape[0], E / Z.shape[0], dtype=np.float64)

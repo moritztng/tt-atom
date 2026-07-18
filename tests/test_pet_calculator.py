@@ -1,11 +1,13 @@
 """End-to-end ASE calculator test for the PET-MAD port — step 5's gate.
 
 Drives the public ``Calculator(atoms, "pet-mad-s-v1.5.0")`` front door (``tt_atom.auto``)
-on the 16-atom rattled Si golden and checks the reported energy + forces against the
-pass-1 bit-exact golden. The energy comes from the device backbone (bf16, ~0.026 eV from
-the host reference — asserted < 0.05 eV, same gate as ``tests/test_pet_device.py``); the
-forces come from the host autograd finish (float32, PCC 1.0 / max abs ~1.7e-6 vs golden —
-asserted PCC >= 0.999).
+on the 16-atom rattled Si golden and checks the reported energy + forces. The energy comes
+from the device backbone (bf16, ~0.026 eV from the host reference — asserted < 0.05 eV, same
+gate as ``tests/test_pet_device.py``); the forces come from the **device VJP** (pass 5), so the
+``(E, F)`` pair is self-consistent (F is the gradient of the reported device energy). The bf16
+backward caps PCC vs the float32 golden at ~0.99 (asserted >= 0.98); the float32 host route
+still hits 1.0 via ``pet_forces.host_energy_and_forces`` for callers who need golden-parity over
+self-consistency.
 
     TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python -m pytest tests/test_pet_calculator.py -q
 """
@@ -56,4 +58,4 @@ def test_calculator_energy_and_forces(device):
     print(f"\n[pet-calc] E={E:.6f} eV (ref {ref_E:.6f}, diff {dE:.6f})")
     print(f"[pet-calc] forces PCC={pcc:.8f} max abs={maxabs:.3e} (ref max abs {np.abs(ref_F).max():.3f})")
     assert dE < 0.05, dE
-    assert pcc > 0.999, pcc
+    assert pcc > 0.98, pcc  # bf16 device-VJP ceiling (~0.99); host float32 route hits 1.0
