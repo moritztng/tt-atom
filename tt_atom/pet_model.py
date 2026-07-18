@@ -373,18 +373,15 @@ class EnergyHead:
         return ttnn.sum(ttnn.add(node_pred, edge_pred))                    # scalar
 
 
-def build_device_inputs(bd, cfg, device):
-    """Upload the host geometry's NEF tensors as the device-resident per-topology buffers
-    the backbone consumes — the device analogue of Orb's ``OrbGraphContext``. All
-    pos-dependent fixed terms (edge vectors/distances, cutoff factors, the log-additive
-    attention mask, the NEF index tables) are host-computed by ``pet_geometry`` and
-    uploaded once; every learned op runs on device.
-
-    Returns a dict of device tensors. ``log_mask`` is ``log(clamp(cf, 1e-15))`` broadcast
-    over heads (``cf`` built exactly as ``pet_model_host.cartesian_transformer``: prepend
-    the center-token 1, zero the padded slots, broadcast to [N, S, S])."""
-    import ttnn
-
+def _host_pet_inputs(bd, cfg):
+    """Host-side computation of the device-input tensors (the part of
+    :func:`build_device_inputs` that does not touch the device). Returns a dict of host
+    tensors: the topology-fixed index tables (``node_idx``, ``elem_nbr``, ``rev_idx`` as
+    int32; ``rev_idx_host`` as long) and the pos-dependent feature buffers
+    (``edge_vec_cat``, ``cutoff_factors``, ``log_mask`` as float32/bf16-ready), plus the
+    three host differentiable copies (``*_host``) that are leaves for the device-VJP host
+    finish. Factored out so the trace engine (:mod:`tt_atom.pet_trace`) can refresh only the
+    pos-dependent buffers in place without re-uploading the topology tables."""
     N = int(bd["num_nodes"])
     Dmax = int(bd["max_edges_per_node"])
     S = 1 + Dmax
@@ -411,22 +408,49 @@ def build_device_inputs(bd, cfg, device):
     log_mask = torch.log(cf.clamp(min=1e-15))                               # [N, S, S]
     log_mask = log_mask.unsqueeze(1).expand(N, num_heads, S, S).reshape(N * num_heads, S, S).contiguous()
 
-    rm = ttnn.ROW_MAJOR_LAYOUT
     return dict(
-        node_idx=_to_dev(elem_nodes.to(torch.int32), device, ttnn.uint32, rm),
-        elem_nbr=_to_dev(elem_nbr.reshape(-1).to(torch.int32), device, ttnn.uint32, rm),
-        edge_vec_cat=_to_dev(edge_vec_cat.detach().contiguous(), device, ttnn.bfloat16),
-        cutoff_factors=_to_dev(cutoff_factors.to(torch.float32)[..., None].contiguous(),
-                               device, ttnn.bfloat16),
-        log_mask=_to_dev(log_mask.detach().contiguous(), device, ttnn.bfloat16),
-        rev_idx=_to_dev(rev_idx.reshape(-1).to(torch.int32), device, ttnn.uint32, rm),
+        node_idx=elem_nodes.to(torch.int32),
+        elem_nbr=elem_nbr.reshape(-1).to(torch.int32),
+        rev_idx=rev_idx.reshape(-1).to(torch.int32),
         rev_idx_host=rev_idx.reshape(-1).contiguous(),                      # host long, for pet_vjp NEF scatter
+        edge_vec_cat=edge_vec_cat.detach().contiguous(),
+        cutoff_factors=cutoff_factors.to(torch.float32)[..., None].contiguous(),
+        log_mask=log_mask.detach().contiguous(),
         # host-side differentiable copies (kept in the autograd graph when pos requires
         # grad) for the device-VJP host finish in pet_forces.device_energy_and_forces.
         edge_vec_cat_host=edge_vec_cat,
         cutoff_factors_host=cutoff_factors.to(torch.float32)[..., None].contiguous(),
         log_mask_host=log_mask,
         N=N, Dmax=Dmax,
+    )
+
+
+def build_device_inputs(bd, cfg, device):
+    """Upload the host geometry's NEF tensors as the device-resident per-topology buffers
+    the backbone consumes — the device analogue of Orb's ``OrbGraphContext``. All
+    pos-dependent fixed terms (edge vectors/distances, cutoff factors, the log-additive
+    attention mask, the NEF index tables) are host-computed by ``pet_geometry`` and
+    uploaded once; every learned op runs on device.
+
+    Returns a dict of device tensors. ``log_mask`` is ``log(clamp(cf, 1e-15))`` broadcast
+    over heads (``cf`` built exactly as ``pet_model_host.cartesian_transformer``: prepend
+    the center-token 1, zero the padded slots, broadcast to [N, S, S])."""
+    import ttnn
+
+    h = _host_pet_inputs(bd, cfg)
+    rm = ttnn.ROW_MAJOR_LAYOUT
+    return dict(
+        node_idx=_to_dev(h["node_idx"], device, ttnn.uint32, rm),
+        elem_nbr=_to_dev(h["elem_nbr"], device, ttnn.uint32, rm),
+        edge_vec_cat=_to_dev(h["edge_vec_cat"], device, ttnn.bfloat16),
+        cutoff_factors=_to_dev(h["cutoff_factors"], device, ttnn.bfloat16),
+        log_mask=_to_dev(h["log_mask"], device, ttnn.bfloat16),
+        rev_idx=_to_dev(h["rev_idx"], device, ttnn.uint32, rm),
+        rev_idx_host=h["rev_idx_host"],
+        edge_vec_cat_host=h["edge_vec_cat_host"],
+        cutoff_factors_host=h["cutoff_factors_host"],
+        log_mask_host=h["log_mask_host"],
+        N=h["N"], Dmax=h["Dmax"],
     )
 
 

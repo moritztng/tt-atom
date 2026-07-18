@@ -102,7 +102,7 @@ def layernorm_bw(norm, g_out):
         ttnn.multiply(ttnn.multiply(inv3, xc), ttnn.multiply(s2, 1.0 / C)))
 
 
-def _swiglu_bw(ttnn, g_h, cache, w_in, w_out, kcfg):
+def _swiglu_bw(ttnn, g_h, cache, w_in, w_out, kcfg, ones_cache=None):
     """VJP of SwiGLU: ``z = Linear_w_in(x)`` -> split (v, g) -> ``h = v * sigmoid(g)``
     -> ``Linear_w_out(h)``. ``g_h`` is the adjoint at the SwiGLU output (post ``w_out``);
     returns ``g_x`` (adjoint at the SwiGLU input). ``cache`` holds ``z`` (the pre-split
@@ -113,8 +113,21 @@ def _swiglu_bw(ttnn, g_h, cache, w_in, w_out, kcfg):
     # h = v * sigmoid(g); g_h is adjoint at h (input to w_out)
     # g_v = g_h * sig_g ; g_g = g_h * v * sig_g * (1 - sig_g)
     g_v = ttnn.multiply(g_h, sig_g)
+    # g_g = g_h * v * sig_g * (1 - sig_g). The ``1 - sig_g`` term needs a ones buffer of
+    # sig_g's shape; ``ttnn.ones_like`` is an alloc+write that trace capture disallows, so
+    # the caller passes a shape-keyed ones cache (``ones_cache``) populated lazily on the
+    # first (warmup, pre-capture) call and reused every replay -- bit-identical to
+    # ``ones_like`` (same dtype/layout/device), so eager numerics are unchanged.
+    sshape = tuple(sig_g.shape)
+    if ones_cache is None:
+        ones_cache = {}
+    if sshape not in ones_cache:
+        ones_cache[sshape] = ttnn.ones(sshape, dtype=sig_g.dtype, layout=sig_g.layout,
+                                     device=sig_g.device()) if hasattr(sig_g, "device") \
+            else ttnn.ones(sshape, dtype=sig_g.dtype, layout=sig_g.layout)
+    ones_s = ones_cache[sshape]
     g_g = ttnn.multiply(ttnn.multiply(ttnn.multiply(g_h, v), sig_g),
-                       ttnn.subtract(ttnn.ones_like(sig_g), sig_g))
+                       ttnn.subtract(ones_s, sig_g))
     g_z = ttnn.concat([g_v, g_g], dim=-1)
     return _mm(ttnn, g_z, w_in, kcfg)
 
@@ -197,9 +210,11 @@ def _energy_head_bw(ehead, g_raw, cutoff_factors):
     N, Dmax = c["node_feat_shape"][0], c["edge_feat_shape"][1]
 
     # raw = sum(node_pred + edge_pred_sum) ; g_raw is a scalar tensor
-    ones_N1 = ttnn.ones((N, 1), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                        device=ehead.device) if getattr(ehead, "device", None) is not None \
-        else ttnn.ones((N, 1), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
+    if getattr(ehead, "_bw_ones_n1", None) is None or ehead._bw_ones_n1.shape[0] != N:
+        ehead._bw_ones_n1 = ttnn.ones((N, 1), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+                                     device=ehead.device) if getattr(ehead, "device", None) is not None \
+            else ttnn.ones((N, 1), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
+    ones_N1 = ehead._bw_ones_n1
     g_node_pred = ttnn.multiply(ones_N1, g_raw)
     g_edge_pred_sum = ttnn.multiply(ones_N1, g_raw)
 
@@ -243,6 +258,11 @@ def _gnn_layer_bw(layer, g_out_node, g_out_edge, g_next_input_edge, log_mask):
     Dmax = c["Dmax"]
     d_pet = layer.d_pet
     d_node = layer.d_node
+    # shape-keyed cache for the SwiGLU backward's ``1 - sig_g`` ones buffers, populated
+    # lazily on the warmup (pre-capture) call and reused every replay (``ttnn.ones_like``
+    # is a trace-blocked alloc+write).
+    if not hasattr(layer, "_swiglu_ones"):
+        layer._swiglu_ones = {}
 
     # --- combination backward ---
     # next_input_edge = input_edge + out_edge + comb
@@ -260,19 +280,32 @@ def _gnn_layer_bw(layer, g_out_node, g_out_edge, g_next_input_edge, log_mask):
     g_out_edge = ttnn.add(g_out_edge, g_out_edge_comb)
 
     # new_input_edge = reshape(embedding(rev_idx, flat)) ; flat = reshape(out_edge, [N*Dmax, d])
-    # gather backward = scatter-add by the same rev_idx. ttnn.scatter_add's index-rank/
-    # broadcast semantics don't match torch.index_add cleanly (probed: silent wrong-shape
-    # result), so finish this one small ([N*Dmax, d_pet]) gather-adjoint on host. It is
-    # ~70k elements at the 16-atom golden -- a negligible round-trip; the device VJP's
-    # win comes from the matmul/softmax/norm heavy lifting, not this O(E*d) scatter.
-    g_new_input_edge_flat = ttnn.to_torch(
-        ttnn.reshape(g_new_input_edge, (N * Dmax, d_pet))).float()
-    g_flat_host = torch.zeros(N * Dmax, d_pet, dtype=torch.float32)
-    g_flat_host.index_add_(0, layer._rev_idx_host, g_new_input_edge_flat)
-    g_out_edge_from_rev = ttnn.from_torch(
-        g_flat_host.to(torch.bfloat16), dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT, device=layer.device)
-    g_out_edge_from_rev = ttnn.reshape(g_out_edge_from_rev, (N, Dmax, d_pet))
+    # gather backward = scatter-add by the same rev_idx. Done on DEVICE via
+    # ``ttnn.scatter_add`` (bf16) so the backward is fully device-resident and
+    # trace-capturable -- the pass-5 host ``torch.index_add_`` roundtrip broke the captured
+    # instruction stream (a host op between device ops can't be recorded). ``ttnn.scatter_add``
+    # follows ``torch.scatter_add`` semantics (index broadcasts against src along ``dim``), so
+    # the [N*Dmax] ``rev_idx`` is broadcast to [N*Dmax, d_pet] once per topology and uploaded as
+    # a resident uint32 index buffer; the scatter accumulates at repeated indices in bf16.
+    # Verified bf16 PCC 0.999998 vs the float32 host ``index_add`` (probe_trace.py); the
+    # end-to-end forces PCC vs golden is unchanged at 0.98990 (the bf16 scatter accumulation
+    # sits below the backward's existing bf16 noise floor).
+    if getattr(layer, "_rev_idx_b_dev", None) is None or layer._rev_idx_b_dev.shape[0] != N * Dmax:
+        rev_idx_b = layer._rev_idx_host.to(torch.int32)[:, None].expand(N * Dmax, d_pet).contiguous()
+        layer._rev_idx_b_dev = ttnn.from_torch(rev_idx_b, dtype=ttnn.uint32,
+                                               layout=ttnn.ROW_MAJOR_LAYOUT, device=layer.device)
+    # persistent zero buffer for the scatter-add input, created lazily on the first call
+    # (warmup, before trace capture) and reused every replay. ``ttnn.zeros`` inside the
+    # captured body is a host-initiated write that trace capture disallows, so it must be
+    # pre-allocated; scatter_add only reads it (stays zero), so one buffer per layer is
+    # enough.
+    if getattr(layer, "_g_flat_zero", None) is None or layer._g_flat_zero.shape[0] != N * Dmax:
+        layer._g_flat_zero = ttnn.zeros((N * Dmax, d_pet), dtype=ttnn.bfloat16,
+                                        layout=ttnn.TILE_LAYOUT, device=layer.device)
+    g_new_input_edge_flat = ttnn.reshape(g_new_input_edge, (N * Dmax, d_pet))
+    g_flat = ttnn.scatter_add(layer._g_flat_zero, dim=0, index=layer._rev_idx_b_dev,
+                              src=g_new_input_edge_flat)
+    g_out_edge_from_rev = ttnn.reshape(g_flat, (N, Dmax, d_pet))
     g_out_edge = ttnn.add(g_out_edge, g_out_edge_from_rev)
 
     # --- transformer-layer edge path backward ---
@@ -281,7 +314,8 @@ def _gnn_layer_bw(layer, g_out_node, g_out_edge, g_next_input_edge, log_mask):
     g_e4 = g_out_edge
     # e4 = swiglu(rmsnorm(e3), mlp)
     g_h_mlp = _mm(ttnn, g_e4, layer.mlp_w_out, kcfg)
-    g_normed_e3_mlp = _swiglu_inner_bw(ttnn, g_h_mlp, c["mlp_cache"], layer.mlp_w_in, kcfg)
+    g_normed_e3_mlp = _swiglu_inner_bw(ttnn, g_h_mlp, c["mlp_cache"], layer.mlp_w_in, kcfg,
+                                      ones_cache=layer._swiglu_ones)
     g_e3_from_mlp = rmsnorm_bw(layer.norm_mlp, g_normed_e3_mlp)
     g_e3 = ttnn.add(g_e3, g_e3_from_mlp)
     # e3 = e1 + e2
@@ -295,7 +329,8 @@ def _gnn_layer_bw(layer, g_out_node, g_out_edge, g_next_input_edge, log_mask):
     g_out_node_mid = g_out_node_mid2
     g_center_mlp_out = g_out_node_mid2
     g_normed_cm = _swiglu_inner_bw(ttnn, _mm(ttnn, g_center_mlp_out, layer.center_mlp_w_out, kcfg),
-                                   c["center_mlp_cache"], layer.center_mlp_w_in, kcfg)
+                                   c["center_mlp_cache"], layer.center_mlp_w_in, kcfg,
+                                   ones_cache=layer._swiglu_ones)
     g_out_node_mid_from_mlp = rmsnorm_bw(layer.norm_center, g_normed_cm)
     g_out_node_mid = ttnn.add(g_out_node_mid, g_out_node_mid_from_mlp)
     # out_node_mid = n_tok + out_node_expanded
@@ -339,10 +374,10 @@ def _gnn_layer_bw(layer, g_out_node, g_out_edge, g_next_input_edge, log_mask):
     return g_input_node, g_input_edge, g_edge_vec_cat, g_log_mask
 
 
-def _swiglu_inner_bw(ttnn, g_h, cache, w_in, kcfg):
+def _swiglu_inner_bw(ttnn, g_h, cache, w_in, kcfg, ones_cache=None):
     """Shared SwiGLU VJP body (used by both the node MLP and edge MLP paths). Returns the
     adjoint at the SwiGLU input (the normed input to ``w_in``)."""
-    return _swiglu_bw(ttnn, g_h, cache, w_in, None, kcfg)
+    return _swiglu_bw(ttnn, g_h, cache, w_in, None, kcfg, ones_cache=ones_cache)
 
 
 def backbone_bw(model, bd_dev, g_raw=1.0):
@@ -355,14 +390,15 @@ def backbone_bw(model, bd_dev, g_raw=1.0):
     cutoff_factors = bd_dev["cutoff_factors"]                        # [N, Dmax, 1]
 
     # EnergyHead backward -> adjoints at the final node/edge features
-    g_seed = ttnn.ones((1, 1), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                      device=model.device) if hasattr(model, "device") else \
-        ttnn.ones((1, 1), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
-    g_seed = ttnn.multiply(g_seed, g_raw)
+    if getattr(model, "_g_seed_ones", None) is None:
+        model._g_seed_ones = ttnn.ones((1, 1), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
+                                     device=model.device) if hasattr(model, "device") else \
+            ttnn.ones((1, 1), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT)
+    g_seed = ttnn.multiply(model._g_seed_ones, g_raw)
     g_node, g_edge, g_cutoff = _energy_head_bw(model.energy_head, g_seed, cutoff_factors)
     g_log_mask = None
+    g_evc_list = []
     for layer in reversed(model.layers):
-        c = layer._cache
         # next_input_edge for this layer is the g_edge propagated from the next layer
         # (for the last layer it's the energy head's g_edge; for earlier layers it's the
         # g_input_edge returned by the layer below). The layer's own out_edge_pre adjoint
@@ -373,10 +409,13 @@ def backbone_bw(model, bd_dev, g_raw=1.0):
         g_edge = g_in_edge
         g_log_mask = g_lm if g_log_mask is None else ttnn.add(g_log_mask, g_lm)
         # accumulate edge_vec_cat across layers (each layer consumes edge_vec_cat fresh)
-        if not hasattr(model, "_g_evc_acc"):
-            model._g_evc_acc = g_evc
-        else:
-            model._g_evc_acc = ttnn.add(model._g_evc_acc, g_evc)
-    g_edge_vec_cat = model._g_evc_acc
-    del model._g_evc_acc
+        g_evc_list.append(g_evc)
+    # sum the per-layer edge_vec_cat adjoints into one device tensor. A clean reduction
+    # (no mutable model state) so the backward is trace-capturable: the ``hasattr``/``del``
+    # accumulator pattern recorded Python control flow at capture time and left a stale
+    # attribute on replay. The sum is a fixed-arity device op stream regardless of layer
+    # count, captured once and replayed as-is.
+    g_edge_vec_cat = g_evc_list[0]
+    for g in g_evc_list[1:]:
+        g_edge_vec_cat = ttnn.add(g_edge_vec_cat, g)
     return g_edge_vec_cat, g_cutoff, g_log_mask
