@@ -144,6 +144,9 @@ ZBL pair-repulsion correction live in [`docs/orb-port.md`](docs/orb-port.md).
 Dynamics are stable: UMA's NVE energy drift is about 1 meV/atom/ps. Op numerics can shift between
 `ttnn` versions, so confirm parity on yours.
 
+For the full device-vs-reference parity framework (R / D / X noise-floor legs across every shipped
+family and regime), see [`docs/materials-benchmark.md`](docs/materials-benchmark.md).
+
 Reproduce it yourself. Every UMA bundle embeds the fairchem reference energy/forces from build
 time; Orb-v3/OrbMol goldens do the same for `orb-models` (`tests/gen_golden_orb.py`):
 

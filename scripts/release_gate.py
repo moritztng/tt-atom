@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """TT-Atom release gate — one command, three legs, machine-readable PASS/FAIL/GAP per leg.
 
-The runnable equivalent of ``RELEASING.md``'s manual checklist. Three legs, matching the three
-things a tagged release must clear on real hardware before it ships:
+The runnable equivalent of ``RELEASING.md``'s manual checklist, and the live harness behind the
+parity table in ``docs/materials-benchmark.md`` (run ``--leg accuracy`` to reproduce those R/D/X
+numbers on your card). Three legs, matching the three things a tagged release must clear on real
+hardware before it ships:
 
   1. ACCURACY — numerical parity vs each shipped model family's own reference, within tolerance
      (energy rel-error, force/stress PCC), across every supported task and graph regime for which
