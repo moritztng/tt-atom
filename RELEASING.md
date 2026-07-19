@@ -7,22 +7,58 @@ commit that has passed the full on-hardware gate below.
 ## Release gate — MUST pass on real Tenstorrent hardware before tagging
 
 GitHub CI only builds and imports the package (no card). Everything that matters is verified
-on-device, on the exact commit to be tagged:
+on-device, on the exact commit to be tagged, by **`scripts/release_gate.py`** — one command,
+three legs, machine-readable `PASS` / `FAIL` / `GAP` per leg. Run it on card 0 of the release host:
 
-1. **Accuracy / correctness** — full test suite green **and** numerical parity vs each model
-   family's own reference within tolerance (energy rel-error and force/stress PCC), across every
-   supported task and graph regime (molecular, bulk/periodic, slab), **for every shipped model
-   family** — currently UMA (vs fairchem `uma-s-1`) and Orb-v3 / OrbMol (vs the real `orb-models`
-   CPU oracle). Run the *combined* suite in one pass, not each family in isolation — cross-family
-   interactions (e.g. shared device/fixture state) only show up when everything runs together.
-   **No accuracy regression** vs the previous release.
-2. **No OOM** — run the full supported size range (small molecules → large systems) on the
-   target card(s), single- and multi-card, to completion. No out-of-memory. Any hard size limit
-   is documented in the release notes, not discovered by a customer.
-3. **No perf regression** — benchmark the release commit against the previous release; latency
-   and throughput must not regress beyond noise. Record the numbers in the release notes.
+```bash
+TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py
+```
 
-If any of the three fails, it does not ship — fix it or hold the release.
+The three legs are the three things a tagged release must clear:
+
+1. **ACCURACY / correctness** — numerical parity vs each shipped model family's own reference
+   within tolerance (energy rel-error and force/stress PCC), across every supported task and
+   graph regime for which a real-weight golden fixture exists, **for every shipped model
+   family** — UMA (vs fairchem `uma-s-1`) and Orb-v3 / OrbMol (vs the real `orb-models` CPU
+   oracle). The gate reuses the existing `tests/test_*realweight*.py` parity modules verbatim
+   (they already encode the bars and the real oracles) by invoking pytest with JUnit XML, so
+   the gate never re-derives a parity bar or oracle. A module whose golden fixture is absent
+   auto-skips and is reported as `GAP` (missing fixture) — never a silent `PASS`. Run the
+   *combined* suite in one pass, not each family in isolation — cross-family interactions (e.g.
+   shared device/fixture state) only show up when everything runs together. **No accuracy
+   regression** vs the previous release.
+2. **No OOM** — runs the supported size range on the card to completion and reports the largest
+   size that cleared. Orb family: a disjoint-union batch sweep
+   (`OrbCalculator.evaluate_batch` over `K=1..128` small systems in one device forward) — the
+   batch ceiling is the OOM frontier. UMA's OOM sweep is a documented `GAP` (per-composition
+   bundle path). Any hard size limit is documented in the release notes, not discovered by a
+   customer.
+3. **No perf regression** — warm steady-state throughput on a fixed small input vs a committed
+   per-card baseline (`docs/perf_baselines.json`), `FAIL` beyond a configurable noise margin
+   (default ±15%). Card-type-aware (a P300c baseline is never judged against a P150a run), fails
+   loudly on `NO BASELINE`, and updates only via `--update-baseline --note "<why>"`. Record the
+   numbers in the release notes.
+
+If any leg that ran `FAIL`s, it does not ship — fix it or hold the release. `GAP` legs are
+reported, not counted as failures (they flag a missing fixture/baseline to close, not a
+regression). See `scripts/release_gate.py --help` for per-leg selection (`--leg accuracy|oom|perf`),
+a fast smoke (`--quick`), and baseline seeding.
+
+The manual description below is kept only as context on the methodology — the script above is
+the actual instruction to follow going forward.
+
+### Manual methodology (context)
+
+1. Accuracy: full test suite green **and** numerical parity vs each model family's own reference
+   within tolerance (energy rel-error and force/stress PCC), across every supported task and
+   graph regime (molecular, bulk/periodic, slab), for every shipped model family — currently UMA
+   (vs fairchem `uma-s-1`) and Orb-v3 / OrbMol (vs the real `orb-models` CPU oracle). Run the
+   *combined* suite in one pass, not each family in isolation. No accuracy regression vs the
+   previous release.
+2. No OOM: run the full supported size range (small molecules → large systems) on the target
+   card(s), single- and multi-card, to completion. No out-of-memory.
+3. No perf regression: benchmark the release commit against the previous release; latency and
+   throughput must not regress beyond noise. Record the numbers in the release notes.
 
 ## Cut a release
 

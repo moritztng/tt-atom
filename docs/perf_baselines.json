@@ -1,0 +1,25 @@
+{
+  "cards": {
+    "p150a": {
+      "models": {
+        "orb-conservative-omol-batch": {
+          "unit": "sys/s",
+          "direction": "higher",
+          "value": 456.786172598385,
+          "latency_ms": 2.189208124036668,
+          "checkpoint": "orb-v3-conservative-omol",
+          "k": 8,
+          "warmup": 2,
+          "repeat": 5,
+          "natoms_per_system": 9,
+          "tt_atom_version": "0.2.0",
+          "date": "2026-07-19",
+          "note": "seed p150a baseline (orb-conservative-omol batch K=8, warm 2+5)"
+        }
+      },
+      "date": "2026-07-19",
+      "tt_atom_version": "0.2.0",
+      "note": "seed p150a baseline (orb-conservative-omol batch K=8, warm 2+5)"
+    }
+  }
+}
