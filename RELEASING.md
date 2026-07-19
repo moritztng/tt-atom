@@ -8,13 +8,13 @@ commit that has passed the full on-hardware gate below.
 
 GitHub CI only builds and imports the package (no card). Everything that matters is verified
 on-device, on the exact commit to be tagged, by **`scripts/release_gate.py`** — one command,
-three legs, machine-readable `PASS` / `FAIL` / `GAP` per leg. Run it on card 0 of the release host:
+four legs, machine-readable `PASS` / `FAIL` / `GAP` per leg. Run it on card 0 of the release host:
 
 ```bash
 TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py
 ```
 
-The three legs are the three things a tagged release must clear:
+The four legs are the four things a tagged release must clear:
 
 1. **ACCURACY / correctness** — numerical parity vs each shipped model family's own reference
    within tolerance (energy rel-error and force/stress PCC), across every supported task and
@@ -44,11 +44,25 @@ The three legs are the three things a tagged release must clear:
    (default ±15%). Card-type-aware (a P300c baseline is never judged against a P150a run), fails
    loudly on `NO BASELINE`, and updates only via `--update-baseline --note "<why>"`. Record the
    numbers in the release notes.
+4. **No UX regression** — the user-facing *plumbing* still works, headlessly and fast, on a tiny
+   input (`ase.build.molecule("H2O")`). Asserts three things, mirroring tt-bio's
+   `scripts/ux_regression.py` in methodology: (a) `tt-atom run --help` (and `relax`/`md`/top-level
+   `--help`) exit 0 and list the core flags (`--relax`, `--md`, `--steps`, `--temp`, `--trace`,
+   `--out`); (b) a real single-point + relax + MD(`--steps 5`) exit 0, write the `--out` geometry,
+   and it parses under `ase.io.read` with finite energy and forces (not NaN/empty); (c) the CLI's
+   per-step MD/relax progress stream (`step N  E=...  T=... K`; ASE `FIRE` `Step N` log) advances
+   through every real step, not stuck/skipped — the direct analogue of tt-bio's "0 → diffusion"
+   live-progress-bug class. Lives in `scripts/ux_regression.py` (sibling, also runnable standalone
+   with `--cli-only` in GitHub CI, no card). On hosts whose `ttnn` build lacks the ALWAYS-ON
+   `fused_rotate` kernel, the literal `tt-atom run`/`relax`/`md` CLI subcommands (UMA-only) are
+   blocked, so legs (b)-(c) drive the identical ASE `FIRE`/`Langevin` + `_log` print pattern via the
+   Orb `Calculator` API (stock `ttnn`, no `fused_rotate` dependency); leg (a) tests the literal CLI
+   regardless. See `scripts/ux_regression.py` for the per-leg assertions.
 
 If any leg that ran `FAIL`s, it does not ship — fix it or hold the release. `GAP` legs are
 reported, not counted as failures (they flag a missing fixture/baseline to close, not a
-regression). See `scripts/release_gate.py --help` for per-leg selection (`--leg accuracy|oom|perf`),
-a fast smoke (`--quick`), and baseline seeding.
+regression). See `scripts/release_gate.py --help` for per-leg selection (`--leg accuracy|oom|perf|ux`),
+a fast smoke (`--quick`), baseline seeding, and `--cli-only` (UX leg, no card).
 
 The manual description below is kept only as context on the methodology — the script above is
 the actual instruction to follow going forward.
