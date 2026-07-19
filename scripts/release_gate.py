@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""TT-Atom release gate — one command, three legs, machine-readable PASS/FAIL/GAP per leg.
+"""TT-Atom release gate — one command, four legs, machine-readable PASS/FAIL/GAP per leg.
 
 The runnable equivalent of ``RELEASING.md``'s manual checklist, and the live harness behind the
 parity table in ``docs/materials-benchmark.md`` (run ``--leg accuracy`` to reproduce those R/D/X
-numbers on your card). Three legs, matching the three things a tagged release must clear on real
+numbers on your card). Four legs, matching the four things a tagged release must clear on real
 hardware before it ships:
 
   1. ACCURACY — numerical parity vs each shipped model family's own reference, within tolerance
@@ -26,6 +26,12 @@ hardware before it ships:
      ``tt-bio``'s ``scripts/perf_regression.py``: card-type-aware (a P300c baseline is never
      judged against a P150a run), fails loudly on NO BASELINE, and updates only via
      ``--update-baseline --note "<why>"``. Seeds the baseline the first time a card type is run.
+  4. UX — the user-facing plumbing still works headlessly on a tiny input (H2O): CLI --help
+     behaves and lists the core flags, a real single-point + relax + MD(--steps 5) write an
+     --out geometry that parses under ase.io.read with finite energy/forces, and the CLI's
+     per-step MD/relax progress stream advances through every real step (the "0 -> diffusion"
+     bug-class analogue). Mirrors tt-bio's scripts/ux_regression.py in methodology; lives in
+     the sibling scripts/ux_regression.py (also runnable standalone, --cli-only needs no card).
 
 Honest reporting: every leg prints PASS / FAIL / GAP with the real numbers (or the real skip
 reason). Nothing fabricated. Exit 0 iff every leg that ran PASSES (GAP does not fail the gate —
@@ -40,6 +46,8 @@ Usage::
     python3 scripts/release_gate.py --leg accuracy
     python3 scripts/release_gate.py --leg oom
     python3 scripts/release_gate.py --leg perf
+    python3 scripts/release_gate.py --leg ux
+    python3 scripts/release_gate.py --leg ux --cli-only   # no card — GitHub CI
 
     # seed / refresh the perf baseline from the current warm run (explicit, needs a note)
     python3 scripts/release_gate.py --leg perf --update-baseline --note "seed p150a baseline"
@@ -480,13 +488,60 @@ def _print_perf(res):
     print(f"{'#' * 78}")
 
 
+# ── leg 4: UX regression (sibling script) ───────────────────────────────────
+# The user-experience leg: CLI --help behaves, a real tiny run's --out geometry parses
+# under ase.io.read with finite energy/forces, and the CLI's per-step MD/relax progress
+# stream advances through every real step (the "0 -> diffusion" bug-class analogue).
+# Mirrors tt-bio's scripts/ux_regression.py in methodology; lives in a sibling script so
+# it can also run standalone (`--cli-only` runs in GitHub CI with no card). See
+# scripts/ux_regression.py for the leg-by-leg assertions and the Orb-vs-UMA env note.
+
+UX_SCRIPT = REPO_ROOT / "scripts" / "ux_regression.py"
+
+
+def run_ux(quick, cli_only):
+    """Shell out to scripts/ux_regression.py and report its verdict. Returns a result dict.
+    `quick` is accepted for API symmetry but the UX gate is already tiny (H2O, 5 MD steps)."""
+    if not UX_SCRIPT.exists():
+        return dict(verdict="GAP", note=f"missing {UX_SCRIPT.relative_to(REPO_ROOT)}",
+                    rows=[])
+    cmd = [sys.executable, str(UX_SCRIPT)]
+    if cli_only:
+        cmd.append("--cli-only")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"]
+                                          if env.get("PYTHONPATH") else "")
+    env.setdefault("TT_VISIBLE_DEVICES", "0")
+    env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
+    print(f"\n[ux] {' '.join(cmd[1:])}", flush=True)
+    t0 = time.monotonic()
+    try:
+        proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env, timeout=600)
+    except subprocess.TimeoutExpired:
+        return dict(verdict="FAIL", note=f"ux_regression timed out after 600s",
+                    wall_s=time.monotonic() - t0)
+    wall = time.monotonic() - t0
+    verdict = "PASS" if proc.returncode == 0 else "FAIL"
+    note = "see scripts/ux_regression.py output above for per-leg detail"
+    return dict(verdict=verdict, note=note, wall_s=round(wall, 1))
+
+
+def _print_ux(res):
+    print(f"\n{'#' * 78}\nRELEASE GATE — leg 4: UX regression (CLI + output parse + live progress)\n{'#' * 78}")
+    print(f"verdict: {res['verdict']}  |  wall: {res.get('wall_s','-')}s")
+    print(f"note: {res['note']}")
+    print(f"{'#' * 78}")
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--leg", choices=["accuracy", "oom", "perf"], action="append",
-                    help="Run only this leg (repeatable). Default: all three.")
+    ap.add_argument("--leg", choices=["accuracy", "oom", "perf", "ux"], action="append",
+                    help="Run only this leg (repeatable). Default: all four. `ux` shells "
+                         "out to scripts/ux_regression.py (CLI --help + output parses + "
+                         "live progress advances on a tiny H2O, Orb path).")
     ap.add_argument("--quick", action="store_true",
                     help="Fast smoke: fewer accuracy modules, smaller OOM sweep, fewer perf iters.")
     ap.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
@@ -496,9 +551,12 @@ def main():
                          "instead of gating. Requires --note.")
     ap.add_argument("--note", default=None,
                     help="Required with --update-baseline: why this perf change is intended.")
+    ap.add_argument("--cli-only", action="store_true",
+                    help="UX leg only: run scripts/ux_regression.py --cli-only (no card). "
+                         "Convenience passthrough; ignored for other legs.")
     args = ap.parse_args()
 
-    legs = args.leg or ["accuracy", "oom", "perf"]
+    legs = args.leg or ["accuracy", "oom", "perf", "ux"]
     overall_pass = True
     ran_any = False
 
@@ -518,6 +576,13 @@ def main():
     if "perf" in legs:
         res = run_perf(args.quick, args.update_baseline, args.note, args.threshold)
         _print_perf(res)
+        if res["verdict"] == "FAIL":
+            overall_pass = False
+        ran_any = True
+
+    if "ux" in legs:
+        res = run_ux(args.quick, args.cli_only)
+        _print_ux(res)
         if res["verdict"] == "FAIL":
             overall_pass = False
         ran_any = True
