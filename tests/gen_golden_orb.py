@@ -92,7 +92,7 @@ def build_molecule_openshell():
 
 
 def build_si_supercell():
-    """A larger periodic cell (Si diamond, (3,2,2) => 32 atoms) at production scale, big enough
+    """A larger periodic cell (Si diamond, (3,2,2) => 24 atoms) at production scale, big enough
     that periodic self-images (an atom connecting to its own image in a neighboring cell) occur
     within Orb's 6.0 A cutoff -- unlike the tiny 4-atom golden used for the rest of the port,
     where the ported ``tt_atom/geometry.py`` periodic graph construction (``radius_graph``) has
@@ -103,8 +103,23 @@ def build_si_supercell():
     return atoms
 
 
+def build_mgo():
+    """A multi-element bulk system (MgO rock-salt, cubic conventional cell => 8 atoms: 4 Mg + 4 O),
+    rattled off-equilibrium. The first binary-chemistry golden in the suite: every existing bulk
+    row is pure Si (Z=14), so the per-element reference-energy denormalize
+    (``host_energy_denormalize`` sums ``ref_weight[Z]`` per atom), the mixed-Z ZBL pair repulsion,
+    and the encoder's per-element embedding table are otherwise only ever exercised at one atomic
+    number. MgO is a textbook ionic oxide, in-distribution for ``conservative-inf-omat`` (OMat24
+    covers bulk inorganic oxides), and reuses the same periodic path as the Si toy. Same scale as
+    the Si toy (8 vs 4 atoms) so runtime stays in seconds."""
+    atoms = bulk("MgO", "rocksalt", a=4.21, cubic=True)
+    atoms.rattle(stdev=0.05, seed=1)
+    return atoms
+
+
 SYSTEMS = {
     "bulk": build_si, "short_contact": build_short_contact, "supercell": build_si_supercell,
+    "mgo": build_mgo,
     "molecule": build_molecule, "molecule_charged": build_molecule_charged,
     "molecule_openshell": build_molecule_openshell,
 }
