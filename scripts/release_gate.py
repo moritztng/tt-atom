@@ -21,11 +21,17 @@ hardware before it ships:
      frontier. UMA OOM sweep is a documented GAP: UMA's batched forward goes through the same
      ALWAYS-ON ``fused_rotate`` kernel as its accuracy leg, absent from this host's ttnn build
      (memory pc-ttatom-env-missing-fused-rotate); the per-composition bundle is not the blocker.
-  3. PERF — warm steady-state throughput on a fixed small input vs a committed per-card baseline
-     (``docs/perf_baselines.json``), FAILs beyond a configurable noise margin. Mirrors
-     ``tt-bio``'s ``scripts/perf_regression.py``: card-type-aware (a P300c baseline is never
-     judged against a P150a run), fails loudly on NO BASELINE, and updates only via
-     ``--update-baseline --note "<why>"``. Seeds the baseline the first time a card type is run.
+  3. PERF — warm steady-state throughput on a fixed small input vs a committed per-card,
+     per-model baseline (``docs/perf_baselines.json``), FAILs beyond a configurable noise
+     margin. One entry per shipped family's throughput path (OrbMol ``conservative-omol``,
+     Orb-v3 bulk ``conservative-inf-omat``, UMA ``uma-s-1``), mirroring tt-bio's
+     ``scripts/perf_regression.py``: a ``--model`` flag iterates a SPECS-style dict, one
+     baseline entry per model per card. Card-type-aware (a P300c baseline is never judged
+     against a P150a run), fails loudly on NO BASELINE, and updates only via
+     ``--update-baseline --note "<why>"``. Seeds the baseline the first time a card type is
+     run for a model. UMA's batched forward needs the ALWAYS-ON ``fused_rotate`` kernel
+     absent from this host's ttnn build (memory pc-ttatom-env-missing-fused-rotate), so on
+     such a host the UMA row reports GAP (env), not FAIL — reported loudly, not skipped.
   4. UX — the user-facing plumbing still works headlessly on a tiny input (H2O): CLI --help
      behaves and lists the core flags, a real single-point + relax + MD(--steps 5) write an
      --out geometry that parses under ase.io.read with finite energy/forces, and the CLI's
@@ -46,11 +52,13 @@ Usage::
     python3 scripts/release_gate.py --leg accuracy
     python3 scripts/release_gate.py --leg oom
     python3 scripts/release_gate.py --leg perf
+    python3 scripts/release_gate.py --leg perf --model orb-conservative-inf-omat-batch
     python3 scripts/release_gate.py --leg ux
     python3 scripts/release_gate.py --leg ux --cli-only   # no card — GitHub CI
 
-    # seed / refresh the perf baseline from the current warm run (explicit, needs a note)
-    python3 scripts/release_gate.py --leg perf --update-baseline --note "seed p150a baseline"
+    # seed / refresh one model's perf baseline from the current warm run (explicit, needs a note)
+    python3 scripts/release_gate.py --leg perf --model orb-conservative-inf-omat-batch \
+        --update-baseline --note "seed p150a bulk baseline"
 
     # quick subset (fewer accuracy modules, smaller OOM sweep, fewer perf iters) for a fast smoke
     python3 scripts/release_gate.py --quick
@@ -127,9 +135,36 @@ OOM_KS_QUICK = [1, 2, 4, 8]
 # ── leg 3: perf regression ───────────────────────────────────────────────────
 # Warm steady-state throughput on a fixed small batch, vs docs/perf_baselines.json. Card-type
 # aware (per-card baseline key), fails loudly on NO BASELINE, updates only via --update-baseline.
-PERF_CHECKPOINT = "orb-v3-conservative-omol"
-PERF_MOL = "CH3CH2OH"
-PERF_K = 8
+#
+# Per-model SPECS dict (mirrors tt-bio's scripts/perf_regression.py): one entry per shipped
+# family's throughput path, keyed by the same baseline key used in docs/perf_baselines.json.
+# ``kind`` dispatches the calculator/protocol; ``fixture`` picks the small-system generator
+# (molecule conformers vs periodic Si bulk). The pre-existing ``orb-conservative-omol-batch``
+# entry is unchanged — same checkpoint, mol, K, warmup/repeat as before the generalization.
+#
+# UMA's batched forward goes through the same ALWAYS-ON ``fused_rotate`` kernel as its accuracy
+# leg, absent from this host's ttnn build (memory pc-ttatom-env-missing-fused-rotate), so on such
+# a host the UMA row measures as GAP (env), not FAIL — the gate reports it loudly rather than
+# silently skipping the family. Once the fused_rotate env is rebuilt on the release host, the
+# UMA row measures and gates against its seeded baseline like any other model.
+PERF_SPECS: dict[str, dict] = {
+    "orb-conservative-omol-batch": dict(
+        family="orbmol", checkpoint="orb-v3-conservative-omol",
+        kind="orb-batch", fixture="molecule", mol="CH3CH2OH", k=8,
+        unit="sys/s", direction="higher",
+        regime="molecule / charged / openshell (OrbMol batch)"),
+    "orb-conservative-inf-omat-batch": dict(
+        family="orb", checkpoint="orb-v3-conservative-inf-omat",
+        kind="orb-batch", fixture="bulk-si", mol="Si", k=8,
+        unit="sys/s", direction="higher",
+        regime="bulk / omat (Si toy, periodic)"),
+    "uma-s-1-omol-batch": dict(
+        family="uma", checkpoint="uma-s-1",
+        kind="uma-batch", fixture="molecule", mol="CH3CH2OH", k=8,
+        unit="sys/s", direction="higher",
+        regime="molecular / omol (UMA batch)"),
+}
+DEFAULT_PERF_MODELS = list(PERF_SPECS)
 PERF_WARMUP = 2
 PERF_REPEAT = 5
 PERF_WARMUP_QUICK = 1
@@ -364,38 +399,144 @@ def _print_oom(res):
 
 
 # ── leg 3 implementation ───────────────────────────────────────────────────
+# Per-model: spawn one measurement subprocess per model (one device context each), then the
+# parent compares each against the per-card baseline and prints a per-model table. Mirrors
+# tt-bio's scripts/perf_regression.py parent/child split so model weights are released cleanly
+# between models and we never take a cross-model device-reopen path in one process.
 
-def _measure_perf(checkpoint, mol, k, warmup, repeat):
-    """Warm steady-state throughput: K small systems per evaluate_batch call, median of `repeat`
-    timed calls after `warmup` warm calls. Returns systems/s and latency_ms."""
-    from ase.build import molecule
-    from tt_atom.orb_calculator import OrbCalculator
+def _perf_systems(spec, k):
+    """Build K small systems for the perf leg's disjoint-union batch, per spec."""
+    if spec["fixture"] == "molecule":
+        from ase.build import molecule
+        out = []
+        for i in range(k):
+            a = molecule(spec["mol"])
+            a.rattle(stdev=0.08, seed=10 + i)
+            a.info.update(charge=0, spin=1)
+            out.append(a)
+        return out
+    if spec["fixture"] == "bulk-si":
+        from ase.build import bulk
+        out = []
+        for i in range(k):
+            a = bulk("Si", "diamond", a=5.43) * (2, 1, 1)
+            a.rattle(stdev=0.08, seed=10 + i)
+            out.append(a)
+        return out
+    raise ValueError(f"unknown fixture {spec['fixture']!r}")
+
+
+def measure_perf(model, out_path, quick):
+    """In-process warm-throughput measurement for one perf model; writes a JSON result.
+
+    Runs in its own subprocess (see ``_run_measure_perf``) so each model gets a fresh device
+    context. Warm steady-state throughput: K small systems per ``evaluate_batch`` call, median
+    of ``repeat`` timed calls after ``warmup`` warm calls. The gated metric is systems/s
+    (higher is better). On a measurement failure the child writes a ``failed`` result so the
+    parent can render it as GAP (env) or FAIL honestly instead of a silent skip."""
+    spec = PERF_SPECS[model]
+    warmup = PERF_WARMUP_QUICK if quick else PERF_WARMUP
+    repeat = PERF_REPEAT_QUICK if quick else PERF_REPEAT
     dev_id = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0].strip() or "0")
-    calc = OrbCalculator.from_checkpoint(checkpoint, device_id=dev_id)
-    natoms = len(molecule(mol))
-    systems = []
-    for i in range(k):
-        a = molecule(mol)
-        a.rattle(stdev=0.08, seed=10 + i)
-        a.info.update(charge=0, spin=1)
-        systems.append(a)
+    try:
+        if spec["kind"] == "orb-batch":
+            from tt_atom.orb_calculator import OrbCalculator
+            calc = OrbCalculator.from_checkpoint(spec["checkpoint"], device_id=dev_id)
+        elif spec["kind"] == "uma-batch":
+            from tt_atom.calculator import TTAtomCalculator
+            seed = _perf_systems(spec, 1)[0]
+            calc = TTAtomCalculator.from_uma(model=spec["checkpoint"], task_name="omol",
+                                             atoms=seed, device_id=dev_id)
+        else:
+            raise ValueError(f"unknown kind {spec['kind']!r}")
+    except Exception as e:
+        _write_perf_error(out_path, model, spec, e)
+        return
+    try:
+        systems = _perf_systems(spec, spec["k"])
+        natoms = len(systems[0])
 
-    def one():
-        calc.evaluate_batch(systems)
+        def one():
+            calc.evaluate_batch(systems)
 
-    for _ in range(warmup):
-        one()
-    times = []
-    for _ in range(repeat):
-        t0 = time.perf_counter()
-        one()
-        times.append(time.perf_counter() - t0)
+        for _ in range(warmup):
+            one()
+        times = []
+        for _ in range(repeat):
+            t0 = time.perf_counter()
+            one()
+            times.append(time.perf_counter() - t0)
+    except Exception as e:
+        _write_perf_error(out_path, model, spec, e)
+        try:
+            calc.close()
+        except Exception:
+            pass
+        return
+    try:
+        calc.close()
+    except Exception:
+        pass
     times.sort()
     median = times[len(times) // 2]
-    calc.close()
-    return dict(throughput=k / median, latency_ms=median * 1000.0 / k, median_s=median,
-                natoms_per_system=natoms, k=k, warmup=warmup, repeat=repeat,
-                times_s=[round(t, 4) for t in times])
+    result = dict(
+        model=model, family=spec["family"], checkpoint=spec["checkpoint"],
+        regime=spec["regime"], unit=spec["unit"], direction=spec["direction"],
+        kind=spec["kind"], fixture=spec["fixture"], mol=spec["mol"],
+        throughput=spec["k"] / median, latency_ms=median * 1000.0 / spec["k"],
+        median_s=median, k=spec["k"], natoms_per_system=natoms,
+        warmup=warmup, repeat=repeat,
+        times_s=[round(t, 4) for t in times],
+        card_type=detect_card_type(), tt_atom_version=_version(),
+        date=date.today().isoformat(),
+        input=f"{spec['mol']} ({spec['fixture']}, {natoms} atoms/system, K={spec['k']})",
+        failed=False,
+    )
+    out_path.write_text(json.dumps(result))
+    print(f"[{model}] {result['throughput']:.4g} {spec['unit']}  "
+          f"({result['latency_ms']:.2f} ms/batch)", file=sys.stderr)
+
+
+def _write_perf_error(out_path, model, spec, e):
+    import traceback
+    traceback.print_exc()
+    msg = f"{type(e).__name__}: {str(e).splitlines()[0][:160]}"
+    env_gap = "fused_rotate" in str(e)
+    result = dict(
+        model=model, family=spec["family"], checkpoint=spec["checkpoint"],
+        regime=spec["regime"], unit=spec["unit"], direction=spec["direction"],
+        failed=True, error=msg, env_gap=env_gap,
+        card_type=detect_card_type(), tt_atom_version=_version(),
+        date=date.today().isoformat(),
+    )
+    out_path.write_text(json.dumps(result))
+    print(f"[{model}] MEASURE FAILED: {msg}", file=sys.stderr)
+
+
+def _run_measure_perf(model, quick):
+    """Spawn the per-model measurement in a fresh subprocess (one device context)."""
+    td = tempfile.mkdtemp(prefix="gate-perf-")
+    out = pathlib.Path(td) / "result.json"
+    cmd = [sys.executable, str(pathlib.Path(__file__).resolve()),
+           "--measure-perf", model, "--out", str(out)]
+    if quick:
+        cmd.append("--quick")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"]
+                                          if env.get("PYTHONPATH") else "")
+    env.setdefault("TT_VISIBLE_DEVICES", "0")
+    env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
+    proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env)
+    if not out.exists():
+        shutil.rmtree(td, ignore_errors=True)
+        return dict(model=model, failed=True,
+                    error=f"subprocess exited {proc.returncode} (no result json)")
+    try:
+        return json.loads(out.read_text())
+    except Exception as e:
+        return dict(model=model, failed=True, error=f"result parse failed: {e}")
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
 
 
 def _load_baselines():
@@ -417,77 +558,130 @@ def _card_baselines(data, card_type):
     return entry.get("models", {}) if entry else None
 
 
-def run_perf(quick, update_baseline, note, threshold):
-    warmup = PERF_WARMUP_QUICK if quick else PERF_WARMUP
-    repeat = PERF_REPEAT_QUICK if quick else PERF_REPEAT
-    print(f"\n[perf] warm throughput: checkpoint={PERF_CHECKPOINT} mol={PERF_MOL} "
-          f"K={PERF_K} warmup={warmup} repeat={repeat}", flush=True)
+def run_perf(quick, models, update_baseline, note, threshold):
     card = detect_card_type()
-    try:
-        m = _measure_perf(PERF_CHECKPOINT, PERF_MOL, PERF_K, warmup, repeat)
-    except Exception as e:
-        return dict(verdict="FAIL", card=card, throughput=None, baseline=None, delta=None,
-                    note=f"measurement failed: {e}")
-    baseline = _card_baselines(_load_baselines(), card)
-    key = "orb-conservative-omol-batch"
-    result = dict(card=card, throughput=m["throughput"], latency_ms=m["latency_ms"],
-                  median_s=m["median_s"], k=m["k"], warmup=m["warmup"], repeat=m["repeat"],
-                  natoms_per_system=m["natoms_per_system"], checkpoint=PERF_CHECKPOINT,
-                  unit="sys/s", direction="higher", tt_atom_version=_version(),
-                  date=date.today().isoformat(), times_s=m["times_s"])
+    print(f"\n[perf] warm throughput: models={','.join(models)} card={card} "
+          f"(warmup+repeat per model, K per spec)", flush=True)
+    rows = [_run_measure_perf(m, quick) for m in models]
     if update_baseline:
-        if not note:
-            sys.exit("--update-baseline requires --note \"<why this perf change is intended>\"")
-        data = _load_baselines()
-        cards = data.setdefault("cards", {})
-        entry = cards.setdefault(card, {})
-        models = entry.setdefault("models", {})
-        models[key] = dict(unit=result["unit"], direction=result["direction"],
-                           value=result["throughput"], latency_ms=result["latency_ms"],
-                           checkpoint=result["checkpoint"], k=result["k"],
-                           warmup=result["warmup"], repeat=result["repeat"],
-                           natoms_per_system=result["natoms_per_system"],
-                           tt_atom_version=result["tt_atom_version"], date=result["date"],
-                           note=note)
-        entry["date"] = result["date"]
-        entry["tt_atom_version"] = result["tt_atom_version"]
-        entry["note"] = note
-        data.pop("models", None)
-        _save_baselines(data)
-        result["verdict"] = "PASS (baseline updated)"
-        result["baseline"] = result["throughput"]
-        result["delta"] = "+0.0% (seeded)"
-        result["note"] = f"seeded {card} baseline for {key}"
-        return result
-    if baseline is None or key not in baseline:
-        result["verdict"] = "GAP"
-        result["baseline"] = None
-        result["delta"] = "n/a"
-        result["note"] = (f"NO BASELINE for card '{card}' / model '{key}' in "
-                          f"{BASELINE_FILE.relative_to(REPO_ROOT)}. Seed it with: "
-                          f"python3 scripts/release_gate.py --leg perf --update-baseline "
-                          f"--note \"seed {card} baseline\"")
-        return result
-    base = float(baseline[key]["value"])
-    pct = (m["throughput"] - base) / base * 100.0
-    result["baseline"] = base
-    result["delta"] = f"{'+' if pct >= 0 else ''}{pct:.1f}%"
-    result["verdict"] = "PASS" if pct >= -threshold else "FAIL"
-    result["note"] = f"vs baseline {base:.4g} {result['unit']} (threshold -{threshold:.0f}%)"
-    return result
+        return _update_perf_baselines(rows, card, note, threshold)
+    return _compare_perf(rows, card, threshold)
+
+
+def _compare_perf(rows, card, threshold):
+    bm = _card_baselines(_load_baselines(), card) or {}
+    overall_pass = True
+    for r in rows:
+        if r.get("failed"):
+            if r.get("env_gap"):
+                r["verdict"] = "GAP"
+                r["baseline"] = None
+                r["delta"] = "n/a"
+                r["note"] = (f"env gap: {r.get('error','')} — UMA's batched forward needs the "
+                             f"custom fused_rotate ttnn op, absent from this host's ttnn build "
+                             f"(memory pc-ttatom-env-missing-fused-rotate); not a perf regression")
+            else:
+                r["verdict"] = "FAIL"
+                r["baseline"] = None
+                r["delta"] = "n/a"
+                r["note"] = f"measurement failed: {r.get('error','')}"
+                overall_pass = False
+            continue
+        key = r["model"]
+        if key not in bm:
+            r["verdict"] = "GAP"
+            r["baseline"] = None
+            r["delta"] = "n/a"
+            r["note"] = (f"NO BASELINE for card '{card}' / model '{key}' in "
+                     f"{BASELINE_FILE.relative_to(REPO_ROOT)}. Seed it with: "
+                     f"python3 scripts/release_gate.py --leg perf --model {key} "
+                     f"--update-baseline --note \"seed {card} baseline\"")
+            continue
+        base = float(bm[key]["value"])
+        pct = (r["throughput"] - base) / base * 100.0
+        r["baseline"] = base
+        r["delta"] = f"{'+' if pct >= 0 else ''}{pct:.1f}%"
+        r["verdict"] = "PASS" if pct >= -threshold else "FAIL"
+        r["note"] = f"vs baseline {base:.4g} {r['unit']} (threshold -{threshold:.0f}%)"
+        if r["verdict"] == "FAIL":
+            overall_pass = False
+    return dict(verdict="PASS" if overall_pass else "FAIL", rows=rows, card=card)
+
+
+def _update_perf_baselines(rows, card, note, threshold):
+    if not note:
+        sys.exit("--update-baseline requires --note \"<why this perf change is intended>\"")
+    data = _load_baselines()
+    cards = data.setdefault("cards", {})
+    entry = cards.setdefault(card, {})
+    models = entry.setdefault("models", {})
+    any_ok = False
+    for r in rows:
+        if r.get("failed"):
+            tag = "env gap" if r.get("env_gap") else "FAILED"
+            print(f"[{r['model']}] {tag} — not updating its baseline "
+                  f"({r.get('error','')})", file=sys.stderr)
+            continue
+        any_ok = True
+        key = r["model"]
+        models[key] = dict(unit=r["unit"], direction=r["direction"],
+                           value=r["throughput"], latency_ms=r["latency_ms"],
+                           checkpoint=r["checkpoint"], k=r["k"],
+                           warmup=r["warmup"], repeat=r["repeat"],
+                           natoms_per_system=r["natoms_per_system"],
+                           family=r["family"], fixture=r["fixture"], mol=r["mol"],
+                           tt_atom_version=r["tt_atom_version"], date=r["date"], note=note)
+        entry.setdefault("date", r["date"])
+        entry.setdefault("tt_atom_version", r["tt_atom_version"])
+        entry.setdefault("note", note)
+    data.pop("models", None)
+    _save_baselines(data)
+    seeded = [r["model"] for r in rows if not r.get("failed")]
+    print(f"\nWrote {BASELINE_FILE.relative_to(REPO_ROOT)}  "
+          f"(card {card}: {len(models)} model(s); seeded: {', '.join(seeded) or 'none'})")
+    print("Review the diff, then commit it with the change that justifies the new numbers.")
+    rows_out = []
+    for r in rows:
+        if r.get("failed"):
+            rows_out.append({**r, "verdict": "GAP" if r.get("env_gap") else "FAIL",
+                             "baseline": None, "delta": "n/a",
+                             "note": f"not seeded: {r.get('error','')}"})
+        else:
+            rows_out.append({**r, "verdict": "PASS (baseline updated)",
+                             "baseline": r["throughput"], "delta": "+0.0% (seeded)",
+                             "note": f"seeded {card} baseline for {r['model']}"})
+    return dict(verdict="PASS" if any_ok else "FAIL", rows=rows_out, card=card)
 
 
 def _print_perf(res):
+    rows = res["rows"]
     print(f"\n{'#' * 78}\nRELEASE GATE — leg 3: PERF regression (card {res['card']}, "
-          f"orb-conservative-omol batch K={res.get('k','?')})\n{'#' * 78}")
-    print(f"{'metric':<14}{'baseline':>12}{'current':>12}{'delta':>10}{'verdict':>9}")
-    print("-" * 57)
-    base = f"{res['baseline']:.4g}" if res.get("baseline") is not None else "(none)"
-    cur = f"{res['throughput']:.4g}" if res.get("throughput") is not None else "FAILED"
-    print(f"{'sys/s':<14}{base:>12}{cur:>12}{res.get('delta','n/a'):>10}{res['verdict']:>9}")
-    print("-" * 57)
-    print(f"note: {res.get('note','')}")
-    print(f"{'#' * 78}")
+          f"{len(rows)} model(s))\n{'#' * 78}")
+    print(f"{'model':<34}{'baseline':>12}{'current':>12}{'delta':>10}{'verdict':>10}")
+    print("-" * 78)
+    for r in rows:
+        key = r["model"]
+        if r.get("failed") or r.get("throughput") is None:
+            cur = "FAILED" if not r.get("env_gap") and r.get("verdict") == "FAIL" else "n/a"
+        else:
+            cur = f"{r['throughput']:.4g}"
+        base = f"{r['baseline']:.4g}" if r.get("baseline") is not None else "(none)"
+        delta = r.get("delta", "n/a")
+        verdict = r.get("verdict", "?")
+        print(f"{key:<34}{base:>12}{cur:>12}{delta:>10}{verdict:>10}")
+        if r.get("note"):
+            print(f"    -> {r['note']}")
+    print("-" * 78)
+    fails = [r for r in rows if r.get("verdict") == "FAIL"]
+    gaps = [r for r in rows if r.get("verdict") == "GAP"]
+    if fails:
+        msg = f"GATE FAIL — {len(fails)} model(s) regressed beyond the threshold (see above)"
+    elif gaps:
+        msg = (f"GATE PASS with GAP — {len(gaps)} model(s) skipped (missing baseline or env); "
+               f"the rest passed. Seed the missing baselines / close the env gap to clear it.")
+    else:
+        msg = "GATE PASS — every perf model is within threshold of its baseline"
+    print(f"{'#' * 78}\n{msg}")
 
 
 # ── leg 4: UX regression (sibling script) ───────────────────────────────────
@@ -548,15 +742,30 @@ def main():
                     help="Fast smoke: fewer accuracy modules, smaller OOM sweep, fewer perf iters.")
     ap.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
                     help=f"Perf regression %% allowed before FAIL (default {DEFAULT_THRESHOLD:g}).")
+    ap.add_argument("--model", action="append", choices=list(PERF_SPECS),
+                    help="Perf leg only: gate this model (repeatable). Default: every shipped "
+                         "perf model. Choose from: " + ", ".join(PERF_SPECS) + ".")
     ap.add_argument("--update-baseline", action="store_true",
                     help="Perf leg only: seed docs/perf_baselines.json from this warm run "
-                         "instead of gating. Requires --note.")
+                         "instead of gating. Writes only the model(s) selected via --model (or "
+                         "all, if none selected) that measured successfully. Requires --note.")
     ap.add_argument("--note", default=None,
                     help="Required with --update-baseline: why this perf change is intended.")
     ap.add_argument("--cli-only", action="store_true",
                     help="UX leg only: run scripts/ux_regression.py --cli-only (no card). "
                          "Convenience passthrough; ignored for other legs.")
+    # internal: the per-model in-process perf measurement subprocess
+    ap.add_argument("--measure-perf", metavar="MODEL", help=argparse.SUPPRESS)
+    ap.add_argument("--out", type=pathlib.Path, default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
+
+    if args.measure_perf is not None:
+        if args.measure_perf not in PERF_SPECS:
+            sys.exit(f"unknown perf model {args.measure_perf!r}")
+        if args.out is None:
+            sys.exit("--out is required with --measure-perf")
+        measure_perf(args.measure_perf, args.out, args.quick)
+        return 0
 
     legs = args.leg or ["accuracy", "oom", "perf", "ux"]
     overall_pass = True
@@ -576,7 +785,8 @@ def main():
         ran_any = True
 
     if "perf" in legs:
-        res = run_perf(args.quick, args.update_baseline, args.note, args.threshold)
+        models = args.model or DEFAULT_PERF_MODELS
+        res = run_perf(args.quick, models, args.update_baseline, args.note, args.threshold)
         _print_perf(res)
         if res["verdict"] == "FAIL":
             overall_pass = False

@@ -40,10 +40,16 @@ The four legs are the four things a tagged release must clear:
    it is reported, not forced to a number. Any hard size limit is documented in the release
    notes, not discovered by a customer.
 3. **No perf regression** — warm steady-state throughput on a fixed small input vs a committed
-   per-card baseline (`docs/perf_baselines.json`), `FAIL` beyond a configurable noise margin
-   (default ±15%). Card-type-aware (a P300c baseline is never judged against a P150a run), fails
-   loudly on `NO BASELINE`, and updates only via `--update-baseline --note "<why>"`. Record the
-   numbers in the release notes.
+   per-card, per-model baseline (`docs/perf_baselines.json`), `FAIL` beyond a configurable noise
+   margin (default ±15%). One entry per shipped family's throughput path: OrbMol
+   `conservative-omol` (molecule batch), Orb-v3 bulk `conservative-inf-omat` (periodic Si batch),
+   and UMA `uma-s-1` (molecule batch) — run a subset with `--model <key>` (repeatable). Card-type
+   aware (a P300c baseline is never judged against a P150a run), fails loudly on `NO BASELINE`,
+   and updates only via `--update-baseline --note "<why>"` (writes only the selected model(s)).
+   UMA's batched forward needs the ALWAYS-ON `fused_rotate` kernel, absent from this host's
+   `ttnn` build (memory `pc-ttatom-env-missing-fused-rotate`), so on such a host the UMA row
+   reports `GAP` (env), not `FAIL` — reported loudly, not skipped. Record the numbers in the
+   release notes.
 4. **No UX regression** — the user-facing *plumbing* still works, headlessly and fast, on a tiny
    input (`ase.build.molecule("H2O")`). Asserts three things, mirroring tt-bio's
    `scripts/ux_regression.py` in methodology: (a) `tt-atom run --help` (and `relax`/`md`/top-level
@@ -62,7 +68,8 @@ The four legs are the four things a tagged release must clear:
 If any leg that ran `FAIL`s, it does not ship — fix it or hold the release. `GAP` legs are
 reported, not counted as failures (they flag a missing fixture/baseline to close, not a
 regression). See `scripts/release_gate.py --help` for per-leg selection (`--leg accuracy|oom|perf|ux`),
-a fast smoke (`--quick`), baseline seeding, and `--cli-only` (UX leg, no card).
+a fast smoke (`--quick`), per-model perf selection (`--model <key>`), baseline seeding, and
+`--cli-only` (UX leg, no card).
 
 The manual description below is kept only as context on the methodology — the script above is
 the actual instruction to follow going forward.
