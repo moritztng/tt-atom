@@ -4,6 +4,29 @@ All notable changes to TT-Atom are recorded here. Versioning is [SemVer](https:/
 releases are cut only from a commit that has passed the on-hardware release gate — accuracy
 parity, no OOM across the supported size range, and no perf regression (see `RELEASING.md`).
 
+## [Unreleased]
+
+### Fixed
+- `tt_atom.batch.MultiCard` now builds the Orb-v3/OrbMol backbone when given Orb weights. The
+  worker previously hardcoded the UMA path (`WeightBundle` + eSCN-MD `Backbone`), so pointing it
+  at an Orb weights file built the wrong model silently. It now dispatches on the loaded bundle's
+  `config` (the same UMA/Orb family split `tt_atom.auto` exposes by name) and runs the
+  `Encoder`/`AttentionInteractionLayer`/`EnergyHead` forward for Orb. Verified bit-exact vs the
+  single-card `OrbCalculator` on `orb-v3-conservative-inf-omat` (energy diff 0 eV on H2O /
+  ethanol / benzene). `tests/test_multicard_orb.py` mirrors the UMA `test_multicard.py` sharded-vs-
+  sequential parity shape (auto-skips below 2 cards).
+
+### Notes
+- The v0.2.0 scope note below flagged Orb multi-card as "not independently re-run — same
+  scheduler as UMA". That understated the gap: at v0.2.0 the worker was UMA-only, so Orb
+  multi-card did not work at all (not merely unmeasured). Fixed here.
+- No real-weights multi-card *scaling* number is re-reported this pass: pc has a single
+  Tenstorrent card, so N>1 scaling cannot be measured on it. The one honest datapoint measured
+  here is the per-card baseline: Orb (`conservative-inf-omat`, real weights) on one card at
+  ~128-atom Si supercells — 0.37 Medges/s. The earlier 2.95x@4cards figure (commit 43e981b) used
+  the synthetic `examples/model_tiny_demo.npz` UMA bundle, not real weights and not Orb, so it is
+  not a real-weights scaling number for either family.
+
 ## [0.2.0] - 2026-07-11
 
 A second model family, additive to v0.1.0: **Orb-v3** (Orbital Materials) and **OrbMol**, its
@@ -62,9 +85,9 @@ tracing removes proportionally *more* fixed dispatch overhead here, not less.
   tiny force-magnitude noise floor, not a correctness issue).
 - No accuracy regression vs v0.1.0's UMA numbers (code untouched; full suite re-run green on this
   commit).
-- Multi-card OOM/perf for Orb-v3/OrbMol not independently re-run this release (single card
-  available for this gate) — `test_multicard.py`'s existing 2+ card requirement documents the gap;
-  no reason to expect it differs from UMA's already-proven multi-card fan-out (same scheduler).
+- Multi-card fan-out for Orb-v3/OrbMol did **not** work at v0.2.0: `tt_atom.batch`'s worker was
+  hardcoded to the UMA backbone (see the [Unreleased] fix above). The v0.2.0 gate ran on a single
+  card, so the gap was not caught by `test_multicard.py`'s 2+ card requirement.
 
 ## [0.1.0] - 2026-07-08
 
