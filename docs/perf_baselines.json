@@ -15,6 +15,23 @@
           "tt_atom_version": "0.2.0",
           "date": "2026-07-19",
           "note": "seed p150a baseline (orb-conservative-omol batch K=8, warm 2+5)"
+        },
+        "orb-conservative-inf-omat-batch": {
+          "unit": "sys/s",
+          "direction": "higher",
+          "value": 416.0397685707889,
+          "latency_ms": 2.4036163740674965,
+          "checkpoint": "orb-v3-conservative-inf-omat",
+          "k": 8,
+          "warmup": 2,
+          "repeat": 5,
+          "natoms_per_system": 4,
+          "family": "orb",
+          "fixture": "bulk-si",
+          "mol": "Si",
+          "tt_atom_version": "0.2.0",
+          "date": "2026-07-19",
+          "note": "seed p150a baseline for Orb-v3 bulk (conservative-inf-omat, Si toy periodic, batch K=8, warm 2+5)"
         }
       },
       "date": "2026-07-19",
