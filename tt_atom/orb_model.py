@@ -530,7 +530,12 @@ def host_zbl_forces(atomic_numbers: torch.Tensor, senders: torch.Tensor, receive
     "straightforward" alternative flagged in ``docs/orb-port.md`` (vs. hand-deriving the closed-
     form ``pair_repulsion.ZBLBasis._polynomial_cutoff_with_derivative``). Needed for
     ``orb-v3-direct-20-omat``'s *total* force whenever ZBL is non-negligible (short contacts,
-    surface defects) -- its ``ForceHead`` MLP prediction has no ZBL contribution baked in."""
+    surface defects) -- its ``ForceHead`` MLP prediction has no ZBL contribution baked in.
+
+    For a **periodic** system, pass ``cell_shift`` (the per-edge periodic image offset) --
+    without it, edge vectors that cross a cell boundary are wrong and the ``1/x`` Coulomb
+    term in ``host_zbl_energy`` can blow up on a near-zero distance, silently returning NaN
+    forces with no error."""
     pos = pos.detach().clone().double().requires_grad_(True)
     vectors = pos[receivers] - pos[senders]
     if cell_shift is not None:
