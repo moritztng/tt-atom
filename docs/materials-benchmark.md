@@ -44,9 +44,9 @@ single Blackhole p150a card (card 0) on 2026-07-19 with
 `TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py --leg
 accuracy`. Every currently-shipped family is covered: UMA `uma-s-1`
 (molecular / `omol`), Orb-v3 `conservative-inf-omat` and `direct-20-omat`
-(bulk / `omat`, analytic forces, periodic supercell, stress, ZBL
-short-contact), and OrbMol `conservative-omol` (molecule / charged /
-open-shell).
+(bulk / `omat`, analytic forces, periodic supercell, multi-element oxide,
+stress, ZBL short-contact), and OrbMol `conservative-omol` (molecule /
+charged / open-shell).
 
 | family | checkpoint | regime | metric | R | D | X | result |
 |---|---|---|---:|---:|---:|---:|---|
@@ -55,6 +55,7 @@ open-shell).
 | orb | conservative-inf-omat | analytic forces (`F = -dE/dpos`) | force PCC | 1.00000 | 1.00000 | 0.99999 | PASS |
 | orb | direct-20-omat | bulk / omat (direct) | energy rel err, force PCC | 0 / 1.00000 | 0 / 1.00000 | 5.8e-4 / 0.99997 | PASS |
 | orb | conservative-inf-omat | periodic supercell (24-atom Si) | backbone node PCC | 1.00000 | 1.00000 | 0.99956 | PASS¶ |
+| orb | conservative-inf-omat | bulk / omat (MgO oxide, multi-element) | energy rel err, force PCC | 0 / 1.00000 | 0 / 1.00000 | 1.6e-3 / 0.99998 | PASS§ |
 | orb | conservative-inf-omat | stress (conservative) | stress PCC (Voigt-6) | 1.00000 | 1.00000 | 0.99995 | PASS |
 | orb | direct-20-omat | stress (dedicated head) | stress PCC (Voigt-6) | 1.00000 | 1.00000 | 0.99997 | PASS |
 | orb | direct-20-omat | ZBL short-contact forces | force PCC (GNN + ZBL) | 1.00000 | 1.00000 | 1.00000 | PASS‖ |
@@ -118,6 +119,17 @@ forces match a finite-difference check to 3.7e-10, and the total
 51.3 eV/A) — i.e. the ZBL correction is exact on the host and the device
 GNN force matches the oracle at short contact, not just at equilibrium.
 
+§ The MgO row is the first multi-element bulk system in the suite — every
+other bulk row is pure Si (Z=14). It exercises three code paths a single-Z
+golden cannot reach: the per-element reference-energy denormalize
+(`host_energy_denormalize` sums `ref_weight[Z]` per atom, only ever hit at
+one Z elsewhere), the mixed-Z ZBL pair-repulsion (Mg-Mg, Mg-O, O-O, each
+with its own covalent-radii-sum envelope), and the encoder's per-element
+embedding table at two atomic numbers simultaneously. Same
+`conservative-inf-omat` checkpoint and analytic-force VJP as the Si toy;
+MgO rock-salt is a textbook ionic oxide, in-distribution for OMat24, and
+the row runs in ~1.5 s alongside the existing rows.
+
 ‡ The OrbMol open-shell radical (`CH3·`, spin=2) is the noise-floor case.
 Its `conservative` force PCC is 0.97850, below the 0.99 bar but above the
 0.97 floor the test module holds for this system; its energy rel err
@@ -151,6 +163,7 @@ TT_VISIBLE_DEVICES=0 PYTHONPATH=. \
   python3 -m pytest tests/test_orb_realweight.py tests/test_orb_forces_realweight.py \
     tests/test_orb_direct_realweight.py tests/test_orb_periodic_realweight.py \
     tests/test_orb_stress_realweight.py tests/test_orb_zbl_forces.py \
+    tests/test_orb_mgo_realweight.py \
     tests/test_orb_omol_realweight.py tests/test_realweight.py -s -q
 ```
 

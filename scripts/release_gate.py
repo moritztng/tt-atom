@@ -90,6 +90,8 @@ ACCURACY_SPECS = [
          module="tests/test_orb_direct_realweight.py", golden="si_omat_orb_direct20.npz"),
     dict(family="orb", checkpoint="conservative-inf-omat", regime="periodic supercell",
          module="tests/test_orb_periodic_realweight.py", golden="si_supercell_orb.npz"),
+    dict(family="orb", checkpoint="conservative-inf-omat", regime="bulk / omat (MgO oxide)",
+         module="tests/test_orb_mgo_realweight.py", golden="mgo_omat_orb.npz"),
     dict(family="orb", checkpoint="conservative-inf-omat", regime="stress (conservative)",
          module="tests/test_orb_stress_realweight.py", golden="si_omat_orb.npz"),
     dict(family="orb", checkpoint="direct-20-omat", regime="ZBL short-contact forces",
