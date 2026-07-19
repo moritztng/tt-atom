@@ -30,9 +30,15 @@ The three legs are the three things a tagged release must clear:
 2. **No OOM** — runs the supported size range on the card to completion and reports the largest
    size that cleared. Orb family: a disjoint-union batch sweep
    (`OrbCalculator.evaluate_batch` over `K=1..128` small systems in one device forward) — the
-   batch ceiling is the OOM frontier. UMA's OOM sweep is a documented `GAP` (per-composition
-   bundle path). Any hard size limit is documented in the release notes, not discovered by a
-   customer.
+   batch ceiling is the OOM frontier. UMA's OOM sweep is a documented `GAP`: UMA's batched
+   forward (`TTAtomCalculator.evaluate_batch` → `energy_and_forces_batch` → `edgewise` →
+   `rotation.rotate`) goes through the same ALWAYS-ON `fused_rotate` kernel as its accuracy
+   leg's end-to-end test, which is absent from this host's `ttnn` build (memory
+   `pc-ttatom-env-missing-fused-rotate`); the per-composition bundle itself is not the blocker
+   (the bundle cache works and `evaluate_batch` enforces same-composition batching). The gap
+   closes automatically once the `fused_rotate` env is rebuilt on the release host; until then
+   it is reported, not forced to a number. Any hard size limit is documented in the release
+   notes, not discovered by a customer.
 3. **No perf regression** — warm steady-state throughput on a fixed small input vs a committed
    per-card baseline (`docs/perf_baselines.json`), `FAIL` beyond a configurable noise margin
    (default ±15%). Card-type-aware (a P300c baseline is never judged against a P150a run), fails

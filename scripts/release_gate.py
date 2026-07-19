@@ -18,7 +18,9 @@ hardware before it ships:
      size that cleared. Orb family: a disjoint-union batch sweep (``OrbCalculator.evaluate_batch``
      over K=1..K_max small systems in one device forward), reusing
      ``benchmarks/bench_orb_evaluate_batch.py``'s exact protocol — the batch ceiling is the OOM
-     frontier. UMA OOM sweep is a documented GAP (per-composition bundle path; see RELEASING.md).
+     frontier. UMA OOM sweep is a documented GAP: UMA's batched forward goes through the same
+     ALWAYS-ON ``fused_rotate`` kernel as its accuracy leg, absent from this host's ttnn build
+     (memory pc-ttatom-env-missing-fused-rotate); the per-composition bundle is not the blocker.
   3. PERF — warm steady-state throughput on a fixed small input vs a committed per-card baseline
      (``docs/perf_baselines.json``), FAILs beyond a configurable noise margin. Mirrors
      ``tt-bio``'s ``scripts/perf_regression.py``: card-type-aware (a P300c baseline is never
@@ -99,9 +101,14 @@ QUICK_ACCURACY = [
 # ── leg 2: no-OOM sweep ─────────────────────────────────────────────────────
 # Orb family disjoint-union batch sweep: K small systems in one device forward. The largest K
 # that clears is the batch ceiling (the OOM frontier). Same protocol as
-# benchmarks/bench_orb_evaluate_batch.py. UMA's OOM sweep is a GAP — its bundle is per
-# (composition, charge, spin, task), so a single-card sweep needs a cached bundle for one
-# composition; documented, not silently skipped.
+# benchmarks/bench_orb_evaluate_batch.py. UMA's OOM sweep is a GAP: UMA's batched forward
+# (TTAtomCalculator.evaluate_batch -> energy_and_forces_batch -> edgewise -> rotation.rotate)
+# goes through the same ALWAYS-ON fused_rotate kernel as its accuracy leg's end-to-end test,
+# which is absent from this host's ttnn build (see memory pc-ttatom-env-missing-fused-rotate /
+# ttatom-uma-fused-rotate-env-downgrade-reverted). The per-composition bundle itself is not the
+# blocker — the bundle cache works and evaluate_batch enforces same-composition batching; the
+# blocker is the env. Reported as GAP, not forced to a number; closes automatically once the
+# fused_rotate env is rebuilt on the release host.
 OOM_CHECKPOINT = "orb-v3-conservative-omol"
 OOM_MOL = "CH3CH2OH"
 OOM_KS_DEFAULT = [1, 2, 4, 8, 16, 32, 64, 128]
@@ -328,7 +335,9 @@ def run_oom(quick):
         pass
     verdict = "PASS" if ceiling == ks[-1] else ("FAIL" if failed_at is not None else "GAP")
     note = (f"batch ceiling = {ceiling} systems ({None if ceiling is None else natoms*ceiling} atoms) "
-            f"in one device forward; UMA OOM sweep is a GAP (per-composition bundle path)")
+            f"in one device forward; UMA OOM sweep is a GAP — UMA's batched forward goes through the "
+            f"same ALWAYS-ON fused_rotate kernel as its accuracy leg, absent from this host's ttnn "
+            f"build (memory pc-ttatom-env-missing-fused-rotate), not a per-composition-bundle issue")
     return dict(verdict=verdict, ceiling=ceiling, failed_at=failed_at, note=note, rows=rows)
 
 
