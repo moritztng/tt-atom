@@ -14,6 +14,8 @@ four legs, machine-readable `PASS` / `FAIL` / `GAP` per leg. Run it on card 0 of
 TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py
 ```
 
+Each on-device leg runs in a fresh process so device state cannot leak into the next check.
+
 The four legs are the four things a tagged release must clear:
 
 1. **ACCURACY / correctness** — numerical parity vs each shipped model family's own reference

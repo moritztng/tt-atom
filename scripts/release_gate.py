@@ -175,6 +175,7 @@ DEFAULT_THRESHOLD = 15.0  # % regression allowed before FAIL
 # guards against a wedged device hanging the whole gate forever (memory
 # tt-atom-release-gate-perf-leg-wedge — recurred 3x on the same model before this fix).
 PERF_MEASURE_TIMEOUT_S = 240
+OOM_MEASURE_TIMEOUT_S = 600
 
 # ── card-type detection (mirrors tt-bio's perf_regression.py) ────────────────
 _P300_SUBSYSTEMS = {"0x0044", "0x0045", "0x0046"}
@@ -348,6 +349,11 @@ def _print_accuracy(rows, all_pass):
 
 # ── leg 2 implementation ─────────────────────────────────────────────────────
 
+def measure_oom(out_path, quick):
+    """Run the OOM sweep in a child and persist its result before process teardown."""
+    out_path.write_text(json.dumps(run_oom(quick)))
+
+
 def run_oom(quick):
     """Orb disjoint-union batch sweep — find the largest K (small systems in one device forward)
     that clears without OOM. Returns a result dict. UMA OOM sweep is a documented GAP."""
@@ -404,6 +410,54 @@ def run_oom(quick):
             f"same ALWAYS-ON fused_rotate kernel as its accuracy leg, absent from this host's ttnn "
             f"build (memory pc-ttatom-env-missing-fused-rotate), not a per-composition-bundle issue")
     return dict(verdict=verdict, ceiling=ceiling, failed_at=failed_at, note=note, rows=rows)
+
+
+def _run_oom(quick):
+    """Spawn leg 2 in a fresh process so its MetalContext dies before leg 3 starts.
+
+    ``ttnn.close_device`` closes the logical device but the process-global MetalContext and
+    its UMD mappings live until process exit. Keeping leg 2 in the gate parent therefore
+    prevents leg 3's children from opening the card; resetting one of those timed-out children
+    also invalidates the parent's mappings and makes its final MetalContext teardown SIGBUS.
+    """
+    td = tempfile.mkdtemp(prefix="gate-oom-")
+    out = pathlib.Path(td) / "result.json"
+    cmd = [sys.executable, str(pathlib.Path(__file__).resolve()),
+           "--measure-oom", "--out", str(out)]
+    if quick:
+        cmd.append("--quick")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"]
+                                          if env.get("PYTHONPATH") else "")
+    env.setdefault("TT_VISIBLE_DEVICES", "0")
+    env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
+    proc = subprocess.Popen(cmd, cwd=REPO_ROOT, env=env, start_new_session=True)
+    try:
+        returncode = proc.wait(timeout=OOM_MEASURE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        print(f"[oom] TIMED OUT after {OOM_MEASURE_TIMEOUT_S}s (device hang) — "
+              f"stopping child and resetting the card", file=sys.stderr)
+        reset_error = _stop_child_and_reset(proc)
+        shutil.rmtree(td, ignore_errors=True)
+        note = f"OOM sweep timed out after {OOM_MEASURE_TIMEOUT_S}s (device hang)"
+        if reset_error:
+            note += f"; card reset failed: {reset_error}"
+        return dict(verdict="FAIL", ceiling=None, failed_at=None, note=note, rows=[])
+    if returncode != 0:
+        shutil.rmtree(td, ignore_errors=True)
+        return dict(verdict="FAIL", ceiling=None, failed_at=None,
+                    note=f"OOM subprocess exited {returncode} during device teardown", rows=[])
+    if not out.exists():
+        shutil.rmtree(td, ignore_errors=True)
+        return dict(verdict="FAIL", ceiling=None, failed_at=None,
+                    note=f"OOM subprocess exited {returncode} (no result json)", rows=[])
+    try:
+        return json.loads(out.read_text())
+    except Exception as e:
+        return dict(verdict="FAIL", ceiling=None, failed_at=None,
+                    note=f"OOM result parse failed: {e}", rows=[])
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
 
 
 def _print_oom(res):
@@ -533,6 +587,36 @@ def _write_perf_error(out_path, model, spec, e):
     print(f"[{model}] MEASURE FAILED: {msg}", file=sys.stderr)
 
 
+def _stop_child_and_reset(proc):
+    """Stop a timed-out device child, then reset only after no process holds the card."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+
+    tt_smi = _resolve_tt_smi()
+    if tt_smi is None:
+        return "tt-smi not found"
+    visible = (os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0].strip() or "0")
+    try:
+        reset = subprocess.run([tt_smi, "-r", visible], timeout=120,
+                               capture_output=True, text=True, check=False)
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+    if reset.returncode != 0:
+        detail = (reset.stderr or reset.stdout or "").strip().splitlines()
+        return detail[-1] if detail else f"tt-smi exited {reset.returncode}"
+    return None
+
+
 def _run_measure_perf(model, quick):
     """Spawn the per-model measurement in a fresh subprocess (one device context)."""
     td = tempfile.mkdtemp(prefix="gate-perf-")
@@ -551,18 +635,17 @@ def _run_measure_perf(model, quick):
         returncode = proc.wait(timeout=PERF_MEASURE_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         print(f"[{model}] MEASURE TIMED OUT after {PERF_MEASURE_TIMEOUT_S}s "
-              f"(device hang) — killing process group and resetting the card", file=sys.stderr)
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.wait()
-        tt_smi = shutil.which("tt-smi") or str(pathlib.Path.home() / ".local/bin/tt-smi")
-        subprocess.run([tt_smi, "-r"], timeout=60, capture_output=True)
+              f"(device hang) — stopping child and resetting the card", file=sys.stderr)
+        reset_error = _stop_child_and_reset(proc)
+        shutil.rmtree(td, ignore_errors=True)
+        error = f"measurement timed out after {PERF_MEASURE_TIMEOUT_S}s (device hang"
+        error += ", card was reset)" if not reset_error else f"; card reset failed: {reset_error})"
+        return dict(model=model, failed=True,
+                    error=error)
+    if returncode != 0:
         shutil.rmtree(td, ignore_errors=True)
         return dict(model=model, failed=True,
-                    error=f"measurement timed out after {PERF_MEASURE_TIMEOUT_S}s (device hang, "
-                          f"card was reset)")
+                    error=f"subprocess exited {returncode} during device teardown")
     if not out.exists():
         shutil.rmtree(td, ignore_errors=True)
         return dict(model=model, failed=True,
@@ -790,10 +873,18 @@ def main():
     ap.add_argument("--cli-only", action="store_true",
                     help="UX leg only: run scripts/ux_regression.py --cli-only (no card). "
                          "Convenience passthrough; ignored for other legs.")
+    # internal: the in-process OOM sweep subprocess
+    ap.add_argument("--measure-oom", action="store_true", help=argparse.SUPPRESS)
     # internal: the per-model in-process perf measurement subprocess
     ap.add_argument("--measure-perf", metavar="MODEL", help=argparse.SUPPRESS)
     ap.add_argument("--out", type=pathlib.Path, default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
+
+    if args.measure_oom:
+        if args.out is None:
+            sys.exit("--out is required with --measure-oom")
+        measure_oom(args.out, args.quick)
+        return 0
 
     if args.measure_perf is not None:
         if args.measure_perf not in PERF_SPECS:
@@ -814,7 +905,7 @@ def main():
         ran_any = True
 
     if "oom" in legs:
-        res = run_oom(args.quick)
+        res = _run_oom(args.quick)
         _print_oom(res)
         if res["verdict"] == "FAIL":
             overall_pass = False
