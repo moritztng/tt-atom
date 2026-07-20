@@ -122,7 +122,9 @@ the actual instruction to follow going forward.
    git push origin master --tags
    ```
 4. CI (`.github/workflows/release.yaml`) builds the sdist + wheel, checks the tag matches the
-   `pyproject` version, and publishes a **GitHub Release** with the changelog notes + wheel.
+   `pyproject` version, and publishes a **GitHub Release** with the changelog notes + wheel. The
+   release job is idempotent — re-pushing a tag (e.g. after a history rewrite) refreshes the
+   existing release's assets instead of failing on "release already exists".
 
 ## Distribution: GitHub Releases only (NOT PyPI)
 
