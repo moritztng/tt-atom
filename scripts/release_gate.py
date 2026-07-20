@@ -70,6 +70,7 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -170,6 +171,10 @@ PERF_REPEAT = 5
 PERF_WARMUP_QUICK = 1
 PERF_REPEAT_QUICK = 3
 DEFAULT_THRESHOLD = 15.0  # % regression allowed before FAIL
+# A normal measurement (warmup+repeat evaluate_batch calls) finishes in seconds; this only
+# guards against a wedged device hanging the whole gate forever (memory
+# tt-atom-release-gate-perf-leg-wedge — recurred 3x on the same model before this fix).
+PERF_MEASURE_TIMEOUT_S = 240
 
 # ── card-type detection (mirrors tt-bio's perf_regression.py) ────────────────
 _P300_SUBSYSTEMS = {"0x0044", "0x0045", "0x0046"}
@@ -541,11 +546,27 @@ def _run_measure_perf(model, quick):
                                           if env.get("PYTHONPATH") else "")
     env.setdefault("TT_VISIBLE_DEVICES", "0")
     env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
-    proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env)
+    proc = subprocess.Popen(cmd, cwd=REPO_ROOT, env=env, start_new_session=True)
+    try:
+        returncode = proc.wait(timeout=PERF_MEASURE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        print(f"[{model}] MEASURE TIMED OUT after {PERF_MEASURE_TIMEOUT_S}s "
+              f"(device hang) — killing process group and resetting the card", file=sys.stderr)
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+        tt_smi = shutil.which("tt-smi") or str(pathlib.Path.home() / ".local/bin/tt-smi")
+        subprocess.run([tt_smi, "-r"], timeout=60, capture_output=True)
+        shutil.rmtree(td, ignore_errors=True)
+        return dict(model=model, failed=True,
+                    error=f"measurement timed out after {PERF_MEASURE_TIMEOUT_S}s (device hang, "
+                          f"card was reset)")
     if not out.exists():
         shutil.rmtree(td, ignore_errors=True)
         return dict(model=model, failed=True,
-                    error=f"subprocess exited {proc.returncode} (no result json)")
+                    error=f"subprocess exited {returncode} (no result json)")
     try:
         return json.loads(out.read_text())
     except Exception as e:
