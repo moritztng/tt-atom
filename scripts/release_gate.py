@@ -176,6 +176,15 @@ DEFAULT_THRESHOLD = 15.0  # % regression allowed before FAIL
 # tt-atom-release-gate-perf-leg-wedge — recurred 3x on the same model before this fix).
 PERF_MEASURE_TIMEOUT_S = 240
 OOM_MEASURE_TIMEOUT_S = 600
+# Per-release clean-env install leg: a full from-zero tt-metal build + tt-atom install + smoke.
+# Deliberately long (the build alone is tens of minutes) and opt-in (`--leg install`), not part of
+# the default per-tick gate. See RELEASING.md leg 5.
+INSTALL_TIMEOUT_S = 3600
+# The tt-metal commit (branch moritztng/tt-atom) this release was validated against. A customer
+# following the README pins this commit for a reproducible build; the install leg clones exactly
+# it, so the gate catches any drift between the pin and what actually builds + runs.
+PINNED_TT_METAL_COMMIT = "8d759240fdd763a38e3abdc8344076f584dc4f4d"
+PINNED_TT_METAL_BRANCH = "moritztng/tt-atom"
 
 # ── card-type detection (mirrors tt-bio's perf_regression.py) ────────────────
 _P300_SUBSYSTEMS = {"0x0044", "0x0045", "0x0046"}
@@ -848,15 +857,253 @@ def _print_ux(res):
     print(f"{'#' * 78}")
 
 
+# ── leg 5: clean-env install (per-release) ──────────────────────────────────
+# The from-zero install a customer does, in an isolated scratch dir with its own venv and
+# TT_METAL_HOME, on the pinned tt-metal commit. Proves the README "Install" works end-to-end
+# (build + op load + UMA forward through fused_rotate + Orb stock-ttnn forward), not just on a
+# box where everything is already built. Opt-in (`--leg install`), per-release: the build takes
+# tens of minutes, so it is NOT wired into the default per-tick gate invocation.
+
+def _run_cap(cmd, env=None, cwd=None, timeout=None):
+    return subprocess.run(cmd, env=env, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+
+
+def measure_install(out_path):
+    """Full from-zero install + smoke in a fresh scratch dir. Writes a JSON result.
+
+    Runs in its own subprocess (see ``_run_install``) so its device context dies before any later
+    leg. Assumes the host build deps are already installed (the README's one-time
+    ``sudo ./install_dependencies.sh``); the gate does not run sudo."""
+    import tempfile, textwrap
+    t_start = time.monotonic()
+    result = dict(verdict="FAIL", pinned_commit=PINNED_TT_METAL_COMMIT,
+                  branch=PINNED_TT_METAL_BRANCH, tt_atom_version=_version(),
+                  card_type=detect_card_type(), date=date.today().isoformat())
+    scratch = pathlib.Path(tempfile.mkdtemp(prefix="gate-install-"))
+    venv = scratch / "venv"
+    venv_py = str(venv / "bin" / "python")
+    venv_pip = str(venv / "bin" / "pip")
+    ttm = scratch / "tt-metal"
+    tta = scratch / "tt-atom"
+    log = []
+
+    def note(msg):
+        log.append(msg)
+        print(msg, flush=True)
+
+    try:
+        note(f"[install] scratch={scratch}")
+        _run_cap([sys.executable, "-m", "venv", str(venv)], timeout=120)
+        _run_cap([venv_pip, "install", "--upgrade", "pip"], timeout=180)
+        _run_cap(["git", "clone", "--recursive", "-b", PINNED_TT_METAL_BRANCH,
+                  "https://github.com/tenstorrent/tt-metal.git", str(ttm)],
+                 cwd=scratch, timeout=1800)
+        _run_cap(["git", "checkout", PINNED_TT_METAL_COMMIT], cwd=ttm, timeout=120)
+        _run_cap(["git", "submodule", "update", "--recursive", "--init"], cwd=ttm, timeout=1800)
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ttm,
+                              capture_output=True, text=True).stdout.strip()
+        result["built_commit"] = head
+        note(f"[install] tt-metal HEAD={head} (pinned {PINNED_TT_METAL_COMMIT[:12]})")
+        env = dict(os.environ)
+        env["TT_METAL_HOME"] = str(ttm)
+        t_b = time.monotonic()
+        bproc = subprocess.run(["./build_metal.sh", "--build-type", "Release"],
+                               cwd=ttm, env=env, timeout=INSTALL_TIMEOUT_S - 600)
+        build_s = time.monotonic() - t_b
+        result["build_time_s"] = round(build_s, 1)
+        result["build_rc"] = bproc.returncode
+        note(f"[install] build rc={bproc.returncode} time={build_s:.0f}s")
+        if bproc.returncode != 0:
+            result["note"] = f"build_metal.sh exited {bproc.returncode}"
+            out_path.write_text(json.dumps(result))
+            return
+        _run_cap([venv_pip, "install", "-e", "."], cwd=ttm, env=env, timeout=600)
+        _run_cap(["git", "clone", "https://github.com/moritztng/tt-atom.git", str(tta)],
+                 cwd=scratch, timeout=600)
+        _run_cap([venv_pip, "install", "-e", str(tta)], cwd=scratch, env=env, timeout=600)
+        # reference env for the one-time Orb weight export (numpy>=2, has orb-models). Pinned to
+        # 0.5.5 — the export tool's target; newer orb-models changed the pretrained API. UMA's
+        # real-weight bundle would additionally need fairchem-core here (see README), but this
+        # gate's UMA smoke uses the committed random-weight golden, so orb-models alone suffices.
+        refenv = scratch / "refenv"
+        refenv_py = str(refenv / "bin" / "python")
+        refenv_pip = str(refenv / "bin" / "pip")
+        _run_cap([sys.executable, "-m", "venv", str(refenv)], timeout=120)
+        _run_cap([refenv_pip, "install", "--upgrade", "pip"], timeout=180)
+        _run_cap([refenv_pip, "install", "orb-models==0.5.5"], timeout=600)
+        sm_env = dict(env)
+        sm_env["TT_VISIBLE_DEVICES"] = os.environ.get("TT_VISIBLE_DEVICES", "0")
+        sm_env["TT_METAL_LOGGER_LEVEL"] = "FATAL"
+        sm_env["PYTHONPATH"] = str(tta)
+        sm_env["TT_ATOM_REFENV"] = refenv_py
+        # one-time orb checkpoint download (ungated); off would block the first-use export
+        sm_env["HF_HUB_OFFLINE"] = "0"
+        # this board's UMD misreads the board ID without an explicit mesh graph descriptor
+        mesh_desc = ttm / "tt_metal" / "fabric" / "mesh_graph_descriptors" / "p150_mesh_graph_descriptor.textproto"
+        if mesh_desc.exists():
+            sm_env["TT_MESH_GRAPH_DESC_PATH"] = str(mesh_desc)
+        opc = _run_cap([venv_py, "-c",
+                        "import ttnn; e=ttnn._ttnn.operations.experimental; "
+                        "print(hasattr(e,'fused_rotate'), hasattr(e,'fused_rotate_gc'))"],
+                       env=sm_env, timeout=300)
+        op_out = opc.stdout.strip()
+        result["fused_rotate"] = op_out
+        op_ok = opc.returncode == 0 and op_out == "True True"
+        note(f"[install] op check: {op_out!r} rc={opc.returncode}")
+        uma_script = tta / "scripts" / "_install_gate_uma_smoke.py"
+        uma_script.write_text(textwrap.dedent('''
+            import math, pathlib, sys
+            sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tests"))
+            from util import Golden, pcc
+            import torch
+            from tt_atom.model import Backbone
+            from tt_atom.geometry import HostGeometry
+            from tt_atom import forces, device as D
+            g = Golden("golden_tiny.npz")
+            cfg = dict(g.config); w = g.w()
+            dev = D.open_device(0)
+            try:
+                bb = Backbone(w, dev, cfg, g.host("to_grid_mat"), g.host("from_grid_mat"))
+                geo = HostGeometry(w, cfg, g.host("to_m"), g.host("gauss_offset"), g.host("gauss_coeff"), gamma=0.0)
+                E, F = forces.energy_and_forces(bb, geo, g.inp("pos").float(), g.inp("atomic_numbers").long(),
+                                                g.inp("edge_index").long(), g.host("sys_node_embedding"))
+            finally:
+                import ttnn; ttnn.close_device(dev)
+            Eref = float(g.out("energy").reshape(-1)[0]); Fref = g.out("forces")
+            rel = abs(E - Eref) / (abs(Eref) + 1e-6); p = pcc(F, Fref)
+            finite = math.isfinite(E) and bool((F == F).all()) and math.isfinite(p)
+            print("UMA_SMOKE_JSON", __import__("json").dumps(
+                {"energy": E, "eref": Eref, "rel": rel, "force_pcc": p, "finite": finite}))
+            assert finite and rel < 0.05 and p >= 0.98
+        '''))
+        uma = _run_cap([venv_py, str(uma_script)], env=sm_env, timeout=900)
+        result["uma_smoke_rc"] = uma.returncode
+        result["uma_smoke_tail"] = uma.stdout[-1500:]
+        uma_ok = False
+        try:
+            line = [ln for ln in uma.stdout.splitlines() if ln.startswith("UMA_SMOKE_JSON")][-1]
+            ud = json.loads(line.split(" ", 1)[1])
+            result["uma_energy"] = ud.get("energy")
+            result["uma_energy_ref"] = ud.get("eref")
+            result["uma_energy_rel"] = ud.get("rel")
+            result["uma_force_pcc"] = ud.get("force_pcc")
+            uma_ok = uma.returncode == 0 and bool(ud.get("finite"))
+        except Exception as e:
+            result["uma_parse_err"] = f"{type(e).__name__}: {e}"
+        note(f"[install] UMA end2end smoke rc={uma.returncode} E={result.get('uma_energy')} pcc={result.get('uma_force_pcc')}")
+        orb_script = tta / "scripts" / "_install_gate_orb_smoke.py"
+        orb_script.write_text(textwrap.dedent('''
+            from ase.build import molecule
+            from tt_atom import Calculator
+            import math, json
+            a = molecule("H2O"); a.calc = Calculator(a, "orb-v3-conservative-omol")
+            E = float(a.get_potential_energy()); F = a.get_forces()
+            fnorm = float((F * F).sum() ** 0.5)
+            finite = math.isfinite(E) and bool((F == F).all()) and math.isfinite(fnorm)
+            print("ORB_SMOKE_JSON", json.dumps({"energy": E, "force_norm": fnorm, "finite": finite}))
+            assert finite and abs(E) > 0
+        '''))
+        orb = _run_cap([venv_py, str(orb_script)], env=sm_env, timeout=900)
+        result["orb_smoke_rc"] = orb.returncode
+        orb_ok = orb.returncode == 0
+        try:
+            line = [ln for ln in orb.stdout.splitlines() if ln.startswith("ORB_SMOKE_JSON")][-1]
+            od = json.loads(line.split(" ", 1)[1])
+            result["orb_energy"] = od.get("energy")
+            result["orb_force_norm"] = od.get("force_norm")
+            orb_ok = orb_ok and bool(od.get("finite"))
+        except Exception as e:
+            result["orb_parse_err"] = f"{type(e).__name__}: {e}"
+            orb_ok = False
+        note(f"[install] Orb smoke rc={orb.returncode} E={result.get('orb_energy')} |F|={result.get('orb_force_norm')}")
+        result["op_ok"], result["uma_ok"], result["orb_ok"] = op_ok, uma_ok, orb_ok
+        if op_ok and uma_ok and orb_ok:
+            result["verdict"] = "PASS"
+            result["note"] = (f"from-zero install + smoke passed on tt-metal {head[:12]} "
+                              f"(build {build_s:.0f}s); fused_rotate={op_out}, UMA end2end parity PASSED, "
+                              f"Orb E={result.get('orb_energy')}")
+        else:
+            result["verdict"] = "FAIL"
+            result["note"] = f"op_ok={op_ok} uma_ok={uma_ok} orb_ok={orb_ok}"
+    except subprocess.TimeoutExpired as e:
+        result["verdict"] = "FAIL"
+        result["note"] = f"timeout: {e}"
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        result["verdict"] = "FAIL"
+        result["note"] = f"{type(e).__name__}: {e}"
+    finally:
+        result["wall_s"] = round(time.monotonic() - t_start, 1)
+        result["log_tail"] = "\n".join(log[-30:])
+        out_path.write_text(json.dumps(result))
+        if result.get("verdict") == "PASS":
+            shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _run_install():
+    """Spawn the clean-env install leg in a fresh process (one device context for the smoke)."""
+    td = tempfile.mkdtemp(prefix="gate-install-parent-")
+    out = pathlib.Path(td) / "result.json"
+    cmd = [sys.executable, str(pathlib.Path(__file__).resolve()),
+           "--measure-install", "--out", str(out)]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"]
+                                          if env.get("PYTHONPATH") else "")
+    env.setdefault("TT_VISIBLE_DEVICES", "0")
+    env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
+    proc = subprocess.Popen(cmd, cwd=REPO_ROOT, env=env, start_new_session=True)
+    try:
+        returncode = proc.wait(timeout=INSTALL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        print(f"[install] TIMED OUT after {INSTALL_TIMEOUT_S}s — stopping child and resetting card",
+              file=sys.stderr)
+        reset_error = _stop_child_and_reset(proc)
+        shutil.rmtree(td, ignore_errors=True)
+        note = f"install leg timed out after {INSTALL_TIMEOUT_S}s"
+        if reset_error:
+            note += f"; card reset failed: {reset_error}"
+        return dict(verdict="FAIL", note=note)
+    if returncode != 0:
+        shutil.rmtree(td, ignore_errors=True)
+        return dict(verdict="FAIL", note=f"install subprocess exited {returncode}")
+    if not out.exists():
+        shutil.rmtree(td, ignore_errors=True)
+        return dict(verdict="FAIL", note=f"install subprocess exited {returncode} (no result json)")
+    try:
+        return json.loads(out.read_text())
+    except Exception as e:
+        return dict(verdict="FAIL", note=f"install result parse failed: {e}")
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def _print_install(res):
+    print(f"\n{'#' * 78}\nRELEASE GATE — leg 5: CLEAN-ENV INSTALL (per-release, from-zero on pinned commit)\n{'#' * 78}")
+    print(f"pinned tt-metal commit: {res.get('pinned_commit', '?')}  (branch {res.get('branch', '?')})")
+    print(f"built commit:           {res.get('built_commit', '?')}")
+    print(f"build time:             {res.get('build_time_s', '?')}s  (rc={res.get('build_rc', '?')})")
+    print(f"fused_rotate / gc:      {res.get('fused_rotate', '?')}")
+    print(f"UMA smoke (end2end):    rc={res.get('uma_smoke_rc', '?')}  E={res.get('uma_energy', '?')} (rel={res.get('uma_energy_rel', '?')}, pcc={res.get('uma_force_pcc', '?')})  -> {'PASS' if res.get('uma_ok') else 'FAIL'}")
+    print(f"Orb smoke (stock ttnn): rc={res.get('orb_smoke_rc', '?')}  E={res.get('orb_energy', '?')}  |F|={res.get('orb_force_norm', '?')}  -> {'PASS' if res.get('orb_ok') else 'FAIL'}")
+    print(f"wall: {res.get('wall_s', '?')}s")
+    print(f"verdict: {res.get('verdict', '?')}")
+    if res.get("note"):
+        print(f"note: {res['note']}")
+    print(f"{'#' * 78}")
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--leg", choices=["accuracy", "oom", "perf", "ux"], action="append",
-                    help="Run only this leg (repeatable). Default: all four. `ux` shells "
-                         "out to scripts/ux_regression.py (CLI --help + output parses + "
-                         "live progress advances on a tiny H2O, Orb path).")
+    ap.add_argument("--leg", choices=["accuracy", "oom", "perf", "ux", "install"], action="append",
+                    help="Run only this leg (repeatable). Default: the four per-tick legs "
+                         "(accuracy/oom/perf/ux). `install` is the per-release clean-env install "
+                         "leg (tens of minutes, opt-in — see RELEASING.md leg 5); it is NOT in the "
+                         "default set. `ux` shells out to scripts/ux_regression.py "
+                         "(CLI --help + output parses + live progress advances on a tiny H2O, Orb path).")
     ap.add_argument("--quick", action="store_true",
                     help="Fast smoke: fewer accuracy modules, smaller OOM sweep, fewer perf iters.")
     ap.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
@@ -877,6 +1124,8 @@ def main():
     ap.add_argument("--measure-oom", action="store_true", help=argparse.SUPPRESS)
     # internal: the per-model in-process perf measurement subprocess
     ap.add_argument("--measure-perf", metavar="MODEL", help=argparse.SUPPRESS)
+    # internal: the clean-env install leg subprocess
+    ap.add_argument("--measure-install", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--out", type=pathlib.Path, default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
 
@@ -892,6 +1141,12 @@ def main():
         if args.out is None:
             sys.exit("--out is required with --measure-perf")
         measure_perf(args.measure_perf, args.out, args.quick)
+        return 0
+
+    if args.measure_install:
+        if args.out is None:
+            sys.exit("--out is required with --measure-install")
+        measure_install(args.out)
         return 0
 
     legs = args.leg or ["accuracy", "oom", "perf", "ux"]
@@ -923,6 +1178,13 @@ def main():
         res = run_ux(args.quick, args.cli_only)
         _print_ux(res)
         if res["verdict"] == "FAIL":
+            overall_pass = False
+        ran_any = True
+
+    if "install" in legs:
+        res = _run_install()
+        _print_install(res)
+        if res.get("verdict") == "FAIL":
             overall_pass = False
         ran_any = True
 

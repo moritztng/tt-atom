@@ -8,7 +8,8 @@ commit that has passed the full on-hardware gate below.
 
 GitHub CI only builds and imports the package (no card). Everything that matters is verified
 on-device, on the exact commit to be tagged, by **`scripts/release_gate.py`** — one command,
-four legs, machine-readable `PASS` / `FAIL` / `GAP` per leg. Run it on card 0 of the release host:
+four per-tick legs plus one per-release leg, machine-readable `PASS` / `FAIL` / `GAP` per leg.
+Run it on card 0 of the release host:
 
 ```bash
 TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py
@@ -16,7 +17,7 @@ TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py
 
 Each on-device leg runs in a fresh process so device state cannot leak into the next check.
 
-The four legs are the four things a tagged release must clear:
+The four per-tick legs are the four things every tagged release must clear on each gate run:
 
 1. **ACCURACY / correctness** — numerical parity vs each shipped model family's own reference
    within tolerance (energy rel-error and force/stress PCC), across every supported task and
@@ -67,11 +68,32 @@ The four legs are the four things a tagged release must clear:
    Orb `Calculator` API (stock `ttnn`, no `fused_rotate` dependency); leg (a) tests the literal CLI
    regardless. See `scripts/ux_regression.py` for the per-leg assertions.
 
+5. **Clean-env install (per-release, not per-tick)** — the four legs above all run on a box where
+   tt-metal / tt-atom are *already* built. A customer starts from nothing, so once per release (not
+   every gate invocation — the build takes tens of minutes) do a from-zero install in an isolated
+   scratch dir with its own fresh venv and `TT_METAL_HOME`, following the README "Install" verbatim:
+   clone tt-metal on `moritztng/tt-atom` at the **pinned commit** recorded for that release, build,
+   `pip install -e .`, clone tt-atom fresh, `pip install -e ./tt-atom`, then smoke-test that the
+   built stack actually runs — `import ttnn` with `fused_rotate` / `fused_rotate_gc` present, a UMA
+   forward (the committed random-weight golden, `tests/test_end2end.py`, which exercises the
+   `fused_rotate` op with a parity assertion), and a minimal Orb run (stock `ttnn`), all producing
+   finite, non-NaN output. No tagged release ships unless this from-zero path passes on the pinned
+   commit. Run it explicitly (it is deliberately not in the default per-tick gate):
+
+   ```bash
+   TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py --leg install
+   ```
+
+   The pinned tt-metal commit validated for this release is
+   `8d759240fdd763a38e3abdc8344076f584dc4f4d` (branch `moritztng/tt-atom`); record the commit you
+   actually validated in the release notes so a customer builds the identical version.
+
 If any leg that ran `FAIL`s, it does not ship — fix it or hold the release. `GAP` legs are
 reported, not counted as failures (they flag a missing fixture/baseline to close, not a
-regression). See `scripts/release_gate.py --help` for per-leg selection (`--leg accuracy|oom|perf|ux`),
+regression). See `scripts/release_gate.py --help` for per-leg selection (`--leg accuracy|oom|perf|ux|install`),
 a fast smoke (`--quick`), per-model perf selection (`--model <key>`), baseline seeding, and
-`--cli-only` (UX leg, no card).
+`--cli-only` (UX leg, no card). `--leg install` is opt-in (per-release) and not run by the default
+invocation above.
 
 The manual description below is kept only as context on the methodology — the script above is
 the actual instruction to follow going forward.

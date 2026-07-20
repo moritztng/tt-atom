@@ -6,19 +6,28 @@ Run ML interatomic potentials on [Tenstorrent](https://tenstorrent.com): Meta's 
 
 ## Install
 
-You need a Tenstorrent card and its driver. UMA's equivariant rotation uses a custom op that the pip `ttnn` wheel doesn't carry, so UMA needs a **source tt-metal build**. Orb-v3/OrbMol run on stock `ttnn` ops, so if you only use those, `pip install ttnn` from PyPI and skip step 1.
+You need a Tenstorrent card and its driver, and a Linux build environment (Ubuntu 22.04 / 24.04 is what we test on). UMA's equivariant rotation uses a custom op that the pip `ttnn` wheel doesn't carry, so UMA needs a **source tt-metal build**. Orb-v3/OrbMol run on stock `ttnn` ops, so if you only use those, `pip install ttnn` from PyPI and skip step 1.
 
-**1. Build and install tt-metal with the op** (branch `moritztng/tt-atom`):
+This release is validated against tt-metal commit **`8d759240fdd763a38e3abdc8344076f584dc4f4d`** on branch `moritztng/tt-atom`. The branch moves, so pin that commit for a reproducible build. (To move to a newer tt-metal commit later, re-integrate the op following [`custom_kernels/README.md`](custom_kernels/README.md).)
+
+**1. Build and install tt-metal with the op:**
 
 ```bash
+python -m venv venv && . venv/bin/activate       # keep tt-metal/tt-atom in one venv
 git clone --recursive -b moritztng/tt-atom https://github.com/tenstorrent/tt-metal.git
 cd tt-metal
+git checkout 8d759240fdd763a38e3abdc8344076f584dc4f4d   # the validated commit (above)
+git submodule update --recursive --init
 export TT_METAL_HOME=$PWD
-./build_metal.sh --build-type Release          # full build (tens of minutes)
-pip install -e .                               # tt-metal's own dev-install path
+
+sudo ./install_dependencies.sh                   # one-time: cmake, ninja, clang-20, the SFPI kernel compiler, ...
+./build_metal.sh --build-type Release            # full build (tens of minutes)
+pip install -e .                                 # tt-metal's own dev-install path
 ```
 
-Keep `TT_METAL_HOME` exported at runtime too, and don't delete `$TT_METAL_HOME/build_Release` after installing. The JIT-compiled kernels load from there. See [`custom_kernels/README.md`](custom_kernels/README.md) for the op's source and how to re-integrate it onto a newer tt-metal commit. If opening a device fails with a `p300` / `mesh graph descriptor` error, see [Troubleshooting](#troubleshooting).
+`install_dependencies.sh` is the one-time host setup `build_metal.sh` assumes; without it a clean machine fails at configure time. Keep `TT_METAL_HOME` exported at runtime too, and don't delete `$TT_METAL_HOME/build_Release` after installing — the JIT-compiled kernels load from there. If opening a device fails with a `p300` / `mesh graph descriptor` error, see [Troubleshooting](#troubleshooting).
+
+If the kernel compile fails with `riscv-tt-elf-g++: error: unrecognized option '-ftt-...'`, the SFPI kernel compiler is stale — re-run `sudo ./install_dependencies.sh --sfpi`, then `rm -rf ~/.cache/tt-metal-cache/` and rebuild.
 
 **2. Install TT-Atom into the same venv:**
 
@@ -216,16 +225,21 @@ merge the experts. `fairchem` needs `numpy>=2`, which can't share a process with
 `numpy<2`, so keep it in its own venv:
 
 ```bash
-python -m venv refenv && refenv/bin/pip install "fairchem-core>=2.10"
+python -m venv refenv && refenv/bin/pip install "fairchem-core>=2.10" "orb-models==0.5.5"
 ```
+
+Pin `orb-models` to `0.5.5` — that is the version `tools/export_orb_weights.py` targets (the
+`pretrained.orb_v3_*` call returned the forcefield directly). Newer `orb-models` (≥0.6) changed
+that API to return a `(forcefield, adapter)` tuple and moved `system_config`, so the export breaks
+on them; stay on 0.5.5 until the export tool is ported forward.
 
 `Calculator(atoms)` and `tt-atom run` call it automatically the first time they see a new
 composition, then cache the result. Set `TT_ATOM_REFENV` to its python if it isn't found
 automatically. Cached runs never need it.
 
 Orb weights aren't composition-specific, so an Orb bundle is one plain weight export per
-checkpoint name, built in the same reference env (`orb-models` installs alongside `fairchem-core`
-with no conflicts):
+checkpoint name, built in the same reference env (the `orb-models==0.5.5` pinned above, alongside
+`fairchem-core` with no conflicts):
 
 ```bash
 refenv/bin/python tools/export_orb_weights.py --ckpt conservative-inf-omat --out weights.npz
