@@ -1005,12 +1005,14 @@ def measure_install(out_path):
         wheels = list(wheel_dir.glob("tt_atom-*.whl"))
         if len(wheels) != 1:
             raise RuntimeError(f"expected one tt-atom wheel, found {wheels}")
-        # Force the candidate wheel into the isolated venv. PYTHONPATH or distribution metadata
-        # from the gate driver must never let pip mistake the source checkout for an installed
-        # candidate.
+        # Force the candidate wheel and its runtime dependencies into the isolated venv.
+        # Hide the gate driver's source tree so its egg-info cannot make pip mistake the
+        # checkout for an installed candidate.
+        install_env = dict(env)
+        install_env.pop("PYTHONPATH", None)
         _run_cap(
-            [venv_py, "-m", "pip", "install", "--force-reinstall", "--no-deps", str(wheels[0])],
-            cwd=scratch, env=env, timeout=600)
+            [venv_py, "-m", "pip", "install", "--force-reinstall", str(wheels[0])],
+            cwd=scratch, env=install_env, timeout=600)
         # reference env for the one-time Orb weight export (numpy>=2, has orb-models). Pinned to
         # 0.5.5 — the export tool's target; newer orb-models changed the pretrained API. UMA's
         # real-weight bundle would additionally need fairchem-core here (see README), but this
@@ -1088,7 +1090,7 @@ def measure_install(out_path):
         uma = _run_cap([venv_py, str(uma_script)], env=sm_env, cwd=scratch,
                        timeout=900, check=False)
         result["uma_smoke_rc"] = uma.returncode
-        result["uma_smoke_tail"] = uma.stdout[-1500:]
+        result["uma_smoke_tail"] = (uma.stdout + uma.stderr)[-1500:]
         uma_ok = False
         try:
             line = [ln for ln in uma.stdout.splitlines() if ln.startswith("UMA_SMOKE_JSON")][-1]
@@ -1116,6 +1118,7 @@ def measure_install(out_path):
         cli_ok = cli.returncode == 0 and cli_parse is not None and cli_parse.returncode == 0
         result["cli_smoke_rc"] = cli.returncode
         result["cli_parse_rc"] = None if cli_parse is None else cli_parse.returncode
+        result["cli_smoke_tail"] = (cli.stdout + cli.stderr)[-1500:]
         result["cli_ok"] = cli_ok
         note(f"[install] CLI relax+parse smoke rc={cli.returncode} "
              f"parse_rc={result['cli_parse_rc']}")
@@ -1134,6 +1137,7 @@ def measure_install(out_path):
         orb = _run_cap([venv_py, str(orb_script)], env=sm_env, cwd=scratch,
                        timeout=900, check=False)
         result["orb_smoke_rc"] = orb.returncode
+        result["orb_smoke_tail"] = (orb.stdout + orb.stderr)[-1500:]
         orb_ok = orb.returncode == 0
         try:
             line = [ln for ln in orb.stdout.splitlines() if ln.startswith("ORB_SMOKE_JSON")][-1]
@@ -1224,6 +1228,10 @@ def _print_install(res):
     print(f"verdict: {res.get('verdict', '?')}")
     if res.get("note"):
         print(f"note: {res['note']}")
+    for name in ("uma", "cli", "orb"):
+        tail = res.get(f"{name}_smoke_tail")
+        if tail and not res.get(f"{name}_ok"):
+            print(f"{name} failure tail:\n{tail}")
     print(f"{'#' * 78}")
 
 
