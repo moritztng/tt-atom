@@ -148,9 +148,9 @@ Every supported family is release-gated on-device against its upstream reference
 
 ## Throughput
 
-Both families support batching, trace replay, and multi-card fan-out. See
-[`docs/orb-port.md`](docs/orb-port.md) and [`custom_kernels/README.md`](custom_kernels/README.md)
-for measured performance and usage constraints.
+Both families support batching and trace replay. `MultiCard` provides energy-only fan-out; its Orb
+path currently accepts neutral, aperiodic systems. See [`docs/orb-port.md`](docs/orb-port.md) and
+[`custom_kernels/README.md`](custom_kernels/README.md) for measured performance.
 
 ## Compared to upstream (fairchem / orb-models)
 

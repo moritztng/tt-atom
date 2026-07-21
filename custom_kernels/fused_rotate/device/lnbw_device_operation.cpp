@@ -68,7 +68,15 @@ ttsl::hash::hash_t LnBwDeviceOperation::compute_program_hash(
         attrs.eps_bits,
         inputs.gy.dtype(),
         inputs.gy.memory_config(),
-        inputs.gy.padded_shape());
+        inputs.gy.padded_shape(),
+        inputs.x.memory_config(),
+        inputs.x.padded_shape(),
+        inputs.red.memory_config(),
+        inputs.red.padded_shape(),
+        inputs.n.memory_config(),
+        inputs.n.padded_shape(),
+        inputs.gamma.memory_config(),
+        inputs.gamma.padded_shape());
 }
 
 }  // namespace ttnn::experimental::prim

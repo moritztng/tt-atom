@@ -211,10 +211,10 @@ def main():
                 pos_buf = torch.zeros(N, 3, device=device, dtype=torch.float32)
                 pos_buf.copy_(torch.as_tensor(ref_atoms.get_positions(), device=device,
                                               dtype=torch.float32))
+                pos_buf.requires_grad_(True)
                 frozen_batch.node_features["positions"] = pos_buf
 
                 def _frozen_step():
-                    pos_buf.requires_grad_(True)
                     frozen_batch.node_features["positions"] = pos_buf
                     return regressor.predict(frozen_batch)
 
@@ -237,7 +237,8 @@ def main():
                 def fe_step():
                     p = pos_buf + torch.from_numpy(
                         rng.normal(0.0, 0.01, pos_buf.shape).astype(np.float32)).to(device)
-                    pos_buf.copy_(p)
+                    with torch.no_grad():
+                        pos_buf.copy_(p)
                     return _frozen_step()
                 with torch.enable_grad():
                     ts, med = _median_step_ms(fe_step, args.warmup, args.steps)

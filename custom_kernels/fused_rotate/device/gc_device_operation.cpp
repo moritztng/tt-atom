@@ -74,7 +74,10 @@ ttsl::hash::hash_t FusedGcDeviceOperation::compute_program_hash(
         inputs.gout.dtype(),
         inputs.gout.memory_config(),
         inputs.gout.padded_shape(),
-        inputs.xin.padded_shape());
+        inputs.xin.memory_config(),
+        inputs.xin.padded_shape(),
+        inputs.sel.memory_config(),
+        inputs.sel.padded_shape());
 }
 
 }  // namespace ttnn::experimental::prim

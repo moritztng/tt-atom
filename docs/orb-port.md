@@ -109,6 +109,10 @@ Generate real-weight goldens in the reference environment:
 ```bash
 ~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py \
   --ckpt conservative-inf-omat \
+  --system supercell \
+  --out ~/.ttatom_run/goldens_real/si_supercell_orb.npz
+~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py \
+  --ckpt conservative-inf-omat \
   --out ~/.ttatom_run/goldens_real/si_omat_orb.npz
 ~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py \
   --ckpt direct-20-omat \

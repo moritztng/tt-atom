@@ -260,12 +260,12 @@ def run_orb_ux(base: Path) -> dict:
     from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
     from ase.io import write
 
-    dev_id = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0].strip() or "0")
     row = {"surface": "orb-md/relax/single-point", "seconds": None, "parse": False,
            "progress": False, "gate": False, "error": None, "checks": []}
     t0 = time.monotonic()
     try:
-        calc = _build_calc(dev_id)
+        # TT_VISIBLE_DEVICES maps the selected physical card to logical device 0.
+        calc = _build_calc(0)
     except Exception as ex:
         row["error"] = f"OrbCalculator.from_checkpoint failed: {type(ex).__name__}: {str(ex)[:200]}"
         row["seconds"] = time.monotonic() - t0

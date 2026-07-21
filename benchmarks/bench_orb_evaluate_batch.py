@@ -75,7 +75,6 @@ def main():
             bat_s = time_it(bat, args.iters)
         except RuntimeError as e:                # device OOM etc. -> record the ceiling and stop
             print(f"K={k}: FAILED ({str(e).splitlines()[0][:80]}) -> batch-size ceiling below {k}")
-            ceiling = k
             break
 
         seq_thru = k / seq_s
@@ -84,6 +83,7 @@ def main():
                          seq_ms=seq_s * 1e3, batched_ms=bat_s * 1e3,
                          seq_sys_per_s=seq_thru, batched_sys_per_s=bat_thru,
                          speedup=seq_s / bat_s))
+        ceiling = k
         print(f"K={k:4d}  Ntot={natoms*k:5d}  "
               f"seq={seq_s*1e3:8.2f}ms ({seq_thru:7.1f} sys/s)  "
               f"batched={bat_s*1e3:8.2f}ms ({bat_thru:7.1f} sys/s)  x{seq_s/bat_s:.2f}")

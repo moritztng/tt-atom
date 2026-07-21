@@ -102,17 +102,19 @@ def run_export(out_path, make_cmd, *, error_hint=""):
     """Run a reference-env export that writes a sidecar, then atomically move it into place.
 
     ``make_cmd(tmp_out)`` returns the argv list that writes ``tmp_out``. Writing to a sidecar
-    (``*.building.npz``) and ``os.replace``-ing only on success means an interrupted or failed
-    build can never leave a half-written file that later looks like a cache hit. Shared by the UMA
-    bundle build and the Orb per-checkpoint export (``orb_weight_cache``); ``HF_HUB_OFFLINE`` is
-    defaulted on so a cache hit never reaches out to the hub."""
+    and ``os.replace``-ing only on success means an interrupted or failed build can never leave a
+    half-written file that later looks like a cache hit. Each export gets its own sidecar so
+    concurrent first-use processes cannot overwrite each other. Shared by the UMA bundle build
+    and the Orb per-checkpoint export (``orb_weight_cache``)."""
     out_path = pathlib.Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # sidecar ends in .npz so np.savez does not append a second extension
-    tmp_out = out_path.with_name(out_path.name + ".building.npz")
+    # The suffix stays .npz so np.savez does not append a second extension.
+    with tempfile.NamedTemporaryFile(
+        dir=out_path.parent, prefix=f".{out_path.name}.", suffix=".npz", delete=False
+    ) as sidecar:
+        tmp_out = pathlib.Path(sidecar.name)
     cmd = make_cmd(tmp_out)
     env = dict(os.environ)
-    env.setdefault("HF_HUB_OFFLINE", "1")
     try:
         subprocess.run(cmd, check=True, env=env)
     except subprocess.CalledProcessError as e:
@@ -121,6 +123,9 @@ def run_export(out_path, make_cmd, *, error_hint=""):
             f"reference-env export failed (exit {e.returncode}). Command:\n  "
             + " ".join(str(c) for c in cmd) + error_hint
         ) from e
+    except Exception:
+        tmp_out.unlink(missing_ok=True)
+        raise
     os.replace(tmp_out, out_path)
     return out_path
 

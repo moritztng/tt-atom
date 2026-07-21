@@ -184,6 +184,7 @@ INSTALL_TIMEOUT_S = 3600
 # it, so the gate catches any drift between the pin and what actually builds + runs.
 PINNED_TT_METAL_COMMIT = "8d759240fdd763a38e3abdc8344076f584dc4f4d"
 PINNED_TT_METAL_BRANCH = "moritztng/tt-atom"
+LOGICAL_DEVICE_ID = 0
 
 # ── card-type detection (mirrors tt-bio's perf_regression.py) ────────────────
 _P300_SUBSYSTEMS = {"0x0044", "0x0045", "0x0046"}
@@ -376,16 +377,17 @@ def run_oom(family, quick):
     except Exception as e:
         return dict(family=family, checkpoint=spec["checkpoint"], verdict="GAP",
                     ceiling=None, failed_at=None, note=f"calculator import failed: {e}", rows=[])
-    dev_id = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0].strip() or "0")
     try:
         if family == "orb":
-            calc = OrbCalculator.from_checkpoint(spec["checkpoint"], device_id=dev_id)
+            calc = OrbCalculator.from_checkpoint(
+                spec["checkpoint"], device_id=LOGICAL_DEVICE_ID)
         else:
             seed = molecule(OOM_MOL)
             seed.rattle(stdev=0.08, seed=10)
             seed.info.update(charge=0, spin=1)
             calc = TTAtomCalculator.from_uma(
-                model=spec["checkpoint"], task_name="omol", atoms=seed, device_id=dev_id)
+                model=spec["checkpoint"], task_name="omol", atoms=seed,
+                device_id=LOGICAL_DEVICE_ID)
     except Exception as e:
         return dict(family=family, checkpoint=spec["checkpoint"], verdict="GAP",
                     ceiling=None, failed_at=None,
@@ -554,16 +556,16 @@ def measure_perf(model, out_path, quick):
     spec = PERF_SPECS[model]
     warmup = PERF_WARMUP_QUICK if quick else PERF_WARMUP
     repeat = PERF_REPEAT_QUICK if quick else PERF_REPEAT
-    dev_id = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0].strip() or "0")
     try:
         if spec["kind"] == "orb-batch":
             from tt_atom.orb_calculator import OrbCalculator
-            calc = OrbCalculator.from_checkpoint(spec["checkpoint"], device_id=dev_id)
+            calc = OrbCalculator.from_checkpoint(
+                spec["checkpoint"], device_id=LOGICAL_DEVICE_ID)
         elif spec["kind"] == "uma-batch":
             from tt_atom.calculator import TTAtomCalculator
             seed = _perf_systems(spec, 1)[0]
             calc = TTAtomCalculator.from_uma(model=spec["checkpoint"], task_name="omol",
-                                             atoms=seed, device_id=dev_id)
+                                             atoms=seed, device_id=LOGICAL_DEVICE_ID)
         else:
             raise ValueError(f"unknown kind {spec['kind']!r}")
     except Exception as e:
@@ -948,6 +950,7 @@ def measure_install(out_path):
     ttm = scratch / "tt-metal"
     tta = scratch / "tt-atom"
     log = []
+    clean_python = getattr(sys, "_base_executable", None) or shutil.which("python3") or sys.executable
 
     def note(msg):
         log.append(msg)
@@ -960,7 +963,7 @@ def measure_install(out_path):
         if source_status:
             raise RuntimeError(
                 "tt-atom worktree is dirty; commit the exact source before running the install gate")
-        _run_cap([sys.executable, "-m", "venv", str(venv)], timeout=120)
+        _run_cap([clean_python, "-m", "venv", str(venv)], timeout=120)
         _run_cap([venv_pip, "install", "--upgrade", "pip", "build"], timeout=180)
         _run_cap(["git", "clone", "--recursive", "-b", PINNED_TT_METAL_BRANCH,
                   "https://github.com/tenstorrent/tt-metal.git", str(ttm)],
@@ -1008,7 +1011,7 @@ def measure_install(out_path):
         refenv = scratch / "refenv"
         refenv_py = str(refenv / "bin" / "python")
         refenv_pip = str(refenv / "bin" / "pip")
-        _run_cap([sys.executable, "-m", "venv", str(refenv)], timeout=120)
+        _run_cap([clean_python, "-m", "venv", str(refenv)], timeout=120)
         _run_cap([refenv_pip, "install", "--upgrade", "pip"], timeout=180)
         _run_cap([refenv_pip, "install", "orb-models==0.5.5"], timeout=600)
         sm_env = dict(env)
@@ -1026,7 +1029,7 @@ def measure_install(out_path):
         opc = _run_cap([venv_py, "-c",
                         "import ttnn; e=ttnn._ttnn.operations.experimental; "
                         "print(hasattr(e,'fused_rotate'), hasattr(e,'fused_rotate_gc'))"],
-                       env=sm_env, timeout=300, check=False)
+                       env=sm_env, cwd=scratch, timeout=300, check=False)
         op_out = opc.stdout.strip()
         result["fused_rotate"] = op_out
         op_ok = opc.returncode == 0 and op_out == "True True"
@@ -1037,7 +1040,7 @@ def measure_install(out_path):
              "print(tt_atom.__file__); "
              "print((r.files('tools')/'export_weights.py').is_file(), "
              "(r.files('tools')/'export_orb_weights.py').is_file())"],
-            env=sm_env, timeout=120, check=False)
+            env=sm_env, cwd=scratch, timeout=120, check=False)
         pkg_lines = pkg.stdout.strip().splitlines()
         result["tt_atom_import"] = pkg_lines[0] if pkg_lines else ""
         result["exporters"] = pkg_lines[-1] if pkg_lines else ""
@@ -1075,7 +1078,8 @@ def measure_install(out_path):
                 {"energy": E, "eref": Eref, "rel": rel, "force_pcc": p, "finite": finite}))
             assert finite and rel < 0.05 and p >= 0.98
         '''))
-        uma = _run_cap([venv_py, str(uma_script)], env=sm_env, timeout=900, check=False)
+        uma = _run_cap([venv_py, str(uma_script)], env=sm_env, cwd=scratch,
+                       timeout=900, check=False)
         result["uma_smoke_rc"] = uma.returncode
         result["uma_smoke_tail"] = uma.stdout[-1500:]
         uma_ok = False
@@ -1095,13 +1099,13 @@ def measure_install(out_path):
             [venv_py, "-m", "tt_atom.cli", "relax",
              str(tta / "examples" / "model_tiny_demo.npz"),
              "--molecule", "H2O", "--steps", "1", "--out", str(cli_out)],
-            env=sm_env, timeout=900, check=False)
+            env=sm_env, cwd=scratch, timeout=900, check=False)
         cli_parse = _run_cap(
             [venv_py, "-c",
              "from ase.io import read; import sys; "
              "a=read(sys.argv[1]); assert len(a)==3 and a.positions.shape==(3,3)",
              str(cli_out)],
-            env=sm_env, timeout=120, check=False) if cli_out.exists() else None
+            env=sm_env, cwd=scratch, timeout=120, check=False) if cli_out.exists() else None
         cli_ok = cli.returncode == 0 and cli_parse is not None and cli_parse.returncode == 0
         result["cli_smoke_rc"] = cli.returncode
         result["cli_parse_rc"] = None if cli_parse is None else cli_parse.returncode
@@ -1120,7 +1124,8 @@ def measure_install(out_path):
             print("ORB_SMOKE_JSON", json.dumps({"energy": E, "force_norm": fnorm, "finite": finite}))
             assert finite and abs(E) > 0
         '''))
-        orb = _run_cap([venv_py, str(orb_script)], env=sm_env, timeout=900, check=False)
+        orb = _run_cap([venv_py, str(orb_script)], env=sm_env, cwd=scratch,
+                       timeout=900, check=False)
         result["orb_smoke_rc"] = orb.returncode
         orb_ok = orb.returncode == 0
         try:

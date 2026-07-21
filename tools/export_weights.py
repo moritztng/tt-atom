@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 
 import numpy as np
 import torch
@@ -49,7 +48,6 @@ def npy(t):
 def export_uma_s_1(args):
     """Export the released uma-s-1 checkpoint: host MoLE-merge to a plain backbone for the given
     composition, then write a clean WeightBundle (weights + fixed buffers + energy normalizer)."""
-    os.environ.setdefault("HF_HUB_OFFLINE", "1")
     from ase.build import molecule
     from huggingface_hub import hf_hub_download
     from fairchem.core import FAIRChemCalculator

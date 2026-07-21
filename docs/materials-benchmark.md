@@ -40,9 +40,10 @@ check reruns only the device side against a fixed reference.
 ## Results
 
 These are the committed benchmark measurements for TT-Atom, taken on a
-single Blackhole p150a card (card 0) on 2026-07-19 with
-`TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py --leg
-accuracy`. Every currently-shipped family is covered: UMA `uma-s-1`
+single Blackhole p150a card (card 0) on 2026-07-21 with the pinned source
+`tt-metal` build and `TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3
+scripts/release_gate.py --leg accuracy`. Every currently-shipped family is
+covered: UMA `uma-s-1`
 (molecular / `omol`), Orb-v3 `conservative-inf-omat` and `direct-20-omat`
 (bulk / `omat`, analytic forces, periodic supercell, multi-element oxide,
 stress, ZBL short-contact), and OrbMol `conservative-omol` (molecule /
@@ -50,7 +51,7 @@ charged / open-shell).
 
 | family | checkpoint | regime | metric | R | D | X | result |
 |---|---|---|---:|---:|---:|---:|---|
-| uma | uma-s-1 | molecular / omol (ethanol) | energy rel err, force PCC | 0 / 1.00000 | 0 / 1.00000 | — | GAP† |
+| uma | uma-s-1 | molecular / omol (ethanol) | energy rel err, force PCC | 0 / 1.00000 | 0 / 1.00000 | 1.84e-7 / 0.99965 | PASS |
 | orb | conservative-inf-omat | bulk / omat (Si toy) | energy rel err | 0 | 0 | 6.9e-4 | PASS |
 | orb | conservative-inf-omat | analytic forces (`F = -dE/dpos`) | force PCC | 1.00000 | 1.00000 | 0.99999 | PASS |
 | orb | direct-20-omat | bulk / omat (direct) | energy rel err, force PCC | 0 / 1.00000 | 0 / 1.00000 | 5.8e-4 / 0.99997 | PASS |
@@ -76,14 +77,6 @@ Orb-v3 is not equivariant (a plain attention-MPNN over scalar features),
 a real architectural difference from UMA, not a port discrepancy; the
 full non-equivariance analysis and the ZBL pair-repulsion correction live
 in `docs/orb-port.md`.
-
-† The UMA row is an environment gap, not a parity failure. The `ttnn`
-environment used for this table did not contain UMA's required
-`ttnn.experimental.fused_rotate` op, so the end-to-end device result was
-not measurable and is reported as GAP. The host merge, weight coverage,
-and spectral module checks passed. Build the pinned source tt-metal from
-the README and rerun `scripts/release_gate.py --leg accuracy` to close
-the device row.
 
 ¶ The periodic-supercell row verifies the radius-graph reconstruction
 matches `orb-models`' neighbour list exactly (1064 edges, symmetric

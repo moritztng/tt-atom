@@ -135,5 +135,6 @@ def test_end_to_end_energy_forces(rg, rcfg, device):
     F_oracle = torch.from_numpy(rg["out@forces_oracle"].copy()).float()
     rel = abs(E - E_oracle) / abs(E_oracle)
     fpcc = _pcc(F, F_oracle)
+    print(f"[uma/omol] energy rel err {rel:.6g}, force PCC {fpcc:.6f}")
     assert rel < 1e-2, f"energy rel err {rel} (E={E}, oracle={E_oracle})"
     assert fpcc > 0.99, f"force PCC {fpcc}"

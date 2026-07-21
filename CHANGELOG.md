@@ -10,8 +10,14 @@ smoke (see `RELEASING.md`).
 ### Fixed
 - Built wheels now include both weight exporters, so automatic UMA and Orb cache misses work
   outside a source checkout.
+- Fresh UMA and Orb cache misses can download their checkpoints again; explicit
+  `HF_HUB_OFFLINE=1` still enforces offline use. Concurrent exports now use separate sidecars.
 - Release mode now blocks every missing fixture, baseline, required op, and model-family OOM row.
   `--allow-gaps` remains available for development diagnostics.
+- Release and UX subprocesses always open logical device 0 after `TT_VISIBLE_DEVICES` selects the
+  physical card.
+- Custom-op validation now rejects invalid gate modes and shapes, and program-cache keys include
+  every operand layout that affects compiled accessors.
 - The silicon-melt example now checks the exact-cutoff neighbour graph every step and recaptures
   only when it changes. The earlier trajectory is withdrawn because its skin policy could reuse
   stale edges.

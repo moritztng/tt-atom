@@ -86,6 +86,7 @@ ttsl::hash::hash_t FusedRotateDeviceOperation::compute_program_hash(
         inputs.x_flat.dtype(),
         inputs.x_flat.memory_config(),
         inputs.x_flat.padded_shape(),
+        inputs.coef_exp.memory_config(),
         inputs.coef_exp.padded_shape());
 }
 

@@ -26,6 +26,7 @@ void GateDeviceOperation::validate_on_program_cache_miss(
     TT_FATAL(
         (a.dtype() == DataType::BFLOAT16 || a.dtype() == DataType::BFLOAT8_B) && gate.dtype() == a.dtype(),
         "fused_gate requires bf16 or bf8_b (a and gate same dtype)");
+    TT_FATAL(attrs.mode <= 1, "fused_gate mode must be 0 (forward) or 1 (backward), got {}", attrs.mode);
     TT_FATAL(attrs.Wt == attrs.Ht + attrs.Gt, "Wt ({}) must equal Ht ({}) + Gt ({})", attrs.Wt, attrs.Ht, attrs.Gt);
     const auto& as_ = a.padded_shape();
     const auto& gs = gate.padded_shape();
@@ -37,6 +38,7 @@ void GateDeviceOperation::validate_on_program_cache_miss(
         TT_FATAL(b.storage_type() == StorageType::DEVICE && b.layout() == Layout::TILE, "fused_gate b device/TILE");
         TT_FATAL(b.dtype() == a.dtype(), "fused_gate b must match a dtype");
         TT_FATAL(b.padded_shape()[-2] == as_[-2], "b and a must have the same number of rows");
+        TT_FATAL(b.padded_shape()[-1] == attrs.Wt * TILE_WIDTH, "b last dim must equal Wt*32");
     }
 }
 
@@ -54,7 +56,17 @@ GateDeviceOperation::tensor_return_value_t GateDeviceOperation::create_output_te
 ttsl::hash::hash_t GateDeviceOperation::compute_program_hash(
     const operation_attributes_t& attrs, const tensor_args_t& inputs) {
     return tt::tt_metal::operation::hash_operation<GateDeviceOperation>(
-        attrs.Wt, attrs.Gt, attrs.Ht, attrs.mode, inputs.a.dtype(), inputs.a.memory_config(), inputs.a.padded_shape());
+        attrs.Wt,
+        attrs.Gt,
+        attrs.Ht,
+        attrs.mode,
+        inputs.a.dtype(),
+        inputs.a.memory_config(),
+        inputs.a.padded_shape(),
+        inputs.gate.memory_config(),
+        inputs.gate.padded_shape(),
+        inputs.b.memory_config(),
+        inputs.b.padded_shape());
 }
 
 }  // namespace ttnn::experimental::prim

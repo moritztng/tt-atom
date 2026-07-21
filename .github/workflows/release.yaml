@@ -5,8 +5,8 @@ name: release
 # RELEASING.md):
 #   git tag vX.Y.Z && git push origin master vX.Y.Z
 # This builds the artifacts and publishes a GitHub Release with notes + wheel. No PyPI
-# job: tt-atom requires a source tt-metal/ttnn build, so a pip wheel can't run standalone
-# (see the NOTE below and RELEASING.md).
+# job: GitHub Releases are the project distribution policy. The wheel still needs ttnn;
+# UMA specifically needs the validated source build (see RELEASING.md).
 
 on:
   push:

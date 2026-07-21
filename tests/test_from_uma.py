@@ -80,6 +80,41 @@ def test_resolve_refenv_errors_clearly(monkeypatch, tmp_path):
     assert "TT_ATOM_REFENV" in msg and "refenv" in msg  # actionable, names the knobs
 
 
+def test_run_export_allows_download_and_uses_unique_sidecar(monkeypatch, tmp_path):
+    target = tmp_path / "weights.npz"
+    seen = {}
+
+    def fake_run(cmd, check, env):
+        seen["cmd"] = cmd
+        seen["env"] = env
+        pathlib.Path(cmd[-1]).write_bytes(b"complete")
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.setattr(BC.subprocess, "run", fake_run)
+    result = BC.run_export(target, lambda sidecar: ["export", "--out", str(sidecar)])
+
+    assert result == target
+    assert target.read_bytes() == b"complete"
+    assert "HF_HUB_OFFLINE" not in seen["env"]
+    sidecar = pathlib.Path(seen["cmd"][-1])
+    assert sidecar != target and sidecar.parent == target.parent and sidecar.suffix == ".npz"
+
+
+def test_run_export_preserves_explicit_offline_mode(monkeypatch, tmp_path):
+    target = tmp_path / "weights.npz"
+    seen = {}
+
+    def fake_run(cmd, check, env):
+        seen.update(env)
+        pathlib.Path(cmd[-1]).write_bytes(b"complete")
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(BC.subprocess, "run", fake_run)
+    BC.run_export(target, lambda sidecar: ["export", "--out", str(sidecar)])
+
+    assert seen["HF_HUB_OFFLINE"] == "1"
+
+
 def test_from_uma_requires_atoms():
     from tt_atom import TTAtomCalculator
 
