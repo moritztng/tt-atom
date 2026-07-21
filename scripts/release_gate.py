@@ -950,7 +950,9 @@ def measure_install(out_path):
     ttm = scratch / "tt-metal"
     tta = scratch / "tt-atom"
     log = []
-    clean_python = getattr(sys, "_base_executable", None) or shutil.which("python3") or sys.executable
+    clean_python = (
+        getattr(sys, "_base_executable", None) or shutil.which("python3") or sys.executable
+    )
 
     def note(msg):
         log.append(msg)
@@ -1003,7 +1005,12 @@ def measure_install(out_path):
         wheels = list(wheel_dir.glob("tt_atom-*.whl"))
         if len(wheels) != 1:
             raise RuntimeError(f"expected one tt-atom wheel, found {wheels}")
-        _run_cap([venv_pip, "install", str(wheels[0])], cwd=scratch, env=env, timeout=600)
+        # Force the candidate wheel into the isolated venv. PYTHONPATH or distribution metadata
+        # from the gate driver must never let pip mistake the source checkout for an installed
+        # candidate.
+        _run_cap(
+            [venv_py, "-m", "pip", "install", "--force-reinstall", "--no-deps", str(wheels[0])],
+            cwd=scratch, env=env, timeout=600)
         # reference env for the one-time Orb weight export (numpy>=2, has orb-models). Pinned to
         # 0.5.5 — the export tool's target; newer orb-models changed the pretrained API. UMA's
         # real-weight bundle would additionally need fairchem-core here (see README), but this
