@@ -156,7 +156,8 @@ def test_direct_fast_energy_forces(device):
         running_mean=w["energy_head.normalizer.bn.running_mean"],
         running_var=w["energy_head.normalizer.bn.running_var"],
         ref_weight=w["energy_head.reference.linear.weight"].view(-1))
-    zbl_energy = host_zbl_energy(atomic_numbers, senders, receivers, vectors)
+    zbl_energy = host_zbl_energy(
+        atomic_numbers, senders, receivers, vectors, node_aggregation="sum")
     total_energy = float(gnn_energy + zbl_energy)
     gold_energy = float(gw.out("energy")[0])
     e_rel_err = abs(total_energy - gold_energy) / abs(gold_energy)

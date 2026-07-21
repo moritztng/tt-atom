@@ -89,7 +89,7 @@ class OrbCalculator(DeviceCalculator):
                                 host_conservative_force_denormalize, host_conservative_stress,
                                 host_energy_denormalize, host_force_denormalize,
                                 host_node_features, host_stress_denormalize, host_zbl_energy,
-                                host_zbl_forces)
+                                host_zbl_forces, host_zbl_stress)
 
         pos, Z, charge, spin, cell, pbc = _as_atoms_fields(atoms)
         N = Z.shape[0]
@@ -122,6 +122,7 @@ class OrbCalculator(DeviceCalculator):
 
         explicit_stress = "stress" in properties
         want_stress = cell is not None and (explicit_stress or bool(pbc.all()))
+        zbl_aggregation = "sum" if self.is_direct else "mean"
         if explicit_stress and self.is_direct and self.shead is None:
             raise ValueError(
                 "stress requested but this direct checkpoint carries no stress_head weights."
@@ -150,7 +151,8 @@ class OrbCalculator(DeviceCalculator):
             F = host_force_denormalize(
                 raw_f, running_mean=self._w["forces_head.normalizer.bn.running_mean"],
                 running_var=self._w["forces_head.normalizer.bn.running_var"])
-            F = F + host_zbl_forces(Z, senders, receivers, pos, cell_shift)
+            F = F + host_zbl_forces(
+                Z, senders, receivers, pos, cell_shift, node_aggregation=zbl_aggregation)
             stress = None
             if want_stress:
                 raw_s = ttnn.to_torch(self.shead(nodes)).double()
@@ -175,13 +177,18 @@ class OrbCalculator(DeviceCalculator):
             F = host_conservative_force_denormalize(
                 F_raw, N, running_var=self._w["energy_head.normalizer.bn.running_var"])
             vectors = pos[receivers] - pos[senders] + cell_shift
-            F = F + host_zbl_forces(Z, senders, receivers, pos, cell_shift)
+            F = F + host_zbl_forces(
+                Z, senders, receivers, pos, cell_shift, node_aggregation=zbl_aggregation)
             stress = None
             if want_stress:
                 stress = host_conservative_stress(
                     rest[0], N, cell, running_var=self._w["energy_head.normalizer.bn.running_var"])
 
-        E = float(E + host_zbl_energy(Z, senders, receivers, vectors))
+        E = float(E + host_zbl_energy(
+            Z, senders, receivers, vectors, node_aggregation=zbl_aggregation))
+        if stress is not None:
+            stress = stress + host_zbl_stress(
+                Z, senders, receivers, vectors, cell, node_aggregation=zbl_aggregation)
         self._store_results(atoms, E, F, stress=stress)
 
     def evaluate_batch(self, systems, properties=("energy", "forces")):
@@ -258,12 +265,10 @@ class OrbCalculator(DeviceCalculator):
                 seg_mean_T=seg_mean_T, r_max=self.r_max, num_bases=self.num_bases,
                 cond_nodes=cond_nodes)
         # Per-system denormalize + ZBL. Orb's normalizer scales forces by sigma * N_k per system
-        # (conservative) or sigma (direct), and ZBL pair-repulsion is added per-system. ZBL forces
-        # are block-diagonal (edges never cross systems), so one host autograd over the union gives
-        # correct per-atom ZBL forces; ZBL energy is split per-system (mean over each system's atoms).
+        # (conservative) or sigma (direct). ZBL must also be evaluated per-system: conservative
+        # checkpoints mean-aggregate over each system's atoms, while direct checkpoints sum.
         vectors = bg.pos[bg.receivers] - bg.pos[bg.senders] + bg.cell_shift
-        F_zbl = (host_zbl_forces(bg.Z, bg.senders, bg.receivers, bg.pos, bg.cell_shift)
-                if want_forces else None)
+        zbl_aggregation = "sum" if self.is_direct else "mean"
         energies, forces_out, off = [], [], 0
         for k, n in enumerate(bg.natoms):
             Z_k = bg.Z[off:off + n]
@@ -274,7 +279,9 @@ class OrbCalculator(DeviceCalculator):
                 ref_weight=self._w["energy_head.reference.linear.weight"].view(-1))
             # ZBL energy per system: slice this system's edges (block-diagonal => batch[senders]==k).
             m = bg.batch[bg.senders] == k
-            E_zbl = host_zbl_energy(Z_k, bg.senders[m] - off, bg.receivers[m] - off, vectors[m])
+            senders_k, receivers_k = bg.senders[m] - off, bg.receivers[m] - off
+            E_zbl = host_zbl_energy(
+                Z_k, senders_k, receivers_k, vectors[m], node_aggregation=zbl_aggregation)
             energies.append(float(E_k + E_zbl))
             if want_forces:
                 F_k = F_raw[off:off + n]
@@ -285,7 +292,9 @@ class OrbCalculator(DeviceCalculator):
                 else:
                     F_k = host_conservative_force_denormalize(
                         F_k, n, running_var=self._w["energy_head.normalizer.bn.running_var"])
-                F_k = F_k + F_zbl[off:off + n]
+                F_k = F_k + host_zbl_forces(
+                    Z_k, senders_k, receivers_k, bg.pos[off:off + n], bg.cell_shift[m],
+                    node_aggregation=zbl_aggregation)
                 forces_out.append(F_k.detach().numpy().astype(np.float64))
             off += n
         return dict(energy=np.array(energies), forces=forces_out if want_forces else None)

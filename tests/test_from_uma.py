@@ -65,6 +65,18 @@ def test_bundle_path_shape(tmp_path):
     assert p2.name.endswith("_c-1_s2.npz") and p2 != p
 
 
+def test_explicit_checkpoint_is_part_of_bundle_identity(tmp_path):
+    kwargs = dict(model="uma-s-1", task="omol", numbers=[1, 1, 8], charge=0, spin=1,
+                  cache_dir=tmp_path)
+    default = BC.bundle_path(**kwargs)
+    checkpoint_a = BC.bundle_path(**kwargs, checkpoint=tmp_path / "a.pt")
+    checkpoint_b = BC.bundle_path(**kwargs, checkpoint=tmp_path / "b.pt")
+
+    assert checkpoint_a != default
+    assert checkpoint_a != checkpoint_b
+    assert checkpoint_a == BC.bundle_path(**kwargs, checkpoint=tmp_path / "." / "a.pt")
+
+
 def test_resolve_refenv_positive_when_default_present():
     if _default_refenv() is None and not os.environ.get("TT_ATOM_REFENV"):
         pytest.skip("no reference env installed on this machine")

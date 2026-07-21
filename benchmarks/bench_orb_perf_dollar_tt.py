@@ -75,7 +75,7 @@ def main():
             "model": "orb-v3-conservative-inf-omat",
             "system": "periodic Si diamond supercell, monatomic (node feature tiled, system-independent weights)",
             "quantity": "one MD step = energy + conservative analytic forces (F = -dE/dpos), no stress",
-            "neighbour_policy": "frozen at first geometry (solid crystal; topology constant)",
+            "neighbour_policy": "exact-cutoff graph checked each step; trace recaptured on change",
             "execution_model": "trace/replay (OrbTracedEngine) -- zero per-step host dispatch, bit-exact vs eager",
             "load_and_first_compile_excluded": True,
             "positions_jittered_each_step": True,
@@ -135,7 +135,8 @@ def main():
                 "precision": ("bf8 weights/hidden MLP activations, bf16 residual stream, "
                               "fp32-accumulate matmul" if args.fast else
                               "bf16 weights/activations, fp32-accumulate matmul"),
-                "path": "OrbTracedEngine trace/replay, neighbour list frozen, energy+conservative forces (no stress)",
+                "path": "OrbTracedEngine trace/replay with exact graph checks, "
+                        "energy+conservative forces (no stress)",
             }
             records.append(rec)
             print(f"N={N} edges={calc.n_edges} median={med:.3f} ms  => {1000.0/med:.2f} steps/s"

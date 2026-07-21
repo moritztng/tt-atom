@@ -59,7 +59,7 @@ charged / open-shell).
 | orb | conservative-inf-omat | bulk / omat (MgO oxide, multi-element) | energy rel err, force PCC | 0 / 1.00000 | 0 / 1.00000 | 1.6e-3 / 0.99998 | PASS§ |
 | orb | conservative-inf-omat | stress (conservative) | stress PCC (Voigt-6) | 1.00000 | 1.00000 | 0.99995 | PASS |
 | orb | direct-20-omat | stress (dedicated head) | stress PCC (Voigt-6) | 1.00000 | 1.00000 | 0.99997 | PASS |
-| orb | direct-20-omat | ZBL short-contact forces | force PCC (GNN + ZBL) | 1.00000 | 1.00000 | 1.00000 | PASS‖ |
+| orb | direct-20-omat | ZBL short contact | force PCC (GNN + ZBL) | 1.00000 | 1.00000 | 1.00000 | PASS‖ |
 | orbmol | conservative-omol | molecule (closed-shell) | energy rel err, force PCC | 0 / 1.00000 | 0 / 1.00000 | 1.6e-6 / 0.99973 | PASS |
 | orbmol | conservative-omol | charged (NH4+) | energy rel err, force PCC | 0 / 1.00000 | 0 / 1.00000 | 4.6e-6 / 0.99331 | PASS |
 | orbmol | conservative-omol | open-shell radical (CH3·) | energy rel err, force PCC | 0 / 1.00000 | 0 / 1.00000 | 9.2e-6 / 0.97850 | PASS‡ |
@@ -89,12 +89,13 @@ stress head, consistent with stress being meaningless for an isolated
 molecule.
 
 ‖ The ZBL short-contact row uses a Si structure pushed to a bond length
-where the ZBL pair-repulsion term is non-negligible (0.106 eV, 1.3% of the
+where the ZBL pair-repulsion term is non-negligible (0.194 eV, 2.4% of the
 total 8.14 eV, versus ~1e-7 eV for the bulk-Si golden). The host ZBL
-forces match a finite-difference check to 3.7e-10, and the total
+forces match a finite-difference check to 7.3e-10. Its energy and stress
+match the upstream ZBL fixture within 1e-6 eV and 1e-9 eV/A³, and the total
 (GNN + ZBL) force PCC is 1.00000 vs the `orb-models` oracle (|F|max
-51.3 eV/A) — i.e. the ZBL correction is exact on the host and the device
-GNN force matches the oracle at short contact, not just at equilibrium.
+51.3 eV/A). The ASE calculator's total stress, including the ZBL virial,
+has PCC 0.99999 on the same structure.
 
 § The MgO row is the first multi-element bulk system in the suite — every
 other bulk row is pure Si (Z=14). It exercises three code paths a single-Z

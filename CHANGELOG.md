@@ -21,9 +21,14 @@ smoke (see `RELEASING.md`).
 - The silicon-melt example now checks the exact-cutoff neighbour graph every step and recaptures
   only when it changes. The earlier trajectory is withdrawn because its skin policy could reuse
   stale edges.
+- Orb stress now includes ZBL pair repulsion, matching upstream conservative and direct
+  checkpoints at short contact. Both traced MD examples also include total ZBL energy and forces.
+- Explicit UMA checkpoint paths now participate in the bundle-cache identity, preventing weights
+  exported from one checkpoint from being silently reused for another.
 
 ### Changed
-- Accuracy coverage now includes all periodic UMA tasks and Orb's bf8 fast mode.
+- Accuracy coverage now includes all periodic UMA tasks, both families' batch-vs-separate parity,
+  Orb's bf8 fast mode, and short-contact ZBL stress.
 - Performance baselines now cover UMA and record the `ttnn` version that produced them.
 - The clean-install gate builds the candidate wheel, installs it and its runtime dependencies in
   isolation, and verifies the exact pushed commit and packaged exporters.

@@ -21,7 +21,7 @@ with still works, headlessly and fast, on a tiny input:
 The simulation commands use the committed tiny UMA bundle, so this gate runs in the validated
 source-built environment and does not need a reference environment or checkpoint download.
 
-Fast + deterministic: H2O (3 atoms), MD ``--steps 5``, relax ``steps=20`` on a rattled
+Fast + deterministic: H2O (3 atoms), MD ``--steps 5``, relax ``steps=2`` on a rattled
 geometry. This checks UX plumbing, not accuracy — it does not need a real relaxation.
 Exit 0 iff every requested leg PASSES; 1 otherwise. Runs on one card (one device context).
 
@@ -46,8 +46,8 @@ from pathlib import Path
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-# H2O (3 atoms) is the canonical tiny target — small enough that the Orb load + 5 MD
-# steps + a 20-step FIRE relax clear in well under a minute on card. UX plumbing only.
+# H2O (3 atoms) is the canonical tiny target — small enough that the committed UMA bundle,
+# 5 MD steps, and a 2-step FIRE relax clear quickly on card. UX plumbing only.
 MOL = "H2O"
 MD_STEPS = 5
 RELAX_STEPS = 2

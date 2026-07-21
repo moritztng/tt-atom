@@ -41,7 +41,7 @@ def build_si():
 
 
 def build_short_contact():
-    """A deliberately short Si-Si contact (1.4 A, well inside the ~2.2 A covalent-radii-sum ZBL
+    """A deliberately short Si-Si contact (1.4 A, well inside the ~2.1 A covalent-radii-sum ZBL
     envelope cutoff) to exercise the ZBL pair-repulsion term non-negligibly -- the existing
     ``build_si`` bulk golden's nearest-neighbor distance (2.20-2.35 A) sits just outside it (see
     docs/orb-port.md). Non-periodic (a large vacuum box) so the short contact is unambiguous."""

@@ -21,8 +21,8 @@ One extra variant runs *only for transparency* and is clearly labelled NOT the u
 
   frozen_eager      -- neighbour list frozen + `regressor.predict` called directly (bypasses
                         ORBCalculator): isolates the per-step neighbour-rebuild cost, i.e.
-                        "what would the GPU do if orb_models cached the graph like the p150
-                        path does for a solid". A hand-tuned upper bound, never the headline.
+                        "what would the GPU do if orb_models reused an unchanged graph like the
+                        p150 path". A hand-tuned upper bound, never the headline.
 
 `frozen_cudagraph` (torch.compile reduce-overhead = CUDA graphs) is intentionally NOT run
 here: on orb_models' conservative model it recompiles every step (~539 ms/step measured on

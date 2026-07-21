@@ -208,7 +208,8 @@ def test_direct_energy_and_forces(device, system):
         running_var=w["energy_head.normalizer.bn.running_var"],
         ref_weight=w["energy_head.reference.linear.weight"].view(-1),
     )
-    zbl_energy = host_zbl_energy(atomic_numbers, senders, receivers, vectors)
+    zbl_energy = host_zbl_energy(
+        atomic_numbers, senders, receivers, vectors, node_aggregation="sum")
     total_energy = float(gnn_energy + zbl_energy)
     gold_energy = float(gw.out("energy")[0])
     e_rel_err = abs(total_energy - gold_energy) / abs(gold_energy)
@@ -222,7 +223,8 @@ def test_direct_energy_and_forces(device, system):
         raw_f, running_mean=w["forces_head.normalizer.bn.running_mean"],
         running_var=w["forces_head.normalizer.bn.running_var"],
     )
-    zbl_forces = host_zbl_forces(atomic_numbers, senders, receivers, pos)
+    zbl_forces = host_zbl_forces(
+        atomic_numbers, senders, receivers, pos, node_aggregation="sum")
     total_forces = (gnn_forces + zbl_forces).numpy()
     gold_forces = gw.out("forces").numpy()
     pcc_f = _pcc(total_forces, gold_forces)

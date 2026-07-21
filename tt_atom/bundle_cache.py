@@ -66,11 +66,16 @@ def composition_hash(numbers):
     return hashlib.sha1(s.encode()).hexdigest()[:12]
 
 
-def bundle_path(model, task, numbers, charge, spin, cache_dir=None):
+def bundle_path(model, task, numbers, charge, spin, cache_dir=None, checkpoint=None):
     """Deterministic cache path for a merged bundle. Same composition/charge/spin/task/model ->
-    same file, regardless of atom ordering or an integer scaling of the counts."""
+    same file, regardless of atom ordering or an integer scaling of the counts. An explicit
+    checkpoint gets its own namespace so switching checkpoint paths cannot reuse old weights."""
     h = composition_hash(numbers)
-    name = f"{model}_{task}_{h}_c{int(charge)}_s{int(spin)}.npz"
+    checkpoint_suffix = ""
+    if checkpoint is not None:
+        identity = str(pathlib.Path(checkpoint).expanduser().resolve())
+        checkpoint_suffix = f"_ckpt{hashlib.sha1(identity.encode()).hexdigest()[:12]}"
+    name = f"{model}_{task}_{h}_c{int(charge)}_s{int(spin)}{checkpoint_suffix}.npz"
     return pathlib.Path(cache_dir or CACHE_DIR) / name
 
 
@@ -167,7 +172,8 @@ def get_or_build(atoms, *, model="uma-s-1", task="omol", charge=0, spin=1, refen
     """Return the cache path for this system's bundle, building it on a miss. Pure I/O + subprocess
     — no ttnn, no device. ``TTAtomCalculator.from_uma`` wraps this and returns a calculator."""
     numbers = atoms.get_atomic_numbers()
-    path = bundle_path(model, task, numbers, charge, spin, cache_dir=cache_dir)
+    path = bundle_path(
+        model, task, numbers, charge, spin, cache_dir=cache_dir, checkpoint=checkpoint)
     if path.exists():
         return path
     if log:

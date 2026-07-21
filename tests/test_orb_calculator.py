@@ -43,14 +43,15 @@ def _build_molecule():
 
 
 def _build_short_contact():
-    """Two Si atoms 1.4 A apart (aperiodic) -- same system as ``gen_golden_orb.py``'s
+    """Two Si atoms 1.4 A apart in a large periodic box -- the same graph as
+    ``gen_golden_orb.py``'s
     ``build_short_contact``: well inside every checkpoint's max_num_neighbors (1 neighbour each),
-    and ZBL pair-repulsion is ~1.3% of the energy here (negligible in the bulk Si golden), so this
-    doubles as a real exercise of the calculator's ZBL energy+force addition."""
+    and ZBL pair-repulsion is ~2.4% of the energy here (negligible in the bulk Si golden), so this
+    doubles as a real exercise of the calculator's ZBL energy/force/stress addition."""
     from ase import Atoms
 
     return Atoms("Si2", positions=[[0.0, 0.0, 0.0], [1.4, 0.0, 0.0]], cell=[20.0, 20.0, 20.0],
-                pbc=False)
+                pbc=True)
 
 
 def _have(checkpoint, golden):
@@ -88,8 +89,8 @@ def test_conservative_omat_end_to_end(device):
 def test_direct_omat_end_to_end(device):
     """The bulk Si golden's periodic images alone exceed max_num_neighbors=20 for this checkpoint
     (this port doesn't implement Orb's own neighbour-list truncation, see the guard test below),
-    so this uses the aperiodic short-contact system instead -- also a real exercise of the ZBL
-    force addition (non-negligible here, unlike the bulk golden)."""
+    so this uses the large-box short-contact system instead -- also a real exercise of the ZBL
+    energy/force/stress addition (non-negligible here, unlike the bulk golden)."""
     from tt_atom.orb_calculator import OrbCalculator
 
     gold = np.load(GOLDEN_DIR / "si_short_contact_orb_direct20.npz")
@@ -99,14 +100,17 @@ def test_direct_omat_end_to_end(device):
         atoms.calc = calc
         E = atoms.get_potential_energy()
         F = atoms.get_forces()
+        S = atoms.get_stress()
 
-        gold_E, gold_F = float(gold["out@energy"][0]), gold["out@forces"]
+        gold_E, gold_F, gold_S = (
+            float(gold["out@energy"][0]), gold["out@forces"], gold["out@stress"][0])
         e_rel_err = abs(E - gold_E) / abs(gold_E)
         f_pcc = np.corrcoef(F.ravel(), gold_F.ravel())[0, 1]
+        s_pcc = np.corrcoef(S.ravel(), gold_S.ravel())[0, 1]
         print(f"\n[Orb(atoms) direct-20-omat, short contact] E={E:.6f} (oracle {gold_E:.6f}, "
-              f"rel err {e_rel_err:.2e}) forces PCC={f_pcc:.6f}")
+              f"rel err {e_rel_err:.2e}) forces PCC={f_pcc:.6f} stress PCC={s_pcc:.6f}")
         # Verified by hand (feeding the golden's own stored node/edge features through the same
-        # device modules reproduces this exact energy bit-for-bit): the ~2% gap is the existing
+        # device modules reproduces this exact energy bit-for-bit): the sub-1% gap is the existing
         # device GNN's own bf16 prediction at this deliberately out-of-training-distribution 1.4 A
         # bond (built to stress ZBL, docs/orb-port.md), not a bug in this calculator's host
         # geometry -- ZBL itself matches the oracle's own decomposition exactly. Forces (PCC of
@@ -114,6 +118,7 @@ def test_direct_omat_end_to_end(device):
         # tests/test_orb_zbl_forces.py (which also carries no energy bound for this system).
         assert e_rel_err < 0.03, e_rel_err
         assert f_pcc > 0.999, f_pcc
+        assert s_pcc > 0.99, s_pcc
     finally:
         calc.close()
 

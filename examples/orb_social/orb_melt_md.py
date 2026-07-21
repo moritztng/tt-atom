@@ -4,12 +4,11 @@ Heats a 216-atom diamond-cubic Si supercell through its melting point and into t
 switches off the thermostat for an NVE tail that measures energy conservation. Every force comes
 off the device at every step (Orb-v3 conservative ``F = -dE/dpos``); the host integrates.
 
-Two things make this a *melt* rather than the solid-vibration demo in ``examples/orb_md.py``:
+Two things matter for this melt trajectory:
 
-* **Exact changing neighbour graph.** The traced engine in ``orb_md.py`` freezes the graph at the
-  initial geometry, which is exact for a solid but wrong once atoms diffuse. Here the exact-cutoff
-  graph is checked every step. A fresh trace is captured only when its edges or periodic shifts
-  change, so unchanged steps still replay at full speed.
+* **Exact changing neighbour graph.** The exact-cutoff graph is checked every step, as in
+  ``orb_md.py``. A fresh trace is captured only when its edges or periodic shifts change, so
+  unchanged steps still replay at full speed.
 * **NVT ramp -> NVE tail.** A Langevin thermostat ramps the target temperature from ``--t-start``
   to ``--t-end`` over ``--ramp-steps`` (robust melting — the bath keeps feeding energy as the
   lattice absorbs the latent heat of fusion, so the crystal reliably disorders instead of
@@ -71,7 +70,6 @@ class OrbMeltCalculator(Calculator):
                        for i in range(L)]
         self.ehead = EnergyHead(w, self.device, latent_dim=cfg["latent_dim"], hidden_dim=1024,
                                 fast=fast)
-        self._node_row = gw.host("node_feat")[0:1]      # monatomic Si => one row tiled to N
         self.engine = None
         self._edge_index = None
         self._cell_shift = None
@@ -91,18 +89,18 @@ class OrbMeltCalculator(Calculator):
         return pos, edge_index, shift
 
     def _build_engine(self, atoms, edge_index, shift):
+        from tt_atom.orb_model import host_node_features
         from tt_atom.orb_trace import OrbTracedEngine
 
         if self.engine is not None:
             self.engine.close()
             self.engine = None
         Z = torch.tensor(atoms.get_atomic_numbers(), dtype=torch.long)
-        N = len(Z)
         src, tgt = edge_index[0], edge_index[1]
         senders, receivers = tgt, src            # Orb convention is the opposite of UMA's
         self._Z = Z
         self.n_edges = int(senders.shape[0])
-        node_feat = self._node_row.repeat(N, 1)
+        node_feat = host_node_features(self.w, Z)
         self.engine = OrbTracedEngine(
             self.enc, self.layers, self.device, senders=senders, receivers=receivers,
             atomic_numbers=Z, node_feat=node_feat, ehead=self.ehead, cell_shift=shift,
@@ -114,7 +112,7 @@ class OrbMeltCalculator(Calculator):
     def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
         super().calculate(atoms, properties, system_changes)
         from tt_atom.orb_model import (host_conservative_force_denormalize,
-                                        host_energy_denormalize)
+                                        host_energy_denormalize, host_zbl_energy, host_zbl_forces)
 
         pos, edge_index, shift = self._current_graph(atoms)
         changed = (
@@ -131,6 +129,8 @@ class OrbMeltCalculator(Calculator):
 
         Z = self._Z
         N = len(Z)
+        src, tgt = edge_index[0], edge_index[1]
+        senders, receivers = tgt, src
 
         t0 = time.perf_counter()
         raw_e, raw_f = self.engine(pos)
@@ -143,6 +143,9 @@ class OrbMeltCalculator(Calculator):
             running_mean=self.w["energy_head.normalizer.bn.running_mean"],
             running_var=self.w["energy_head.normalizer.bn.running_var"],
             ref_weight=self.w["energy_head.reference.linear.weight"].view(-1))
+        vectors = pos[receivers] - pos[senders] + shift
+        forces = forces + host_zbl_forces(Z, senders, receivers, pos, shift)
+        energy = energy + host_zbl_energy(Z, senders, receivers, vectors)
         self.results["energy"] = float(energy)
         self.results["forces"] = forces.detach().numpy().astype(np.float64)
 

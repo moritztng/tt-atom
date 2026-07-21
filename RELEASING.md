@@ -13,8 +13,9 @@ TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py
 
 Each device leg runs in a fresh process so its device state cannot leak into the next one.
 
-1. **Accuracy** runs the molecular and periodic UMA parity modules plus the Orb real-weight and
-   fast-mode modules against their embedded fairchem or `orb-models` references.
+1. **Accuracy** runs the molecular, periodic, and batched UMA parity modules plus the Orb
+   real-weight, batched, and fast-mode modules against their embedded fairchem or `orb-models`
+   references.
 2. **No OOM** sweeps Orb and UMA disjoint batches through 128 systems in separate device
    processes and reports each completed ceiling.
 3. **Performance** compares warm throughput for UMA, Orb-v3, and OrbMol with the card-specific

@@ -6,14 +6,12 @@ forces ``F = -dE/dpos`` come off the device every timestep and drive ASE's Lange
 
 Two things make it fast and simple:
 
-* The neighbour list is frozen at the initial geometry and the device forward+backward is
-  trace-captured once, then replayed (``tt_atom.orb_trace.OrbTracedEngine``). This is exact for a
-  solid crystal (atoms vibrate about their lattice sites and never cross the cutoff, so the
-  topology is genuinely constant) and keeps the tensor shapes fixed so the program cache hits --
-  rebuilding the graph each step instead changes shapes and recompiles kernels every step.
+* The exact-cutoff neighbour graph is checked each step. The device forward+backward trace
+  (``tt_atom.orb_trace.OrbTracedEngine``) is replayed while it is unchanged and recaptured when an
+  edge or periodic shift changes.
 * Orb's node feature is atomic-number-only, so for a monatomic crystal every row is identical and
-  one row (from any golden bundle of the same checkpoint) tiles to any supercell size -- no
-  reference-env export needed for the MD system itself.
+  is looked up directly from the checkpoint's embedding table -- no reference-env export is
+  needed for the MD system itself.
 
     TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python examples/orb_md.py \
         --weights si_supercell_orb.npz --nx 3 --ny 3 --nz 3 --steps 300 --temp 900 --out traj.extxyz
@@ -39,9 +37,8 @@ from ase.calculators.calculator import Calculator, all_changes
 class OrbDeviceCalculator(Calculator):
     """ASE calculator: energy + conservative forces from Orb-v3 on a Tenstorrent card.
 
-    Single-element crystal only (tiles one node-feature row to the whole supercell). The
-    neighbour list is fixed at the first geometry and the device graph is trace-captured, so use
-    it for solid-state MD / relaxation where the topology does not change."""
+    The exact neighbour graph is checked every step. The device graph is trace-captured and
+    replayed until that topology changes."""
 
     implemented_properties = ["energy", "forces"]
 
@@ -66,36 +63,55 @@ class OrbDeviceCalculator(Calculator):
                        for i in range(L)]
         self.ehead = EnergyHead(w, self.device, latent_dim=cfg["latent_dim"], hidden_dim=1024,
                                 fast=fast)
-        self._node_row = gw.host("node_feat")[0:1]     # atomic-number-only => identical per atom
         self.engine = None
         self.step_ms = []
         self.n_edges = None
+        self._edge_index = None
+        self._cell_shift = None
 
-    def _build_engine(self, atoms):
+    def _current_graph(self, atoms):
         from tt_atom.geometry import radius_graph
+
+        pos = torch.tensor(atoms.get_positions(), dtype=torch.float64)
+        cell = torch.tensor(np.array(atoms.get_cell()), dtype=torch.float64)
+        edge_index, shift = radius_graph(pos, self.r_max, cell=cell, pbc=[True, True, True])
+        return pos, edge_index, shift
+
+    def _build_engine(self, atoms, edge_index, shift):
+        from tt_atom.orb_model import host_node_features
         from tt_atom.orb_trace import OrbTracedEngine
 
-        pos0 = torch.tensor(atoms.get_positions(), dtype=torch.float64)
-        cell = torch.tensor(np.array(atoms.get_cell()), dtype=torch.float64)
+        if self.engine is not None:
+            self.engine.close()
         self._Z = torch.tensor(atoms.get_atomic_numbers(), dtype=torch.long)
-        N = len(self._Z)
-        edge_index, shift = radius_graph(pos0, self.r_max, cell=cell, pbc=[True, True, True])
         src, tgt = edge_index[0], edge_index[1]
         senders, receivers = tgt, src                  # Orb convention is the opposite of UMA's
         self.n_edges = int(senders.shape[0])
         self.engine = OrbTracedEngine(
             self.enc, self.layers, self.device, senders=senders, receivers=receivers,
-            atomic_numbers=self._Z, node_feat=self._node_row.repeat(N, 1), ehead=self.ehead,
+            atomic_numbers=self._Z, node_feat=host_node_features(self.w, self._Z), ehead=self.ehead,
             cell_shift=shift, r_max=self.r_max)
+        self._edge_index = edge_index.clone()
+        self._cell_shift = shift.clone()
 
     def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
         super().calculate(atoms, properties, system_changes)
-        from tt_atom.orb_model import host_conservative_force_denormalize, host_energy_denormalize
+        from tt_atom.orb_model import (host_conservative_force_denormalize,
+                                       host_energy_denormalize, host_zbl_energy, host_zbl_forces)
 
-        if self.engine is None:
-            self._build_engine(atoms)
+        pos, edge_index, shift = self._current_graph(atoms)
+        changed = (
+            self.engine is None
+            or self._edge_index.shape != edge_index.shape
+            or not torch.equal(self._edge_index, edge_index)
+            or self._cell_shift.shape != shift.shape
+            or not torch.equal(self._cell_shift, shift)
+        )
+        if changed:
+            self._build_engine(atoms, edge_index, shift)
         Z, N = self._Z, len(self._Z)
-        pos = torch.tensor(atoms.get_positions(), dtype=torch.float64)
+        src, tgt = edge_index[0], edge_index[1]
+        senders, receivers = tgt, src
 
         t0 = time.perf_counter()
         raw_e, raw_f = self.engine(pos)                # captures on first call, replays afterwards
@@ -108,6 +124,9 @@ class OrbDeviceCalculator(Calculator):
             running_mean=self.w["energy_head.normalizer.bn.running_mean"],
             running_var=self.w["energy_head.normalizer.bn.running_var"],
             ref_weight=self.w["energy_head.reference.linear.weight"].view(-1))
+        vectors = pos[receivers] - pos[senders] + shift
+        forces = forces + host_zbl_forces(Z, senders, receivers, pos, shift)
+        energy = energy + host_zbl_energy(Z, senders, receivers, vectors)
         self.results["energy"] = float(energy)
         self.results["forces"] = forces.detach().numpy().astype(np.float64)
 

@@ -4,7 +4,7 @@ The existing bulk-Si
 golden's nearest-neighbor distance sits just outside the ZBL envelope cutoff (measured negligible,
 ~1e-7 eV), so it never exercises this term. This test uses a dedicated short-contact golden
 (``tests/gen_golden_orb.py --system short_contact``: two Si atoms 1.4 A apart, well inside the
-~2.2 A covalent-radii-sum cutoff) where ZBL is ~1.3% of the total energy and dominates the force
+~2.1 A covalent-radii-sum cutoff) where ZBL is ~2.4% of the total energy and materially affects the
 magnitude (oracle |F|max ~51 eV/A vs ~2.5 eV/A for the bulk golden).
 
 Verifies ``orb-v3-direct-20-omat``'s *total* force = device ``ForceHead`` MLP prediction (no ZBL
@@ -63,11 +63,31 @@ def test_zbl_energy_is_non_negligible_here(gw):
     senders, receivers = gw.inp("senders").long(), gw.inp("receivers").long()
     atomic_numbers = gw.inp("atomic_numbers").long()
     vectors = gw.inp("vectors")
-    zbl_e = float(host_zbl_energy(atomic_numbers, senders, receivers, vectors))
+    zbl_e = float(host_zbl_energy(
+        atomic_numbers, senders, receivers, vectors, node_aggregation="sum"))
     total_e = float(gw.out("energy")[0])
     print(f"\n[orb] short-contact ZBL energy={zbl_e:.4f} eV ({100*zbl_e/total_e:.1f}% of total "
           f"{total_e:.4f} eV) -- vs ~1e-7 eV for the bulk-Si golden")
     assert abs(zbl_e) > 1e-3
+
+
+def test_direct_zbl_energy_and_stress_match_orb_reference(gw):
+    """Lock the direct checkpoint's sum aggregation and pair virial to Orb 0.5.5."""
+    from tt_atom.orb_model import host_zbl_energy, host_zbl_stress
+
+    senders, receivers = gw.inp("senders").long(), gw.inp("receivers").long()
+    atomic_numbers = gw.inp("atomic_numbers").long()
+    vectors = gw.inp("vectors")
+    cell = gw.inp("cell").squeeze(0)
+    energy = host_zbl_energy(
+        atomic_numbers, senders, receivers, vectors, node_aggregation="sum")
+    stress = host_zbl_stress(
+        atomic_numbers, senders, receivers, vectors, cell, node_aggregation="sum")
+
+    # Captured directly from orb_models.forcefield.pair_repulsion.ZBLBasis on this fixture.
+    assert float(energy) == pytest.approx(0.193566128612, abs=1e-6)
+    assert stress.numpy() == pytest.approx(
+        [-0.000226193893, 0.0, 0.0, 0.0, 0.0, 0.0], abs=1e-9)
 
 
 def test_zbl_forces_match_finite_difference(gw):
@@ -81,7 +101,8 @@ def test_zbl_forces_match_finite_difference(gw):
     vectors_gold = gw.inp("vectors").double()
     cell_shift = (vectors_gold - (pos[receivers] - pos[senders])).detach()
 
-    forces = host_zbl_forces(atomic_numbers, senders, receivers, pos, cell_shift)
+    forces = host_zbl_forces(
+        atomic_numbers, senders, receivers, pos, cell_shift, node_aggregation="sum")
 
     eps = 1e-5
     fd = torch.zeros_like(pos)
@@ -91,7 +112,8 @@ def test_zbl_forces_match_finite_difference(gw):
                 pp = pos.clone()
                 pp[n, d] += sign * eps
                 vp = pp[receivers] - pp[senders] + cell_shift
-                e = host_zbl_energy(atomic_numbers, senders, receivers, vp)
+                e = host_zbl_energy(
+                    atomic_numbers, senders, receivers, vp, node_aggregation="sum")
                 if out == "p":
                     ep = e
                 else:
@@ -145,7 +167,8 @@ def test_direct20_total_force_with_zbl(gw, device):
 
     pos = gw.inp("pos").double()
     cell_shift = (vectors.double() - (pos[receivers] - pos[senders])).detach()
-    zbl_forces = host_zbl_forces(atomic_numbers, senders, receivers, pos, cell_shift)
+    zbl_forces = host_zbl_forces(
+        atomic_numbers, senders, receivers, pos, cell_shift, node_aggregation="sum")
 
     total_forces = (gnn_forces + zbl_forces).numpy()
     gnn_only = gnn_forces.numpy()

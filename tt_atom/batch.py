@@ -109,6 +109,7 @@ def _run_orb(b, cfg, fast, device_id, in_q, out_q):
     L = cfg["num_message_passing_steps"]
     latent_dim, hidden_dim = cfg["latent_dim"], 1024
     has_cond = "conditioner.charge_embedding.W" in w
+    zbl_aggregation = "sum" if "forces_head.mlp.NN-0.weight" in w else "mean"
     dev = open_device(0)
     encoder = Encoder(w, dev, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
                       latent_dim=latent_dim, hidden_dim=hidden_dim, fast=fast)
@@ -156,7 +157,8 @@ def _run_orb(b, cfg, fast, device_id, in_q, out_q):
             raw_e, Z, N, running_mean=w["energy_head.normalizer.bn.running_mean"],
             running_var=w["energy_head.normalizer.bn.running_var"],
             ref_weight=w["energy_head.reference.linear.weight"].view(-1))
-        E_tot = float(E_gnn + host_zbl_energy(Z, senders, receivers, vectors))
+        E_tot = float(E_gnn + host_zbl_energy(
+            Z, senders, receivers, vectors, node_aggregation=zbl_aggregation))
         out_q.put((idx, E_tot, E))
 
     ttnn.close_device(dev)

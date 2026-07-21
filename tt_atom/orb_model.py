@@ -479,12 +479,13 @@ def host_conservative_stress(virial: torch.Tensor, n_node: int, cell: torch.Tens
 
 
 def host_zbl_energy(atomic_numbers: torch.Tensor, senders: torch.Tensor, receivers: torch.Tensor,
-                    vectors: torch.Tensor, *, p: int = 6) -> torch.Tensor:
+                    vectors: torch.Tensor, *, p: int = 6,
+                    node_aggregation: str = "mean") -> torch.Tensor:
     """Ziegler-Biersack-Littmark pair-repulsion energy (``pair_repulsion.ZBLBasis``) -- a fixed
     physical potential (6 universal constants, no learned weights) computed on host directly
     from real atomic numbers + edge vectors, exactly like the attention cutoff envelope.
-    Single-system only; returns the mean-aggregated (BC override, see ``pretrained.py``'s
-    ``pair_repulsion_fn.node_aggregation = "mean"``) scalar energy to add to the GNN energy.
+    Single-system only. Conservative checkpoints use the default per-node mean; direct checkpoints
+    use ``node_aggregation="sum"`` (matching their respective upstream ``ZBLBasis`` instances).
     """
     import ase.data
 
@@ -493,6 +494,8 @@ def host_zbl_energy(atomic_numbers: torch.Tensor, senders: torch.Tensor, receive
     a_exp, a_prefactor = 0.300, 0.4543
     covalent_radii = torch.tensor(ase.data.covalent_radii, dtype=torch.float64)
 
+    # Orb's ``atomic_numbers_embedding`` is indexed by the stored integer and ZBLBasis then adds
+    # one after argmax; preserve that upstream convention exactly.
     Z_u = atomic_numbers[senders].double() + 1
     Z_v = atomic_numbers[receivers].double() + 1
     a = a_prefactor * 0.529 / (Z_u.pow(a_exp) + Z_v.pow(a_exp))
@@ -505,8 +508,7 @@ def host_zbl_energy(atomic_numbers: torch.Tensor, senders: torch.Tensor, receive
     coulomb_term = 14.3996 * Z_u * Z_v / x
     v_edges_raw = coulomb_term * phi
 
-    r_max = (covalent_radii[atomic_numbers[senders].long()]
-             + covalent_radii[atomic_numbers[receivers].long()])
+    r_max = covalent_radii[Z_u.long()] + covalent_radii[Z_v.long()]
     r_ratio = x / r_max
     mask = (x < r_max).double()
     envelope = (
@@ -519,11 +521,16 @@ def host_zbl_energy(atomic_numbers: torch.Tensor, senders: torch.Tensor, receive
     v_edges = 0.5 * v_edges_raw * envelope
     N = atomic_numbers.shape[0]
     V_ZBL = torch.zeros(N, dtype=torch.float64).index_add_(0, senders, v_edges)
-    return V_ZBL.mean()
+    if node_aggregation == "mean":
+        return V_ZBL.mean()
+    if node_aggregation == "sum":
+        return V_ZBL.sum()
+    raise ValueError(f"node_aggregation must be 'mean' or 'sum', got {node_aggregation!r}")
 
 
 def host_zbl_forces(atomic_numbers: torch.Tensor, senders: torch.Tensor, receivers: torch.Tensor,
-                    pos: torch.Tensor, cell_shift: torch.Tensor | None = None) -> torch.Tensor:
+                    pos: torch.Tensor, cell_shift: torch.Tensor | None = None, *,
+                    node_aggregation: str = "mean") -> torch.Tensor:
     """``dV_ZBL/dr`` via host ``torch.autograd`` on the same closed-form ``host_zbl_energy`` --
     ZBL has zero learned parameters, so (unlike the GNN backbone's device VJP,
     ``tt_atom/orb_forces.py``) there is no device backward to write here at all; this is the
@@ -540,8 +547,32 @@ def host_zbl_forces(atomic_numbers: torch.Tensor, senders: torch.Tensor, receive
     vectors = pos[receivers] - pos[senders]
     if cell_shift is not None:
         vectors = vectors + cell_shift
-    energy = host_zbl_energy(atomic_numbers, senders, receivers, vectors)
+    energy = host_zbl_energy(
+        atomic_numbers, senders, receivers, vectors, node_aggregation=node_aggregation)
     return -torch.autograd.grad(energy, pos)[0]
+
+
+def host_zbl_stress(atomic_numbers: torch.Tensor, senders: torch.Tensor, receivers: torch.Tensor,
+                    vectors: torch.Tensor, cell: torch.Tensor, *,
+                    node_aggregation: str = "mean") -> torch.Tensor:
+    """ZBL virial stress in Orb's Voigt-6 convention.
+
+    Orb differentiates total energy, including pair repulsion, with respect to a symmetric strain
+    for conservative checkpoints. Its direct checkpoints compute the equivalent pair virial.
+    Differentiating the shared closed-form energy keeps both paths identical here.
+    """
+    strain = torch.zeros((3, 3), dtype=torch.float64, requires_grad=True)
+    symmetric = 0.5 * (strain + strain.T)
+    strained_vectors = vectors.detach().double() @ (torch.eye(3, dtype=torch.float64) + symmetric)
+    energy = host_zbl_energy(
+        atomic_numbers, senders, receivers, strained_vectors,
+        node_aggregation=node_aggregation)
+    virial = torch.autograd.grad(energy, strain)[0]
+    stress = virial / torch.linalg.det(cell.detach().double()).abs()
+    s01 = 0.5 * (stress[0, 1] + stress[1, 0])
+    s02 = 0.5 * (stress[0, 2] + stress[2, 0])
+    s12 = 0.5 * (stress[1, 2] + stress[2, 1])
+    return torch.stack([stress[0, 0], stress[1, 1], stress[2, 2], s12, s02, s01])
 
 
 def host_energy_denormalize(raw_pred: torch.Tensor, atomic_numbers: torch.Tensor, n_node: int, *,

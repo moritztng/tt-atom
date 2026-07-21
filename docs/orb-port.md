@@ -55,7 +55,7 @@ bit-identical across reruns. The analysis is reproducible with
 `scripts/orb_omol_noise_floor.py` and `scripts/orb_omol_ref_self_consistency.py`.
 
 Additional release rows cover periodic graph reconstruction, MgO mixed-element chemistry,
-conservative and direct stress, and short-contact ZBL forces. See
+conservative and direct stress, and short-contact ZBL energy, forces, and stress. See
 [`materials-benchmark.md`](materials-benchmark.md) for the complete table.
 
 ## Throughput

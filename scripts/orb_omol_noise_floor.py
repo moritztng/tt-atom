@@ -94,7 +94,10 @@ def device_forces(system, tag):
             running_var=w["energy_head.normalizer.bn.running_var"],
             ref_weight=w["energy_head.reference.linear.weight"].view(-1),
         )
-        zbl_energy = host_zbl_energy(atomic_numbers, senders, receivers, vectors)
+        zbl_aggregation = "sum" if tag == "direct" else "mean"
+        zbl_energy = host_zbl_energy(
+            atomic_numbers, senders, receivers, vectors,
+            node_aggregation=zbl_aggregation)
         total_energy = float(gnn_energy + zbl_energy)
         gold_energy = float(gw.out("energy")[0])
         e_rel_err = abs(total_energy - gold_energy) / abs(gold_energy)
@@ -106,7 +109,9 @@ def device_forces(system, tag):
                 raw_f, running_mean=w["forces_head.normalizer.bn.running_mean"],
                 running_var=w["forces_head.normalizer.bn.running_var"],
             )
-            zbl_forces = host_zbl_forces(atomic_numbers, senders, receivers, pos)
+            zbl_forces = host_zbl_forces(
+                atomic_numbers, senders, receivers, pos,
+                node_aggregation=zbl_aggregation)
             D = (gnn_forces + zbl_forces).numpy()
         else:
             raw_e_f, forces_raw = orb_forces.energy_and_forces(
@@ -117,7 +122,9 @@ def device_forces(system, tag):
             forces = host_conservative_force_denormalize(
                 forces_raw, N, running_var=w["energy_head.normalizer.bn.running_var"],
             )
-            zbl_forces = host_zbl_forces(atomic_numbers, senders, receivers, pos)
+            zbl_forces = host_zbl_forces(
+                atomic_numbers, senders, receivers, pos,
+                node_aggregation=zbl_aggregation)
             D = (forces + zbl_forces).numpy()
         R = gw.out("forces").numpy()
         return D, R, e_rel_err
