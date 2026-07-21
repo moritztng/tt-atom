@@ -264,11 +264,16 @@ class OrbCalculator(DeviceCalculator):
                 node_feat=node_feat, cell_shift=bg.cell_shift, seg_mean=seg_mean,
                 seg_mean_T=seg_mean_T, r_max=self.r_max, num_bases=self.num_bases,
                 cond_nodes=cond_nodes)
-        # Per-system denormalize + ZBL. Orb's normalizer scales forces by sigma * N_k per system
-        # (conservative) or sigma (direct). ZBL must also be evaluated per-system: conservative
-        # checkpoints mean-aggregate over each system's atoms, while direct checkpoints sum.
+        # Per-system denormalize + ZBL energy. ZBL forces are computed once for the whole
+        # disjoint union (block-diagonal edges => one autograd call suffices) and rescaled per
+        # system: direct checkpoints sum-aggregate (scale 1), conservative checkpoints mean-
+        # aggregate (scale 1/n_k). This keeps the per-system node_aggregation correctness while
+        # restoring the single-autograd-call batch cost.
         vectors = bg.pos[bg.receivers] - bg.pos[bg.senders] + bg.cell_shift
         zbl_aggregation = "sum" if self.is_direct else "mean"
+        if want_forces:
+            F_zbl_union = host_zbl_forces(
+                bg.Z, bg.senders, bg.receivers, bg.pos, bg.cell_shift, node_aggregation="sum")
         energies, forces_out, off = [], [], 0
         for k, n in enumerate(bg.natoms):
             Z_k = bg.Z[off:off + n]
@@ -289,12 +294,11 @@ class OrbCalculator(DeviceCalculator):
                     F_k = host_force_denormalize(
                         F_k, running_mean=self._w["forces_head.normalizer.bn.running_mean"],
                         running_var=self._w["forces_head.normalizer.bn.running_var"])
+                    F_k = F_k + F_zbl_union[off:off + n]
                 else:
                     F_k = host_conservative_force_denormalize(
                         F_k, n, running_var=self._w["energy_head.normalizer.bn.running_var"])
-                F_k = F_k + host_zbl_forces(
-                    Z_k, senders_k, receivers_k, bg.pos[off:off + n], bg.cell_shift[m],
-                    node_aggregation=zbl_aggregation)
+                    F_k = F_k + F_zbl_union[off:off + n] / n
                 forces_out.append(F_k.detach().numpy().astype(np.float64))
             off += n
         return dict(energy=np.array(energies), forces=forces_out if want_forces else None)
