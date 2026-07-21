@@ -67,3 +67,5 @@ jobs:
   # custom-kernel-only build and requires a source tt-metal/ttnn build (see RELEASING.md
   # / README Install), so a `pip install tt-atom` wheel can't run standalone — publishing
   # to PyPI would be misleading. (tt-bio, which is genuinely pip-installable, keeps PyPI.)
+  # Do NOT recreate a `pypi` environment or re-push tags v0.1.0/v0.2.0/v0.2.1 — their baked-in
+  # .yml workflow has a dead pypi-publish job. See RELEASING.md "Distribution" section.
