@@ -1,6 +1,6 @@
 """``tt-atom`` console entry — the user-facing commands for the ttnn runtime environment.
 
-    tt-atom run     STRUCTURE --uma-s-1 [--task] [--charge --spin] [--relax|--md] [--trace] [--out]
+    tt-atom run     STRUCTURE [--task] [--charge --spin] [--relax|--md] [--trace] [--out]
     tt-atom info    BUNDLE                      # config / task / weight coverage
     tt-atom verify  BUNDLE                      # device parity vs the embedded fairchem reference
     tt-atom relax   BUNDLE [--input geom.xyz | --molecule NAME] [--trace] [--fmax --steps]
@@ -37,27 +37,22 @@ def _resolve_charge_spin(args, bundle):
     return charge, spin
 
 
-def _atoms(args, bundle=None):
+def _atoms(args, bundle):
     from ase.build import molecule
     if args.input:
         from ase.io import read
         atoms = read(args.input)
     else:
         atoms = molecule(args.molecule)
-    if bundle is not None:
-        charge, spin = _resolve_charge_spin(args, bundle)
-    else:
-        charge = 0.0 if args.charge is None else args.charge
-        spin = 0.0 if args.spin is None else args.spin
+    charge, spin = _resolve_charge_spin(args, bundle)
     atoms.info.setdefault("charge", charge)
     atoms.info.setdefault("spin", spin)
     return atoms
 
 
-def _calc(args, bundle=None):
+def _calc(args, bundle):
     from .calculator import TTAtomCalculator
-    return TTAtomCalculator(bundle if bundle is not None else args.bundle,
-                            device_id=args.device_id, fast=args.fast,
+    return TTAtomCalculator(bundle, device_id=args.device_id, fast=args.fast,
                             trace=getattr(args, "trace", False))
 
 
@@ -247,7 +242,8 @@ def main(argv=None):
 
     p = sub.add_parser("run", help="one-shot: structure -> auto-bundle -> single-point/relax/md")
     p.add_argument("structure", help="ASE-readable structure (.xyz/.cif/.pdb/...)")
-    p.add_argument("--uma-s-1", action="store_true", help="use uma-s-1 (the default auto-build model)")
+    # Accepted silently for compatibility with the original one-model CLI.
+    p.add_argument("--uma-s-1", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--task", default=None,
                    help="dataset/task token (omol/omat/oc20/odac/omc); inferred from periodicity if unset")
     p.add_argument("--charge", type=float, default=0.0)

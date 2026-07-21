@@ -66,6 +66,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import shutil
 import signal
 import subprocess
@@ -78,7 +79,6 @@ from datetime import date
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 GOLDEN_DIR = pathlib.Path.home() / ".ttatom_run" / "goldens_real"
 BASELINE_FILE = REPO_ROOT / "docs" / "perf_baselines.json"
-RESULTS_DIR = pathlib.Path(tempfile.gettempdir()) / "tt-atom-release-gate"
 
 # ── leg 1: accuracy parity ─────────────────────────────────────────────────
 # Each spec is one real-weight parity module + the golden(s) it needs. A module auto-skips if
@@ -116,6 +116,11 @@ ACCURACY_SPECS = [
          golden="molecule_omol_conservative.npz;molecule_charged_omol_conservative.npz;"
                 "molecule_openshell_omol_conservative.npz;molecule_omol_direct.npz;"
                 "molecule_charged_omol_direct.npz;molecule_openshell_omol_direct.npz"),
+    dict(family="orb", checkpoint="conservative + direct",
+         regime="ASE calculator / public dispatch",
+         module="tests/test_orb_calculator.py",
+         golden="si_omat_orb.npz;si_short_contact_orb_direct20.npz;"
+                "molecule_omol_conservative.npz"),
 ]
 QUICK_ACCURACY = [
     "tests/test_orb_realweight.py",
@@ -243,7 +248,6 @@ def detect_card_type():
 
 
 def _version():
-    import re
     txt = (REPO_ROOT / "pyproject.toml").read_text()
     m = re.search(r'^version\s*=\s*"([^"]+)"', txt, re.M)
     return m.group(1) if m else "unknown"
@@ -717,8 +721,6 @@ def _save_baselines(data):
 
 def _card_baselines(data, card_type):
     cards = data.get("cards")
-    if not cards and data.get("models"):
-        return data["models"]
     entry = cards.get(card_type) if cards else None
     return entry.get("models", {}) if entry else None
 
@@ -819,7 +821,6 @@ def _update_perf_baselines(rows, card, note, threshold):
                            tt_atom_version=r["tt_atom_version"], ttnn_version=r["ttnn_version"],
                            date=r["date"], note=note)
         entry.update(date=r["date"], tt_atom_version=r["tt_atom_version"], note=note)
-    data.pop("models", None)
     _save_baselines(data)
     seeded = [r["model"] for r in rows if not r.get("failed")]
     print(f"\nWrote {BASELINE_FILE.relative_to(REPO_ROOT)}  "
@@ -881,9 +882,8 @@ def _print_perf(res):
 UX_SCRIPT = REPO_ROOT / "scripts" / "ux_regression.py"
 
 
-def run_ux(quick, cli_only):
-    """Shell out to scripts/ux_regression.py and report its verdict. Returns a result dict.
-    `quick` is accepted for API symmetry but the UX gate is already tiny (H2O, 5 MD steps)."""
+def run_ux(cli_only):
+    """Shell out to scripts/ux_regression.py and report its verdict."""
     if not UX_SCRIPT.exists():
         return dict(verdict="GAP", note=f"missing {UX_SCRIPT.relative_to(REPO_ROOT)}",
                     rows=[])
@@ -950,8 +950,11 @@ def measure_install(out_path):
     ttm = scratch / "tt-metal"
     tta = scratch / "tt-atom"
     log = []
-    clean_python = (
-        getattr(sys, "_base_executable", None) or shutil.which("python3") or sys.executable
+    base_bin = pathlib.Path(sys.base_prefix) / "bin"
+    clean_python = next(
+        (str(p) for p in (base_bin / "python3", base_bin / "python")
+         if p.is_file()),
+        shutil.which("python3") or sys.executable,
     )
 
     def note(msg):
@@ -978,6 +981,9 @@ def measure_install(out_path):
         result["built_commit"] = head
         note(f"[install] tt-metal HEAD={head} (pinned {PINNED_TT_METAL_COMMIT[:12]})")
         env = dict(os.environ)
+        env.pop("PYTHONPATH", None)
+        env["PATH"] = str(venv / "bin") + os.pathsep + env.get("PATH", "")
+        env["VIRTUAL_ENV"] = str(venv)
         env["TT_METAL_HOME"] = str(ttm)
         t_b = time.monotonic()
         bproc = subprocess.run(["./build_metal.sh", "--build-type", "Release"],
@@ -1013,16 +1019,16 @@ def measure_install(out_path):
         _run_cap(
             [venv_py, "-m", "pip", "install", "--force-reinstall", str(wheels[0])],
             cwd=scratch, env=install_env, timeout=600)
-        # reference env for the one-time Orb weight export (numpy>=2, has orb-models). Pinned to
-        # 0.5.5 — the export tool's target; newer orb-models changed the pretrained API. UMA's
-        # real-weight bundle would additionally need fairchem-core here (see README), but this
-        # gate's UMA smoke uses the committed random-weight golden, so orb-models alone suffices.
+        # Reference environment for both first-use exporters. orb-models is pinned to the API
+        # targeted by export_orb_weights.py; fairchem intentionally follows the supported range
+        # documented in docs/install.md.
         refenv = scratch / "refenv"
         refenv_py = str(refenv / "bin" / "python")
         refenv_pip = str(refenv / "bin" / "pip")
         _run_cap([clean_python, "-m", "venv", str(refenv)], timeout=120)
         _run_cap([refenv_pip, "install", "--upgrade", "pip"], timeout=180)
-        _run_cap([refenv_pip, "install", "orb-models==0.5.5"], timeout=600)
+        _run_cap([refenv_pip, "install", "fairchem-core>=2.10", "orb-models==0.5.5"],
+                 timeout=1200)
         sm_env = dict(env)
         sm_env.pop("PYTHONPATH", None)
         sm_env["TT_VISIBLE_DEVICES"] = os.environ.get("TT_VISIBLE_DEVICES", "0")
@@ -1047,65 +1053,51 @@ def measure_install(out_path):
             [venv_py, "-c",
              "import importlib.resources as r, tt_atom; "
              "print(tt_atom.__file__); "
-             "print((r.files('tools')/'export_weights.py').is_file(), "
-             "(r.files('tools')/'export_orb_weights.py').is_file())"],
+             "u=r.files('tools')/'export_weights.py'; o=r.files('tools')/'export_orb_weights.py'; "
+             "print(u.is_file(), o.is_file()); print(u); print(o)"],
             env=sm_env, cwd=scratch, timeout=120, check=False)
         pkg_lines = pkg.stdout.strip().splitlines()
         result["tt_atom_import"] = pkg_lines[0] if pkg_lines else ""
-        result["exporters"] = pkg_lines[-1] if pkg_lines else ""
+        result["exporters"] = pkg_lines[1] if len(pkg_lines) > 1 else ""
         wheel_ok = (
             pkg.returncode == 0
             and "site-packages" in result["tt_atom_import"]
             and result["exporters"] == "True True"
+            and len(pkg_lines) == 4
         )
         result["wheel_ok"] = wheel_ok
         note(f"[install] wheel import={result['tt_atom_import']!r}; "
              f"exporters={result['exporters']!r}")
-        uma_script = tta / "scripts" / "_install_gate_uma_smoke.py"
-        uma_script.write_text(textwrap.dedent('''
-            import math, pathlib, sys
-            sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tests"))
-            from util import Golden, pcc
-            import torch
-            from tt_atom.model import Backbone
-            from tt_atom.geometry import HostGeometry
-            from tt_atom import forces, device as D
-            g = Golden("golden_tiny.npz")
-            cfg = dict(g.config); w = g.w()
-            dev = D.open_device(0)
-            try:
-                bb = Backbone(w, dev, cfg, g.host("to_grid_mat"), g.host("from_grid_mat"))
-                geo = HostGeometry(w, cfg, g.host("to_m"), g.host("gauss_offset"), g.host("gauss_coeff"), gamma=0.0)
-                E, F = forces.energy_and_forces(bb, geo, g.inp("pos").float(), g.inp("atomic_numbers").long(),
-                                                g.inp("edge_index").long(), g.host("sys_node_embedding"))
-            finally:
-                import ttnn; ttnn.close_device(dev)
-            Eref = float(g.out("energy").reshape(-1)[0]); Fref = g.out("forces")
-            rel = abs(E - Eref) / (abs(Eref) + 1e-6); p = pcc(F, Fref)
-            finite = math.isfinite(E) and bool((F == F).all()) and math.isfinite(p)
-            print("UMA_SMOKE_JSON", __import__("json").dumps(
-                {"energy": E, "eref": Eref, "rel": rel, "force_pcc": p, "finite": finite}))
-            assert finite and rel < 0.05 and p >= 0.98
-        '''))
-        uma = _run_cap([venv_py, str(uma_script)], env=sm_env, cwd=scratch,
-                       timeout=900, check=False)
+        xyz = scratch / "uma_input.xyz"
+        uma_bundle = scratch / "uma_bundle.npz"
+        _run_cap([venv_py, "-c",
+                  "from ase.build import molecule; from ase.io import write; "
+                  "write(__import__('sys').argv[1], molecule('H2O'))", str(xyz)],
+                 env=sm_env, cwd=scratch, timeout=120)
+        uma_export = _run_cap(
+            [refenv_py, pkg_lines[2], "--uma-s-1", "--xyz", str(xyz),
+             "--task", "omol", "--out", str(uma_bundle)],
+            env=sm_env, cwd=scratch, timeout=1200, check=False)
+        entrypoint = str(venv / "bin" / "tt-atom")
+        uma = _run_cap([entrypoint, "verify", str(uma_bundle)],
+                       env=sm_env, cwd=scratch, timeout=900, check=False)
+        result["uma_export_rc"] = uma_export.returncode
         result["uma_smoke_rc"] = uma.returncode
-        result["uma_smoke_tail"] = (uma.stdout + uma.stderr)[-1500:]
-        uma_ok = False
-        try:
-            line = [ln for ln in uma.stdout.splitlines() if ln.startswith("UMA_SMOKE_JSON")][-1]
-            ud = json.loads(line.split(" ", 1)[1])
-            result["uma_energy"] = ud.get("energy")
-            result["uma_energy_ref"] = ud.get("eref")
-            result["uma_energy_rel"] = ud.get("rel")
-            result["uma_force_pcc"] = ud.get("force_pcc")
-            uma_ok = uma.returncode == 0 and bool(ud.get("finite"))
-        except Exception as e:
-            result["uma_parse_err"] = f"{type(e).__name__}: {e}"
-        note(f"[install] UMA end2end smoke rc={uma.returncode} E={result.get('uma_energy')} pcc={result.get('uma_force_pcc')}")
+        result["uma_smoke_tail"] = (
+            uma_export.stdout + uma_export.stderr + uma.stdout + uma.stderr)[-1500:]
+        uma_ok = uma_export.returncode == 0 and uma.returncode == 0
+        match = re.search(r"device E=([-+0-9.eE]+).*rel=([-+0-9.eE]+)", uma.stdout)
+        pcc_match = re.search(r"force PCC=([-+0-9.eE]+)", uma.stdout)
+        if match:
+            result["uma_energy"] = float(match.group(1))
+            result["uma_energy_rel"] = float(match.group(2))
+        if pcc_match:
+            result["uma_force_pcc"] = float(pcc_match.group(1))
+        note(f"[install] UMA export/verify rc={uma_export.returncode}/{uma.returncode} "
+             f"E={result.get('uma_energy')} pcc={result.get('uma_force_pcc')}")
         cli_out = scratch / "cli_relaxed.xyz"
         cli = _run_cap(
-            [venv_py, "-m", "tt_atom.cli", "relax",
+            [entrypoint, "relax",
              str(tta / "examples" / "model_tiny_demo.npz"),
              "--molecule", "H2O", "--steps", "1", "--out", str(cli_out)],
             env=sm_env, cwd=scratch, timeout=900, check=False)
@@ -1323,7 +1315,7 @@ def main():
         ran_any = True
 
     if "ux" in legs:
-        res = run_ux(args.quick, args.cli_only)
+        res = run_ux(args.cli_only)
         _print_ux(res)
         if res["verdict"] != "PASS" and not (
                 args.allow_gaps and res["verdict"] == "GAP"):

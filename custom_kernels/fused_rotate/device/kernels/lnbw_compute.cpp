@@ -2,12 +2,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 //
-// Fused LayerNorm backward (grad wrt the LN input, affine scale folded into gy on host).
+// Fused LayerNorm backward (grad wrt the LN input, affine scale applied in this kernel).
 // Drop-in for tt_atom's hand-written _ln_bw. For each tile-row (32 edges) over W channels:
 //   mean_x = mean_w(x);  xc = x - mean_x;  rstd = rsqrt(mean_w(xc^2) + eps);  xhat = xc*rstd
 //   m1 = mean_w(gy);  m2 = mean_w(gy*xhat)
 //   dx = rstd * (gy - m1 - xhat*m2)
-// where gy = g_out * gamma is precomputed on host. Reductions are one accumulating matmul against
+// where gy = g_out * silu'(n) * gamma is formed on-device. Reductions use one accumulating matmul against
 // a [32,32] tile whose column 0 is 1/W (rowsum-to-col0, then broadcast back with bcast_cols) --
 // the same matmul-reduce trick as the gc kernel. All W stays L1-resident across the chain; one
 // DRAM read of gy+x, one write of dx (vs ~15 ttnn ops).

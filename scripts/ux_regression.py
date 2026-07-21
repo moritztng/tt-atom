@@ -8,8 +8,8 @@ with still works, headlessly and fast, on a tiny input:
   1. CLI BEHAVES — ``tt-atom run --help`` (and ``relax``/``md``/top-level ``--help``) exit 0
      and list the core flags (``--relax``, ``--md``, ``--steps``, ``--temp``, ``--trace``,
      ``--out``). Pure argparse — no card, no env gap — so this leg runs in GitHub CI too.
-  2. OUTPUT FILES PARSE — a real single-point + relax + MD(--steps 5) on a tiny molecule
-     (``ase.build.molecule("H2O")``) exit 0, write the ``--out`` geometry, and it parses
+  2. OUTPUT FILES PARSE — installed ``tt-atom`` single-point + relax + MD(--steps 5)
+     commands on a tiny molecule exit 0, write the ``--out`` geometry, and it parses
      under the strict standard reader (``ase.io.read``) with finite energy and forces
      (not NaN / not empty). Catches the malformed-output class.
   3. LIVE PROGRESS ADVANCES — the per-step print stream the CLI's relax/MD drivers emit
@@ -18,10 +18,8 @@ with still works, headlessly and fast, on a tiny input:
      advances through every real step for a multi-step run, not stuck/skipped — the direct
      analogue of tt-bio's "0 -> diffusion" live-progress-bug class.
 
-The literal ``tt-atom run``/``relax``/``md`` commands are UMA-only and require the custom
-``fused_rotate`` op. To keep the regular gate runnable on stock ``ttnn``, legs 2 and 3 exercise
-the same ASE ``FIRE``/``Langevin`` and progress pattern through the Orb calculator. Leg 1 always
-tests the literal CLI help. The clean-install leg separately smokes the source-built UMA path.
+The simulation commands use the committed tiny UMA bundle, so this gate runs in the validated
+source-built environment and does not need a reference environment or checkpoint download.
 
 Fast + deterministic: H2O (3 atoms), MD ``--steps 5``, relax ``steps=20`` on a rattled
 geometry. This checks UX plumbing, not accuracy — it does not need a real relaxation.
@@ -36,8 +34,6 @@ Exit 0 iff every requested leg PASSES; 1 otherwise. Runs on one card (one device
 from __future__ import annotations
 
 import argparse
-import io
-import contextlib
 import os
 import re
 import shutil
@@ -53,12 +49,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # H2O (3 atoms) is the canonical tiny target — small enough that the Orb load + 5 MD
 # steps + a 20-step FIRE relax clear in well under a minute on card. UX plumbing only.
 MOL = "H2O"
-ORB_CHECKPOINT = "orb-v3-conservative-omol"   # stock ttnn, no fused_rotate dependency
 MD_STEPS = 5
-RELAX_STEPS = 20
-RELAX_FMAX = 0.05
-RELAX_RATTLE = 0.10
-SEED = 42
+RELAX_STEPS = 2
 PER_LEG_TIMEOUT_S = 300
 
 # Core `tt-atom run` flags a user reaches for. Leg 1 asserts each appears in --help.
@@ -87,6 +79,16 @@ def _run(cmd: list[str], *, env: dict | None = None, timeout: int | None = None,
                           capture_output=True, text=True)
 
 
+def _cli() -> list[str]:
+    """The console script belonging to this Python environment."""
+    # Keep the environment's bin directory. Resolving a venv's python symlink jumps to
+    # the base interpreter and looks for the entry point in the wrong directory.
+    entrypoint = Path(sys.executable).parent / "tt-atom"
+    if not entrypoint.is_file():
+        raise RuntimeError(f"installed tt-atom entry point not found at {entrypoint}")
+    return [str(entrypoint)]
+
+
 # -- leg 1: CLI behaves -------------------------------------------------------
 
 def _check_cli() -> list[str]:
@@ -96,7 +98,7 @@ def _check_cli() -> list[str]:
 
     def _help(args: list[str], label: str, required_flags: tuple[str, ...] = ()) -> None:
         try:
-            r = _run([sys.executable, "-m", "tt_atom.cli", *args, "--help"],
+            r = _run([*_cli(), *args, "--help"],
                      env=_subprocess_env(), timeout=60)
         except Exception as e:
             problems.append(f"{label} --help failed to run: {e}")
@@ -146,29 +148,6 @@ def _check_geometry(path: Path, expected_natoms: int, label: str) -> list[str]:
     if np.allclose(f, 0.0):
         problems.append(f"{label}: forces all-zero (calculator did not populate them)")
     return problems
-
-
-def _build_calc(device_id: int):
-    """OrbCalculator on the stock-ttnn path (no fused_rotate). One device context."""
-    from tt_atom.orb_calculator import OrbCalculator
-    return OrbCalculator.from_checkpoint(ORB_CHECKPOINT, device_id=device_id)
-
-
-def _single_point(atoms, calc) -> tuple[float | None, list[str]]:
-    """Run one energy+forces evaluation; return (energy, problems)."""
-    problems: list[str] = []
-    try:
-        e = atoms.get_potential_energy()
-        f = atoms.get_forces()
-    except Exception as ex:
-        return None, [f"single-point raised: {type(ex).__name__}: {str(ex)[:200]}"]
-    if not np.isfinite(e):
-        problems.append(f"single-point energy not finite (={e})")
-    if not np.all(np.isfinite(f)):
-        problems.append("single-point forces contain NaN/inf")
-    if np.allclose(f, 0.0):
-        problems.append("single-point forces all-zero")
-    return e, problems
 
 
 # -- leg 3: live progress advances -------------------------------------------
@@ -249,90 +228,52 @@ def _check_relax_progress(captured: str, min_steps: int) -> list[str]:
 
 # -- per-surface runner ------------------------------------------------------
 
-def run_orb_ux(base: Path) -> dict:
-    """Run single-point + relax + MD(--steps 5) on H2O via the Orb Calculator API,
-    capturing the per-step print stream, and gate legs 2 (output parses) + 3 (progress
-    advances). Returns a result row. Leg 1 (CLI --help) is checked separately in main()."""
-    from ase.build import molecule
-    from ase import units
-    from ase.optimize import FIRE
-    from ase.md.langevin import Langevin
-    from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
-    from ase.io import write
-
-    row = {"surface": "orb-md/relax/single-point", "seconds": None, "parse": False,
+def run_cli_ux(base: Path) -> dict:
+    """Run the installed CLI for single-point, relax, and MD."""
+    row = {"surface": "tt-atom relax/md", "seconds": None, "parse": False,
            "progress": False, "gate": False, "error": None, "checks": []}
     t0 = time.monotonic()
-    try:
-        # TT_VISIBLE_DEVICES maps the selected physical card to logical device 0.
-        calc = _build_calc(0)
-    except Exception as ex:
-        row["error"] = f"OrbCalculator.from_checkpoint failed: {type(ex).__name__}: {str(ex)[:200]}"
-        row["seconds"] = time.monotonic() - t0
-        return row
-
+    bundle = REPO_ROOT / "examples" / "model_tiny_demo.npz"
     out_single = base / "single.xyz"
     out_relax = base / "relaxed.xyz"
     out_md = base / "md.xyz"
     parse_problems: list[str] = []
     prog_problems: list[str] = []
-    md_captured = io.StringIO()
-    relax_captured = io.StringIO()
+    env = _subprocess_env()
+
+    def invoke(args: list[str], label: str) -> subprocess.CompletedProcess | None:
+        try:
+            proc = _run([*_cli(), *args], env=env, timeout=PER_LEG_TIMEOUT_S)
+        except Exception as ex:
+            row["error"] = f"{label} failed to run: {type(ex).__name__}: {ex}"
+            return None
+        if proc.returncode != 0:
+            tail = (proc.stderr or proc.stdout).strip().splitlines()
+            row["error"] = f"{label} exited {proc.returncode}: {tail[-1] if tail else ''}"
+            return None
+        return proc
+
     try:
-        # --- single point (leg 2) ---
-        sp = molecule(MOL)
-        sp.info.update(charge=0, spin=1)
-        sp.calc = calc
-        e_sp, sp_problems = _single_point(sp, calc)
-        parse_problems += sp_problems
-        if e_sp is not None:
-            write(str(out_single), sp)
-            parse_problems += _check_geometry(out_single, len(sp), "single-point")
-        sp_ok = not [p for p in sp_problems if "single" in p]
-        e_str = f"{e_sp:.5f}" if e_sp is not None else "n/a"
-        row["checks"].append(f"single-point: E={e_str} parse={'OK' if sp_ok else 'FAIL'}")
+        single = invoke(["relax", str(bundle), "--molecule", MOL, "--steps", "0",
+                         "--out", str(out_single)], "single-point CLI")
+        if single:
+            parse_problems += _check_geometry(out_single, 3, "single-point")
+            row["checks"].append("single-point CLI: OK")
 
-        # --- relax (legs 2 + 3) ---
-        ra = molecule(MOL)
-        ra.rattle(stdev=RELAX_RATTLE, seed=SEED)
-        ra.info.update(charge=0, spin=1)
-        ra.calc = calc
-        with contextlib.redirect_stdout(relax_captured):
-            FIRE(ra, logfile="-").run(fmax=RELAX_FMAX, steps=RELAX_STEPS)
-        write(str(out_relax), ra)
-        parse_problems += _check_geometry(out_relax, len(ra), "relax")
-        prog_problems += _check_relax_progress(relax_captured.getvalue(), RELAX_STEPS)
+        relax = invoke(["relax", str(bundle), "--molecule", MOL, "--steps", str(RELAX_STEPS),
+                        "--fmax", "0", "--out", str(out_relax)], "relax CLI")
+        if relax:
+            parse_problems += _check_geometry(out_relax, 3, "relax")
+            prog_problems += _check_relax_progress(relax.stdout, RELAX_STEPS)
 
-        # --- MD (legs 2 + 3) ---
-        md = molecule(MOL)
-        md.info.update(charge=0, spin=1)
-        md.calc = calc
-        MaxwellBoltzmannDistribution(md, temperature_K=300.0)
-        dyn = Langevin(md, timestep=1.0 * units.fs, temperature_K=300.0,
-                       friction=0.01 / units.fs)
-        e_md0 = md.get_potential_energy()
-
-        def _log():
-            ekin = md.get_kinetic_energy()
-            print(f"  step {dyn.nsteps:4d}  E={md.get_potential_energy():.5f}  "
-                  f"T={ekin / (1.5 * units.kB * len(md)):.1f} K", flush=True)
-
-        dyn.attach(_log, interval=max(1, MD_STEPS // 10))
-        with contextlib.redirect_stdout(md_captured):
-            dyn.run(MD_STEPS)
-            print(f"md: {MD_STEPS} steps (1.0 fs) at 300.0 K; "
-                  f"E {e_md0:.5f} -> {md.get_potential_energy():.5f} eV", flush=True)
-        write(str(out_md), md)
-        parse_problems += _check_geometry(out_md, len(md), "md")
-        prog_problems += _check_md_progress(md_captured.getvalue(), MD_STEPS)
+        md = invoke(["md", str(bundle), "--molecule", MOL, "--steps", str(MD_STEPS),
+                     "--out", str(out_md)], "MD CLI")
+        if md:
+            parse_problems += _check_geometry(out_md, 3, "md")
+            prog_problems += _check_md_progress(md.stdout, MD_STEPS)
     except Exception as ex:
         if not row["error"]:
-            row["error"] = f"orb-ux run raised: {type(ex).__name__}: {str(ex)[:200]}"
-    finally:
-        try:
-            calc.close()
-        except Exception:
-            pass
+            row["error"] = f"CLI UX run raised: {type(ex).__name__}: {str(ex)[:200]}"
 
     row["seconds"] = time.monotonic() - t0
     row["parse"] = not parse_problems
@@ -403,12 +344,12 @@ def main() -> int:
     if args.cli_only:
         return 0 if all_pass else 1
 
-    # Legs 2 + 3 (output parses + live progress advances) — on-device, Orb path.
+    # Legs 2 + 3 (output parses + live progress advances) — installed CLI.
     print(f"\n{'#' * 78}\nUX GATE — legs 2+3: output parses + live progress advances "
-          f"(Orb {ORB_CHECKPOINT}, {MOL}, MD --steps {MD_STEPS})\n{'#' * 78}")
+          f"({MOL}, MD --steps {MD_STEPS})\n{'#' * 78}")
     base = Path(tempfile.mkdtemp(prefix="ux_gate_", dir=str(REPO_ROOT)))
     try:
-        r = run_orb_ux(base)
+        r = run_cli_ux(base)
         _print_row(r)
         all_pass &= r["gate"]
     finally:

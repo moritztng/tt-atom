@@ -24,8 +24,21 @@ jobs:
           python -m build
       - name: Check package metadata
         run: python -m twine check dist/*
-      - name: Import check (no card, no heavy deps)
+      - name: Install built wheel
         run: |
-          python -m pip install --no-deps dist/*.whl
+          python -m pip install dist/*.whl pytest
           (cd /tmp && python -c "import importlib.resources as r, tt_atom; assert (r.files('tools') / 'export_weights.py').is_file(); assert (r.files('tools') / 'export_orb_weights.py').is_file(); print('tt_atom', tt_atom.__version__, tt_atom.__file__)")
+      - name: Host-only contracts
+        run: |
+          python -m pytest tests/test_auto.py tests/test_readme_quickstart.py \
+            tests/test_from_uma.py::test_reduced_composition_is_scale_invariant \
+            tests/test_from_uma.py::test_composition_hash_is_order_independent \
+            tests/test_from_uma.py::test_bundle_path_shape \
+            tests/test_from_uma.py::test_resolve_refenv_positive_when_default_present \
+            tests/test_from_uma.py::test_resolve_refenv_errors_clearly \
+            tests/test_from_uma.py::test_run_export_allows_download_and_uses_unique_sidecar \
+            tests/test_from_uma.py::test_run_export_preserves_explicit_offline_mode \
+            tests/test_from_uma.py::test_from_uma_requires_atoms \
+            tests/test_from_uma.py::test_infer_task_from_periodicity \
+            tests/test_from_uma.py::test_calculator_is_exported
           python scripts/ux_regression.py --cli-only

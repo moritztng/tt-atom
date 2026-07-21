@@ -19,7 +19,6 @@ import time
 import numpy as np
 import torch
 
-HERE = pathlib.Path(__file__).parent
 GOLDENS = pathlib.Path.home() / ".ttatom_run" / "goldens_real"
 
 

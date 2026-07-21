@@ -56,7 +56,7 @@ dispatch bug fix. UMA code paths are untouched throughout.
 - **Capability-gated perf defaults**: `fused_lnbw` (UMA's fused radial-LayerNorm backward) is now
   default-ON, gated behind a build/capability probe (mirrors tt-bio's `fuse_swiglu` pattern) that
   detects whether the installed `ttnn` carries the custom fused kernels, falling back to the stock
-  path on wheels that lack them (e.g. 0.68). `device_ede`/`bf8_edge` (Orb on-device edge-degree
+  path on wheels that lack them (e.g. 0.68). `device_ede`/`bf8_edge` (UMA on-device edge-degree
   embedding / bf8 edge-activation dataflow) stay opt-in (env var): re-measurement showed they win
   ~2x at 512+ atoms but *regress* to ~0.85x on 9-atom molecules, so there's no size-independent
   default that's safe.

@@ -38,13 +38,13 @@ unsupported — `rotation.rotate` raises rather than falling back.
 
 ## UMA performance flags
 
-Three opt-in perf levers sit on top of the four kernels above, all UMA-only (Orb has no equivariant representation, so none of this applies — see `docs/orb-port.md`). They need the source `ttnn` build and no-op safely on stock `ttnn`.
+Three perf levers sit on top of the four kernels above, all UMA-only (Orb has no equivariant representation, so none of this applies; see `docs/orb-port.md`). They need the source `ttnn` build and no-op safely on stock `ttnn`.
 
 - **`fused_lnbw`** — fuses the radial-LayerNorm backward into one kernel. Pure fuse, no accuracy trade, defaults ON.
 - **`TT_ATOM_DEVICE_EDE=1`** — on-device edge-degree computation (off the host dispatch path).
 - **`TT_ATOM_BF8_EDGE=1`** — the edge-activation dataflow through `fused_rotate`/`fused_gate` in bf8. This is where UMA's real bf8 bandwidth win comes from, not weight dtype: bf8 weights alone measure 1.00x (the forward is dispatch-bound, not DRAM-bandwidth-bound), so `fast=` is threaded through for reproducibility only.
 
-`device_ede`/`bf8_edge` are size-gated: ~2x on a traced MD step at large systems (512 atoms: 389 -> 194 ms; 216 atoms: 158 -> 85 ms, force PCC 0.9997), but they regress small molecules (~0.85x at 9 atoms), so they're opt-in for bulk/large MD, not a global default.
+`device_ede`/`bf8_edge` are manual opt-ins: ~2x on a traced MD step at large systems (512 atoms: 389 -> 194 ms; 216 atoms: 158 -> 85 ms, force PCC 0.9997), but they regress small molecules (~0.85x at 9 atoms), so they are not global defaults.
 
 ## Re-integrating onto a newer tt-metal commit
 

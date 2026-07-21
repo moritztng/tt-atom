@@ -74,7 +74,7 @@ GateProgramFactory::cached_program_t GateProgramFactory::create(
     std::vector<uint32_t> writer_ct = {cb_out, Wt, tile_bytes};
     TensorAccessorArgs(*output.buffer()).append_to(writer_ct);
     KernelHandle writer_id = CreateKernel(
-        program, std::string(kGateKernelDir) + "gate_writer.cpp", all_cores, WriterDataMovementConfig(writer_ct));
+        program, std::string(kGateKernelDir) + "writer.cpp", all_cores, WriterDataMovementConfig(writer_ct));
 
     // ---- compute ----
     std::vector<uint32_t> compute_ct = {

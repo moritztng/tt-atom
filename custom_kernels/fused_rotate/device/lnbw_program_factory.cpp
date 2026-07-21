@@ -84,7 +84,7 @@ LnBwProgramFactory::cached_program_t LnBwProgramFactory::create(
     std::vector<uint32_t> writer_ct = {cb_dx, Wt, tile_bytes};
     TensorAccessorArgs(*output.buffer()).append_to(writer_ct);
     KernelHandle writer_id = CreateKernel(
-        program, std::string(kLnBwKernelDir) + "lnbw_writer.cpp", all_cores, WriterDataMovementConfig(writer_ct));
+        program, std::string(kLnBwKernelDir) + "writer.cpp", all_cores, WriterDataMovementConfig(writer_ct));
 
     // ---- compute ----
     std::vector<uint32_t> compute_ct = {
