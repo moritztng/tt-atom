@@ -133,3 +133,15 @@ the `fused_rotate` op (see the README "Install"). A `pip install tt-atom` wheel 
 run standalone, so publishing to PyPI would be misleading — tt-atom ships via **GitHub Releases**
 (source + build instructions + tagged versions). There is intentionally no `pypi-publish` job.
 (tt-bio, which *is* pip-installable, does publish to PyPI.)
+
+> **Do not recreate the `pypi` GitHub Environment or re-push tags `v0.1.0`, `v0.2.0`, `v0.2.1`.**
+> Those three tags were cut before this fix and have an older `.github/workflows/release.yml`
+> (`.yml`, not the current `.yaml`) baked into their commits, which contains a dead
+> `pypi-publish` job using PyPI Trusted Publishing. GitHub Actions runs the workflow file as it
+> existed at the tag's commit, so re-pushing/recreating those tags re-triggers that job, which
+> always fails (`invalid-publisher: valid token, but no corresponding publisher`) and re-creates a
+> stale `pypi`-environment Deployment in the repo's Environments/Deployments UI. The `pypi`
+> environment and the two stale Deployment records were removed on 2026-07-21; recreating those
+> tags (or the `pypi` environment) brings the noise back. No package was ever published to PyPI
+> (`https://pypi.org/pypi/tt-atom/json` returns 404). If a tag ever needs to move, cut a new
+> versioned tag instead of rewriting the old one.
