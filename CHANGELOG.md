@@ -18,6 +18,7 @@ smoke (see `RELEASING.md`).
 
 ### Changed
 - Accuracy coverage now includes all periodic UMA tasks and Orb's bf8 fast mode.
+- Performance baselines now cover UMA and record the `ttnn` version that produced them.
 - The clean-install gate builds the candidate wheel, installs it in isolation, and verifies the
   exact pushed commit and packaged exporters.
 

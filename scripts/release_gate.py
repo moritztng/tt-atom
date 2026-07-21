@@ -549,6 +549,8 @@ def measure_perf(model, out_path, quick):
     of ``repeat`` timed calls after ``warmup`` warm calls. The gated metric is systems/s
     (higher is better). On a measurement failure the child writes a ``failed`` result so the
     parent can render it as GAP (env) or FAIL honestly instead of a silent skip."""
+    from importlib.metadata import version
+
     spec = PERF_SPECS[model]
     warmup = PERF_WARMUP_QUICK if quick else PERF_WARMUP
     repeat = PERF_REPEAT_QUICK if quick else PERF_REPEAT
@@ -603,6 +605,7 @@ def measure_perf(model, out_path, quick):
         warmup=warmup, repeat=repeat,
         times_s=[round(t, 4) for t in times],
         card_type=detect_card_type(), tt_atom_version=_version(),
+        ttnn_version=version("ttnn"),
         date=date.today().isoformat(),
         input=f"{spec['mol']} ({spec['fixture']}, {natoms} atoms/system, K={spec['k']})",
         failed=False,
@@ -763,7 +766,7 @@ def _compare_perf(rows, card, threshold):
                      f"--update-baseline --note \"seed {card} baseline\"")
             continue
         baseline = bm[key]
-        protocol_fields = ("checkpoint", "k", "natoms_per_system")
+        protocol_fields = ("checkpoint", "k", "natoms_per_system", "ttnn_version")
         mismatches = [
             f"{field}={baseline.get(field)!r} (run {r.get(field)!r})"
             for field in protocol_fields if baseline.get(field) != r.get(field)
@@ -811,10 +814,9 @@ def _update_perf_baselines(rows, card, note, threshold):
                            warmup=r["warmup"], repeat=r["repeat"],
                            natoms_per_system=r["natoms_per_system"],
                            family=r["family"], fixture=r["fixture"], mol=r["mol"],
-                           tt_atom_version=r["tt_atom_version"], date=r["date"], note=note)
-        entry.setdefault("date", r["date"])
-        entry.setdefault("tt_atom_version", r["tt_atom_version"])
-        entry.setdefault("note", note)
+                           tt_atom_version=r["tt_atom_version"], ttnn_version=r["ttnn_version"],
+                           date=r["date"], note=note)
+        entry.update(date=r["date"], tt_atom_version=r["tt_atom_version"], note=note)
     data.pop("models", None)
     _save_baselines(data)
     seeded = [r["model"] for r in rows if not r.get("failed")]

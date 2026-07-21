@@ -19,7 +19,8 @@ Each device leg runs in a fresh process so its device state cannot leak into the
    processes and reports each completed ceiling.
 3. **Performance** compares warm throughput for UMA, Orb-v3, and OrbMol with the card-specific
    baselines in `docs/perf_baselines.json`. A missing baseline is a `GAP`; a regression beyond 15%
-   is a `FAIL`.
+   is a `FAIL`. Baselines are also `ttnn`-version-specific, so run this leg in the validated source
+   environment.
 4. **UX** checks the CLI help, parses output geometries, rejects non-finite results, and verifies
    that relaxation and MD progress advances through the run.
 

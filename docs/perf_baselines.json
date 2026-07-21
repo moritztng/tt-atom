@@ -5,22 +5,26 @@
         "orb-conservative-omol-batch": {
           "unit": "sys/s",
           "direction": "higher",
-          "value": 456.786172598385,
-          "latency_ms": 2.189208124036668,
+          "value": 194.1703459611415,
+          "latency_ms": 5.150117001903709,
           "checkpoint": "orb-v3-conservative-omol",
           "k": 8,
           "warmup": 2,
           "repeat": 5,
           "natoms_per_system": 9,
-          "tt_atom_version": "0.2.0",
-          "date": "2026-07-19",
-          "note": "seed p150a baseline (orb-conservative-omol batch K=8, warm 2+5)"
+          "family": "orbmol",
+          "fixture": "molecule",
+          "mol": "CH3CH2OH",
+          "tt_atom_version": "0.2.1",
+          "ttnn_version": "0.65.1rc17.dev5884+g8d759240fdd",
+          "date": "2026-07-21",
+          "note": "seed baselines on the pinned tt-metal 8d759240 release environment"
         },
         "orb-conservative-inf-omat-batch": {
           "unit": "sys/s",
           "direction": "higher",
-          "value": 416.0397685707889,
-          "latency_ms": 2.4036163740674965,
+          "value": 189.3608729811036,
+          "latency_ms": 5.28092199965613,
           "checkpoint": "orb-v3-conservative-inf-omat",
           "k": 8,
           "warmup": 2,
@@ -29,14 +33,33 @@
           "family": "orb",
           "fixture": "bulk-si",
           "mol": "Si",
-          "tt_atom_version": "0.2.0",
-          "date": "2026-07-19",
-          "note": "seed p150a baseline for Orb-v3 bulk (conservative-inf-omat, Si toy periodic, batch K=8, warm 2+5)"
+          "tt_atom_version": "0.2.1",
+          "ttnn_version": "0.65.1rc17.dev5884+g8d759240fdd",
+          "date": "2026-07-21",
+          "note": "seed baselines on the pinned tt-metal 8d759240 release environment"
+        },
+        "uma-s-1-omol-batch": {
+          "unit": "sys/s",
+          "direction": "higher",
+          "value": 111.06617871436099,
+          "latency_ms": 9.003640996525064,
+          "checkpoint": "uma-s-1",
+          "k": 8,
+          "warmup": 2,
+          "repeat": 5,
+          "natoms_per_system": 9,
+          "family": "uma",
+          "fixture": "molecule",
+          "mol": "CH3CH2OH",
+          "tt_atom_version": "0.2.1",
+          "ttnn_version": "0.65.1rc17.dev5884+g8d759240fdd",
+          "date": "2026-07-21",
+          "note": "seed baselines on the pinned tt-metal 8d759240 release environment"
         }
       },
-      "date": "2026-07-19",
-      "tt_atom_version": "0.2.0",
-      "note": "seed p150a baseline (orb-conservative-omol batch K=8, warm 2+5)"
+      "date": "2026-07-21",
+      "tt_atom_version": "0.2.1",
+      "note": "seed baselines on the pinned tt-metal 8d759240 release environment"
     }
   }
 }
