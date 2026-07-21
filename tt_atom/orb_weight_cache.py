@@ -14,7 +14,7 @@ import os
 import pathlib
 import sys
 
-from .bundle_cache import resolve_refenv, run_export
+from .bundle_cache import exporter_path, resolve_refenv, run_export
 
 CACHE_DIR = pathlib.Path(
     os.environ.get("TT_ATOM_CACHE", pathlib.Path.home() / ".cache" / "tt_atom")
@@ -44,7 +44,7 @@ def get_or_build(checkpoint, *, refenv=None, cache_dir=None, log=True):
         print(f"[tt-atom] exporting {checkpoint} weights — one-time, ~10s via the reference "
              f"env...", file=sys.stderr, flush=True)
     py = resolve_refenv(refenv)
-    tools = pathlib.Path(__file__).resolve().parent.parent / "tools" / "export_orb_weights.py"
+    tools = exporter_path("export_orb_weights.py")
     run_export(path, lambda tmp_out: [py, str(tools), "--ckpt", _short_name(checkpoint),
                                       "--out", str(tmp_out)])
     if log:

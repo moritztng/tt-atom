@@ -223,8 +223,7 @@ class SO2Convolution:
         # fused single-matmul weight (see module docstring). Built from the SAME weights, so the
         # output column ordering is bit-identical to the per-m path: [extra | m0coeffs | m1r | m1i
         # | ... ]. self.fused_extra_out is the extra-gating width sliced off the front.
-        self.fused_w = self.fused_b = None
-        self.fused_extra_out = extra_m0_output_channels
+        self.fused_w = None
         if _SO2_FUSED:
             self._build_fused(weights, prefix, wdtype)
 

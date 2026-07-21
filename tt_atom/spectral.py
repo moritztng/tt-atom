@@ -158,7 +158,7 @@ class SpectralAtomwise:
         else:
             h = self._so3_linear(x, self.l1_w, self.l1_b)              # [N, nsph, H]
         # cached for the analytic-force VJP (gating is post-SiLU = sigmoid input)
-        self._cache_x, self._cache_a_scalar = x, a_scalar
+        self._cache_a_scalar = a_scalar
         self._cache_gating, self._cache_h = gating, h
         g = self._gate(gating, h)                                     # [N, nsph, H]
         if self.l2_wf is not None:
@@ -176,7 +176,7 @@ class SpectralAtomwise:
         a_scalar = ttnn.linear(scalar, self.smlp_w, bias=self.smlp_b, compute_kernel_config=self.kcfg)
         gating = ttnn.silu(a_scalar)                                  # [N, lmax*H]
         h = ttnn.linear(xf, self.l1_wf, bias=self.l1_bf, compute_kernel_config=self.kcfg)  # [N, nsph*H]
-        self._cache_xf, self._cache_a_scalar = xf, a_scalar
+        self._cache_a_scalar = a_scalar
         self._cache_gating, self._cache_hf = gating, h
         # gate: SiLU on l=0 block, sigmoid-gate (expanded per degree) on the vector blocks
         sg = ttnn.sigmoid(gating)

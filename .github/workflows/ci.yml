@@ -27,4 +27,5 @@ jobs:
       - name: Import check (no card, no heavy deps)
         run: |
           python -m pip install --no-deps dist/*.whl
-          python -c "import tt_atom; print('tt_atom', tt_atom.__version__)"
+          (cd /tmp && python -c "import importlib.resources as r, tt_atom; assert (r.files('tools') / 'export_weights.py').is_file(); assert (r.files('tools') / 'export_orb_weights.py').is_file(); print('tt_atom', tt_atom.__version__, tt_atom.__file__)")
+          python scripts/ux_regression.py --cli-only

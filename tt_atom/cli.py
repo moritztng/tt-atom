@@ -16,7 +16,6 @@ form of that build and detects a missing fairchem, printing the exact reference-
 from __future__ import annotations
 
 import argparse
-import pathlib
 import sys
 
 import numpy as np
@@ -213,10 +212,12 @@ def cmd_run(args):
 
 def cmd_convert(args):
     """Fairchem UMA checkpoint -> TT-Atom bundle. Needs the reference (fairchem) environment."""
+    from .bundle_cache import exporter_path
+
+    tools = exporter_path("export_weights.py")
     try:
         __import__("fairchem")
     except Exception:
-        tools = pathlib.Path(__file__).resolve().parent.parent / "tools" / "export_weights.py"
         print("convert-checkpoint needs fairchem (numpy>=2), which cannot share this ttnn env.")
         print("Run it in the reference environment, e.g.:\n")
         print(f"  HF_HUB_OFFLINE=1 <refenv>/bin/python {tools} --uma-s-1 \\")
@@ -224,7 +225,6 @@ def cmd_convert(args):
               f"--task {args.task} --charge {args.charge} --spin {args.spin} --out {args.out}")
         return 2
     import importlib.util
-    tools = pathlib.Path(__file__).resolve().parent.parent / "tools" / "export_weights.py"
     spec = importlib.util.spec_from_file_location("_ttatom_export", tools)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

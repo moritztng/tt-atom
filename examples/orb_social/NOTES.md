@@ -1,5 +1,11 @@
 # Orb-v3 silicon melt on Tenstorrent — reproduction (qb2, self-contained)
 
+> Historical, not publication-ready. The recorded trajectory used an invalid skin policy: edges
+> were built only to the model cutoff and reused until one atom moved a full skin. The selected
+> fresh-graph parity frames do not validate the intervening MD forces. The implementation now
+> checks the exact-cutoff graph every step and recaptures only when it changes, but the trajectory
+> and numbers below have not been regenerated with that fix.
+
 A 216-atom diamond-cubic Si supercell heated through its melting point and held in the liquid,
 run on-device with the **real Orb-v3 (`conservative-inf-omat`) weights** on a single Blackhole
 p150 of tt-quietbox2, rendered to a clean MP4/GIF, and verified against the orb-models CPU
@@ -31,8 +37,7 @@ reference. Propose-only; not posted.
 
 NVT Langevin ramps 300 -> 2200 K (the bath feeds the latent heat so the lattice disorders
 instead of refreezing), **holds at ~2200 K for several ps of real liquid diffusion**, then a
-short NVE tail for the energy-conservation signature. The neighbour list rebuilds whenever any
-atom moves > `--skin` (1.5 A), so the graph topology stays correct as the solid becomes a liquid.
+short NVE tail for the energy-conservation signature.
 
     RUN --weights $W --ramp-steps 1600 --hold-steps 12000 --nve-steps 800 \
         --t-start 300 --t-end 2200 --t-hold 2200 \

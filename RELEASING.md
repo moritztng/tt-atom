@@ -5,7 +5,7 @@ real Tenstorrent hardware.
 
 ## Release gate
 
-Run the four regular legs on card 0:
+Run the four regular legs on card 0 in the source-built environment documented in `README.md`:
 
 ```bash
 TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py
@@ -13,19 +13,18 @@ TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py
 
 Each device leg runs in a fresh process so its device state cannot leak into the next one.
 
-1. **Accuracy** runs the real-weight parity modules in `tests/test_*realweight*.py` against their
-   embedded fairchem or `orb-models` references. A missing fixture or required custom op is
-   reported as `GAP`, never as a silent pass.
-2. **No OOM** sweeps Orb disjoint batches through 128 systems and reports the largest completed
-   batch. The UMA row reports `GAP` when the installed `ttnn` lacks `fused_rotate`.
+1. **Accuracy** runs the molecular and periodic UMA parity modules plus the Orb real-weight and
+   fast-mode modules against their embedded fairchem or `orb-models` references.
+2. **No OOM** sweeps Orb and UMA disjoint batches through 128 systems in separate device
+   processes and reports each completed ceiling.
 3. **Performance** compares warm throughput for UMA, Orb-v3, and OrbMol with the card-specific
    baselines in `docs/perf_baselines.json`. A missing baseline is a `GAP`; a regression beyond 15%
    is a `FAIL`.
 4. **UX** checks the CLI help, parses output geometries, rejects non-finite results, and verifies
    that relaxation and MD progress advances through the run.
 
-`FAIL` blocks a release. Review every `GAP` before tagging and record any accepted environment or
-fixture limitation in the release notes.
+Both `FAIL` and `GAP` block a release. For development diagnostics only, `--allow-gaps` preserves
+the measured rows but returns success when a fixture, baseline, weight, or required op is absent.
 
 Useful subsets:
 
@@ -54,10 +53,10 @@ TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py --leg install
 ```
 
 Run this from a clean, committed, pushed worktree. The leg clones the current commit from `origin`,
-builds the pinned tt-metal source in a fresh directory and venv, installs that exact TT-Atom
-commit, checks both custom rotation ops, runs finite UMA and Orb smoke tests, and verifies a real
-CLI relaxation output parses. It fails if the worktree is dirty or the current commit is not
-available from `origin`.
+builds the pinned tt-metal source in a fresh directory and venv, builds and installs that exact
+TT-Atom wheel, verifies both packaged exporters through an isolated Orb cache miss, checks both
+custom rotation ops, runs finite UMA and Orb smoke tests, and verifies a real CLI relaxation output
+parses. It fails if the worktree is dirty or the current commit is not available from `origin`.
 
 The validated tt-metal commit is
 `8d759240fdd763a38e3abdc8344076f584dc4f4d` on branch `moritztng/tt-atom`. Keep this value in sync
@@ -76,9 +75,11 @@ with `README.md`, `custom_kernels/README.md`, and `scripts/release_gate.py`.
    ```
 
 `.github/workflows/release.yaml` verifies that the tag matches the package version, builds the
-sdist and wheel, and creates or refreshes the GitHub Release.
+sdist and wheel, and creates or refreshes the GitHub Release. Repository protection must limit
+tagging to commits with a saved hardware-gate result; GitHub runners do not have TT hardware.
 
 ## Distribution
 
-TT-Atom is distributed through GitHub Releases, not PyPI. UMA requires a source tt-metal build
-with the custom rotation op, so a standalone `pip install tt-atom` package would be misleading.
+TT-Atom is distributed through GitHub Releases rather than PyPI as project policy. The wheel still
+requires a compatible `ttnn` installation; UMA specifically needs the pinned source build with
+the custom rotation op.

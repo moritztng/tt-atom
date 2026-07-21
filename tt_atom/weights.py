@@ -103,7 +103,7 @@ class WeightBundle(NpzBundle):
         # edge-degree radial MLP
         for i in (0, 1, 3, 4, 6):
             keys.append(f"edge_degree_embedding.rad_func.net.{i}.weight")
-        for b in (0, 3, 6):
+        for b in (0, 1, 3, 4, 6):
             keys.append(f"edge_degree_embedding.rad_func.net.{b}.bias")
         for li in range(L):
             p = f"blocks.{li}"
@@ -116,6 +116,7 @@ class WeightBundle(NpzBundle):
                 keys.append(f"{p}.edge_wise.so2_conv_2.so2_m_conv.{m-1}.fc.weight")
             for i in (0, 1, 3, 4, 6):
                 keys.append(f"{p}.edge_wise.so2_conv_1.rad_func.net.{i}.weight")
+                keys.append(f"{p}.edge_wise.so2_conv_1.rad_func.net.{i}.bias")
             if cfg.get("ff_type", "grid") == "spectral":
                 keys += [f"{p}.atom_wise.scalar_mlp.0.weight", f"{p}.atom_wise.scalar_mlp.0.bias",
                          f"{p}.atom_wise.so3_linear_1.weight", f"{p}.atom_wise.so3_linear_1.bias",

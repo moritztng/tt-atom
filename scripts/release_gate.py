@@ -13,13 +13,8 @@ numbers on your card). Four regular legs run before each tag:
      pytest as a subprocess with JUnit XML, so the gate never re-derives a parity bar or oracle.
      A module whose golden is absent auto-skips; the gate reports that leg as GAP (missing
      fixture), never as a silent PASS.
-  2. NO-OOM — runs the supported size range on the card to completion and reports the largest
-     size that cleared. Orb family: a disjoint-union batch sweep (``OrbCalculator.evaluate_batch``
-     over K=1..K_max small systems in one device forward), reusing
-     ``benchmarks/bench_orb_evaluate_batch.py``'s exact protocol — the batch ceiling is the OOM
-     frontier. UMA OOM sweep is a documented GAP: UMA's batched forward goes through the same
-     ALWAYS-ON ``fused_rotate`` kernel as its accuracy leg. A host without that op reports GAP;
-     the per-composition bundle is not the blocker.
+  2. NO-OOM — runs disjoint-union batch sweeps for Orb and UMA over K=1..128 small systems.
+     Each family runs in a fresh process, and every configured size must complete.
   3. PERF — warm steady-state throughput on a fixed small input vs a committed per-card,
      per-model baseline (``docs/perf_baselines.json``), FAILs beyond a configurable noise
      margin. One entry per shipped family's throughput path (OrbMol ``conservative-omol``,
@@ -41,8 +36,8 @@ The opt-in INSTALL leg runs once per release. It builds the pinned tt-metal sour
 environment, installs the exact committed TT-Atom source from origin, and smokes UMA and Orb.
 
 Honest reporting: every leg prints PASS / FAIL / GAP with the real numbers (or the real skip
-reason). Nothing fabricated. Exit 0 iff every leg that ran PASSES (GAP does not fail the gate —
-it is reported, not hidden — but a leg that ran and FAILED does).
+reason). Nothing fabricated. Release mode exits 0 only when every selected row passes;
+``--allow-gaps`` is an explicit diagnostics mode.
 
 Usage::
 
@@ -93,6 +88,10 @@ RESULTS_DIR = pathlib.Path(tempfile.gettempdir()) / "tt-atom-release-gate"
 ACCURACY_SPECS = [
     dict(family="uma", checkpoint="uma-s-1", regime="molecular / omol",
          module="tests/test_realweight.py", golden="ethanol_omol.npz"),
+    dict(family="uma", checkpoint="uma-s-1",
+         regime="periodic / omat+oc20+odac+omc",
+         module="tests/test_periodic.py",
+         golden="si_omat.npz;cuh_oc20.npz;mgo_odac.npz;co2_omc.npz"),
     dict(family="orb", checkpoint="conservative-inf-omat", regime="bulk / omat (toy)",
          module="tests/test_orb_realweight.py", golden="si_omat_orb.npz"),
     dict(family="orb", checkpoint="conservative-inf-omat", regime="analytic forces",
@@ -107,7 +106,12 @@ ACCURACY_SPECS = [
          module="tests/test_orb_stress_realweight.py", golden="si_omat_orb.npz"),
     dict(family="orb", checkpoint="direct-20-omat", regime="ZBL short-contact forces",
          module="tests/test_orb_zbl_forces.py", golden="si_short_contact_orb_direct20.npz"),
-    dict(family="orbmol", checkpoint="conservative-omol", regime="molecule / charged / openshell",
+    dict(family="orb", checkpoint="conservative + direct",
+         regime="bf8 fast-mode accuracy",
+         module="tests/test_orb_bf8_fast.py",
+         golden="si_omat_orb.npz;si_omat_orb_direct20.npz"),
+    dict(family="orbmol", checkpoint="conservative + direct",
+         regime="molecule / charged / openshell",
          module="tests/test_orb_omol_realweight.py",
          golden="molecule_omol_conservative.npz;molecule_charged_omol_conservative.npz;"
                 "molecule_openshell_omol_conservative.npz;molecule_omol_direct.npz;"
@@ -120,15 +124,12 @@ QUICK_ACCURACY = [
 ]
 
 # ── leg 2: no-OOM sweep ─────────────────────────────────────────────────────
-# Orb family disjoint-union batch sweep: K small systems in one device forward. The largest K
-# that clears is the batch ceiling (the OOM frontier). Same protocol as
-# benchmarks/bench_orb_evaluate_batch.py. UMA's OOM sweep is a GAP: UMA's batched forward
-# (TTAtomCalculator.evaluate_batch -> energy_and_forces_batch -> edgewise -> rotation.rotate)
-# goes through the same ALWAYS-ON fused_rotate kernel as its accuracy leg's end-to-end test,
-# which is absent from stock ttnn builds. The per-composition bundle itself is not the blocker:
-# the bundle cache works and evaluate_batch enforces same-composition batching. Reported as GAP,
-# not forced to a number; closes automatically with a source build carrying fused_rotate.
-OOM_CHECKPOINT = "orb-v3-conservative-omol"
+# K small systems in one device forward. Each family runs in its own fully-exiting child so
+# process-global Metal state cannot leak between implementations.
+OOM_SPECS = {
+    "orb": dict(checkpoint="orb-v3-conservative-omol"),
+    "uma": dict(checkpoint="uma-s-1"),
+}
 OOM_MOL = "CH3CH2OH"
 OOM_KS_DEFAULT = [1, 2, 4, 8, 16, 32, 64, 128]
 OOM_KS_QUICK = [1, 2, 4, 8]
@@ -346,7 +347,7 @@ def _print_accuracy(rows, all_pass):
     if fails:
         msg = f"GATE FAIL — {len(fails)} accuracy module(s) FAILED (see above)"
     elif gaps:
-        msg = f"GATE PASS with GAP — {len(gaps)} module(s) not fully verified " \
+        msg = f"GATE GAP — {len(gaps)} module(s) not fully verified " \
               f"(missing fixture or documented env gap); the rest passed. See notes above."
     else:
         msg = "GATE PASS — every accuracy module passed parity vs its real oracle"
@@ -355,33 +356,45 @@ def _print_accuracy(rows, all_pass):
 
 # ── leg 2 implementation ─────────────────────────────────────────────────────
 
-def measure_oom(out_path, quick):
-    """Run the OOM sweep in a child and persist its result before process teardown."""
-    out_path.write_text(json.dumps(run_oom(quick)))
+def measure_oom(family, out_path, quick):
+    """Run one family's OOM sweep and persist its result before process teardown."""
+    out_path.write_text(json.dumps(run_oom(family, quick)))
 
 
-def run_oom(quick):
-    """Orb disjoint-union batch sweep — find the largest K (small systems in one device forward)
-    that clears without OOM. Returns a result dict. UMA OOM sweep is a documented GAP."""
+def run_oom(family, quick):
+    """Find the largest configured disjoint batch that clears for one model family."""
+    spec = OOM_SPECS[family]
     ks = OOM_KS_QUICK if quick else OOM_KS_DEFAULT
-    print(f"\n[oom] Orb disjoint-union batch sweep: checkpoint={OOM_CHECKPOINT} "
+    print(f"\n[oom] {family} disjoint-union batch sweep: checkpoint={spec['checkpoint']} "
           f"mol={OOM_MOL} K={ks}", flush=True)
     try:
         from ase.build import molecule
-        from tt_atom.orb_calculator import OrbCalculator
+        if family == "orb":
+            from tt_atom.orb_calculator import OrbCalculator
+        else:
+            from tt_atom.calculator import TTAtomCalculator
     except Exception as e:
-        return dict(verdict="GAP", ceiling=None, failed_at=None,
-                    note=f"OrbCalculator import failed: {e}", rows=[])
+        return dict(family=family, checkpoint=spec["checkpoint"], verdict="GAP",
+                    ceiling=None, failed_at=None, note=f"calculator import failed: {e}", rows=[])
     dev_id = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0].strip() or "0")
     try:
-        calc = OrbCalculator.from_checkpoint(OOM_CHECKPOINT, device_id=dev_id)
+        if family == "orb":
+            calc = OrbCalculator.from_checkpoint(spec["checkpoint"], device_id=dev_id)
+        else:
+            seed = molecule(OOM_MOL)
+            seed.rattle(stdev=0.08, seed=10)
+            seed.info.update(charge=0, spin=1)
+            calc = TTAtomCalculator.from_uma(
+                model=spec["checkpoint"], task_name="omol", atoms=seed, device_id=dev_id)
     except Exception as e:
-        return dict(verdict="GAP", ceiling=None, failed_at=None,
-                    note=f"from_checkpoint failed (weights cached? refenv?): {e}", rows=[])
+        return dict(family=family, checkpoint=spec["checkpoint"], verdict="GAP",
+                    ceiling=None, failed_at=None,
+                    note=f"calculator setup failed (weights cached? refenv?): {e}", rows=[])
     natoms = len(molecule(OOM_MOL))
     rows = []
     ceiling = None
     failed_at = None
+    env_gap = False
     for k in ks:
         systems = []
         for i in range(k):
@@ -396,40 +409,45 @@ def run_oom(quick):
             print(f"  K={k:4d}  Ntot={natoms*k:5d}  OK")
         except RuntimeError as e:
             msg = str(e).splitlines()[0][:90]
-            rows.append(dict(K=k, natoms_total=int(natoms * k), ok=False, err=msg))
-            failed_at = k
-            print(f"  K={k:4d}  Ntot={natoms*k:5d}  OOM/err: {msg}")
+            env_gap = "fused_rotate" in msg
+            rows.append(dict(K=k, natoms_total=int(natoms * k), ok=False, err=msg,
+                             env_gap=env_gap))
+            failed_at = None if env_gap else k
+            label = "GAP" if env_gap else "OOM/err"
+            print(f"  K={k:4d}  Ntot={natoms*k:5d}  {label}: {msg}")
             break
         except Exception as e:
             msg = f"{type(e).__name__}: {str(e).splitlines()[0][:80]}"
-            rows.append(dict(K=k, natoms_total=int(natoms * k), ok=False, err=msg))
-            failed_at = k
-            print(f"  K={k:4d}  Ntot={natoms*k:5d}  err: {msg}")
+            env_gap = "fused_rotate" in msg
+            rows.append(dict(K=k, natoms_total=int(natoms * k), ok=False, err=msg,
+                             env_gap=env_gap))
+            failed_at = None if env_gap else k
+            label = "GAP" if env_gap else "err"
+            print(f"  K={k:4d}  Ntot={natoms*k:5d}  {label}: {msg}")
             break
     try:
         calc.close()
     except Exception:
         pass
-    verdict = "PASS" if ceiling == ks[-1] else ("FAIL" if failed_at is not None else "GAP")
-    note = (f"batch ceiling = {ceiling} systems ({None if ceiling is None else natoms*ceiling} atoms) "
-            f"in one device forward; UMA OOM sweep is a GAP — UMA's batched forward goes through the "
-            f"same ALWAYS-ON fused_rotate kernel as its accuracy leg, absent from stock ttnn builds; "
-            f"this is not a per-composition-bundle issue")
-    return dict(verdict=verdict, ceiling=ceiling, failed_at=failed_at, note=note, rows=rows)
+    verdict = ("PASS" if ceiling == ks[-1] else
+               "GAP" if env_gap else
+               "FAIL" if failed_at is not None else "GAP")
+    note = (f"batch ceiling = {ceiling} systems "
+            f"({None if ceiling is None else natoms * ceiling} atoms) in one device forward")
+    return dict(family=family, checkpoint=spec["checkpoint"], verdict=verdict, ceiling=ceiling,
+                failed_at=failed_at, note=note, rows=rows)
 
 
-def _run_oom(quick):
-    """Spawn leg 2 in a fresh process so its MetalContext dies before leg 3 starts.
+def _run_oom_family(family, quick):
+    """Spawn one family in a fresh process so its MetalContext dies before the next run.
 
     ``ttnn.close_device`` closes the logical device but the process-global MetalContext and
-    its UMD mappings live until process exit. Keeping leg 2 in the gate parent therefore
-    prevents leg 3's children from opening the card; resetting one of those timed-out children
-    also invalidates the parent's mappings and makes its final MetalContext teardown SIGBUS.
+    its UMD mappings live until process exit.
     """
-    td = tempfile.mkdtemp(prefix="gate-oom-")
+    td = tempfile.mkdtemp(prefix=f"gate-oom-{family}-")
     out = pathlib.Path(td) / "result.json"
     cmd = [sys.executable, str(pathlib.Path(__file__).resolve()),
-           "--measure-oom", "--out", str(out)]
+           "--measure-oom", family, "--out", str(out)]
     if quick:
         cmd.append("--quick")
     env = dict(os.environ)
@@ -445,36 +463,53 @@ def _run_oom(quick):
               f"stopping child and resetting the card", file=sys.stderr)
         reset_error = _stop_child_and_reset(proc)
         shutil.rmtree(td, ignore_errors=True)
-        note = f"OOM sweep timed out after {OOM_MEASURE_TIMEOUT_S}s (device hang)"
+        note = f"{family} OOM sweep timed out after {OOM_MEASURE_TIMEOUT_S}s (device hang)"
         if reset_error:
             note += f"; card reset failed: {reset_error}"
-        return dict(verdict="FAIL", ceiling=None, failed_at=None, note=note, rows=[])
+        return dict(family=family, checkpoint=OOM_SPECS[family]["checkpoint"], verdict="FAIL",
+                    ceiling=None, failed_at=None, note=note, rows=[])
     if returncode != 0:
         shutil.rmtree(td, ignore_errors=True)
-        return dict(verdict="FAIL", ceiling=None, failed_at=None,
+        return dict(family=family, checkpoint=OOM_SPECS[family]["checkpoint"], verdict="FAIL",
+                    ceiling=None, failed_at=None,
                     note=f"OOM subprocess exited {returncode} during device teardown", rows=[])
     if not out.exists():
         shutil.rmtree(td, ignore_errors=True)
-        return dict(verdict="FAIL", ceiling=None, failed_at=None,
+        return dict(family=family, checkpoint=OOM_SPECS[family]["checkpoint"], verdict="FAIL",
+                    ceiling=None, failed_at=None,
                     note=f"OOM subprocess exited {returncode} (no result json)", rows=[])
     try:
         return json.loads(out.read_text())
     except Exception as e:
-        return dict(verdict="FAIL", ceiling=None, failed_at=None,
+        return dict(family=family, checkpoint=OOM_SPECS[family]["checkpoint"], verdict="FAIL",
+                    ceiling=None, failed_at=None,
                     note=f"OOM result parse failed: {e}", rows=[])
     finally:
         shutil.rmtree(td, ignore_errors=True)
 
 
+def _run_oom(quick):
+    results = [_run_oom_family(family, quick) for family in OOM_SPECS]
+    verdicts = {result["verdict"] for result in results}
+    verdict = "FAIL" if "FAIL" in verdicts else ("GAP" if "GAP" in verdicts else "PASS")
+    return dict(verdict=verdict, results=results)
+
+
 def _print_oom(res):
-    print(f"\n{'#' * 78}\nRELEASE GATE — leg 2: NO-OOM sweep (single card, Orb disjoint-union batch)\n{'#' * 78}")
-    print(f"{'K':<8}{'Ntot':>8}  result")
-    for r in res["rows"]:
-        ok = "OK" if r["ok"] else f"OOM/err: {r.get('err','')}"
-        print(f"{r['K']:<8}{r['natoms_total']:>8}  {ok}")
+    print(f"\n{'#' * 78}\nRELEASE GATE — leg 2: NO-OOM sweeps (single card)\n{'#' * 78}")
+    for result in res["results"]:
+        print(f"{result['family']} ({result['checkpoint']}):")
+        print(f"  {'K':<8}{'Ntot':>8}  result")
+        for row in result["rows"]:
+            ok = ("OK" if row["ok"] else
+                  f"GAP: {row.get('err', '')}" if row.get("env_gap") else
+                  f"OOM/err: {row.get('err', '')}")
+            print(f"  {row['K']:<8}{row['natoms_total']:>8}  {ok}")
+        print(f"  ceiling: {result['ceiling']} | failed_at: {result['failed_at']} "
+              f"-> {result['verdict']}")
+        print(f"  note: {result['note']}")
     print("-" * 78)
-    print(f"ceiling: {res['ceiling']}  |  failed_at: {res['failed_at']}  ->  {res['verdict']}")
-    print(f"note: {res['note']}")
+    print(f"leg verdict: {res['verdict']}")
     print(f"{'#' * 78}")
 
 
@@ -684,6 +719,8 @@ def _card_baselines(data, card_type):
 
 
 def run_perf(quick, models, update_baseline, note, threshold):
+    if quick and update_baseline:
+        sys.exit("--quick cannot update performance baselines")
     card = detect_card_type()
     print(f"\n[perf] warm throughput: models={','.join(models)} card={card} "
           f"(warmup+repeat per model, K per spec)", flush=True)
@@ -696,10 +733,12 @@ def run_perf(quick, models, update_baseline, note, threshold):
 def _compare_perf(rows, card, threshold):
     bm = _card_baselines(_load_baselines(), card) or {}
     overall_pass = True
+    any_gap = False
     for r in rows:
         if r.get("failed"):
             if r.get("env_gap"):
                 r["verdict"] = "GAP"
+                any_gap = True
                 r["baseline"] = None
                 r["delta"] = "n/a"
                 r["note"] = (f"env gap: {r.get('error','')} — UMA's batched forward needs the "
@@ -715,6 +754,7 @@ def _compare_perf(rows, card, threshold):
         key = r["model"]
         if key not in bm:
             r["verdict"] = "GAP"
+            any_gap = True
             r["baseline"] = None
             r["delta"] = "n/a"
             r["note"] = (f"NO BASELINE for card '{card}' / model '{key}' in "
@@ -722,15 +762,31 @@ def _compare_perf(rows, card, threshold):
                      f"python3 scripts/release_gate.py --leg perf --model {key} "
                      f"--update-baseline --note \"seed {card} baseline\"")
             continue
-        base = float(bm[key]["value"])
-        pct = (r["throughput"] - base) / base * 100.0
+        baseline = bm[key]
+        protocol_fields = ("checkpoint", "k", "natoms_per_system")
+        mismatches = [
+            f"{field}={baseline.get(field)!r} (run {r.get(field)!r})"
+            for field in protocol_fields if baseline.get(field) != r.get(field)
+        ]
+        if mismatches:
+            r["verdict"] = "FAIL"
+            r["baseline"] = baseline.get("value")
+            r["delta"] = "n/a"
+            r["note"] = "baseline protocol mismatch: " + ", ".join(mismatches)
+            overall_pass = False
+            continue
+        base = float(baseline["value"])
+        direction = baseline.get("direction", r["direction"])
+        raw_pct = (r["throughput"] - base) / base * 100.0
+        pct = raw_pct if direction == "higher" else -raw_pct
         r["baseline"] = base
-        r["delta"] = f"{'+' if pct >= 0 else ''}{pct:.1f}%"
+        r["delta"] = f"{'+' if raw_pct >= 0 else ''}{raw_pct:.1f}%"
         r["verdict"] = "PASS" if pct >= -threshold else "FAIL"
         r["note"] = f"vs baseline {base:.4g} {r['unit']} (threshold -{threshold:.0f}%)"
         if r["verdict"] == "FAIL":
             overall_pass = False
-    return dict(verdict="PASS" if overall_pass else "FAIL", rows=rows, card=card)
+    verdict = "FAIL" if not overall_pass else ("GAP" if any_gap else "PASS")
+    return dict(verdict=verdict, rows=rows, card=card)
 
 
 def _update_perf_baselines(rows, card, note, threshold):
@@ -775,7 +831,8 @@ def _update_perf_baselines(rows, card, note, threshold):
             rows_out.append({**r, "verdict": "PASS (baseline updated)",
                              "baseline": r["throughput"], "delta": "+0.0% (seeded)",
                              "note": f"seeded {card} baseline for {r['model']}"})
-    return dict(verdict="PASS" if any_ok else "FAIL", rows=rows_out, card=card)
+    all_ok = any_ok and all(not r.get("failed") for r in rows)
+    return dict(verdict="PASS" if all_ok else "FAIL", rows=rows_out, card=card)
 
 
 def _print_perf(res):
@@ -802,7 +859,7 @@ def _print_perf(res):
     if fails:
         msg = f"GATE FAIL — {len(fails)} model(s) regressed beyond the threshold (see above)"
     elif gaps:
-        msg = (f"GATE PASS with GAP — {len(gaps)} model(s) skipped (missing baseline or env); "
+        msg = (f"GATE GAP — {len(gaps)} model(s) skipped (missing baseline or env); "
                f"the rest passed. Seed the missing baselines / close the env gap to clear it.")
     else:
         msg = "GATE PASS — every perf model is within threshold of its baseline"
@@ -902,14 +959,15 @@ def measure_install(out_path):
             raise RuntimeError(
                 "tt-atom worktree is dirty; commit the exact source before running the install gate")
         _run_cap([sys.executable, "-m", "venv", str(venv)], timeout=120)
-        _run_cap([venv_pip, "install", "--upgrade", "pip"], timeout=180)
+        _run_cap([venv_pip, "install", "--upgrade", "pip", "build"], timeout=180)
         _run_cap(["git", "clone", "--recursive", "-b", PINNED_TT_METAL_BRANCH,
                   "https://github.com/tenstorrent/tt-metal.git", str(ttm)],
                  cwd=scratch, timeout=1800)
         _run_cap(["git", "checkout", PINNED_TT_METAL_COMMIT], cwd=ttm, timeout=120)
         _run_cap(["git", "submodule", "update", "--recursive", "--init"], cwd=ttm, timeout=1800)
-        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ttm,
-                              capture_output=True, text=True).stdout.strip()
+        head = _run_cap(["git", "rev-parse", "HEAD"], cwd=ttm, timeout=30).stdout.strip()
+        if head != PINNED_TT_METAL_COMMIT:
+            raise RuntimeError(f"tt-metal checkout mismatch: {head} != {PINNED_TT_METAL_COMMIT}")
         result["built_commit"] = head
         note(f"[install] tt-metal HEAD={head} (pinned {PINNED_TT_METAL_COMMIT[:12]})")
         env = dict(os.environ)
@@ -934,7 +992,13 @@ def measure_install(out_path):
         note(f"[install] tt-atom source={source_commit} from {source_url}")
         _run_cap(["git", "clone", source_url, str(tta)], cwd=scratch, timeout=600)
         _run_cap(["git", "checkout", source_commit], cwd=tta, timeout=120)
-        _run_cap([venv_pip, "install", "-e", str(tta)], cwd=scratch, env=env, timeout=600)
+        wheel_dir = scratch / "dist"
+        _run_cap([venv_py, "-m", "build", "--wheel", "--outdir", str(wheel_dir)],
+                 cwd=tta, env=env, timeout=600)
+        wheels = list(wheel_dir.glob("tt_atom-*.whl"))
+        if len(wheels) != 1:
+            raise RuntimeError(f"expected one tt-atom wheel, found {wheels}")
+        _run_cap([venv_pip, "install", str(wheels[0])], cwd=scratch, env=env, timeout=600)
         # reference env for the one-time Orb weight export (numpy>=2, has orb-models). Pinned to
         # 0.5.5 — the export tool's target; newer orb-models changed the pretrained API. UMA's
         # real-weight bundle would additionally need fairchem-core here (see README), but this
@@ -946,10 +1010,11 @@ def measure_install(out_path):
         _run_cap([refenv_pip, "install", "--upgrade", "pip"], timeout=180)
         _run_cap([refenv_pip, "install", "orb-models==0.5.5"], timeout=600)
         sm_env = dict(env)
+        sm_env.pop("PYTHONPATH", None)
         sm_env["TT_VISIBLE_DEVICES"] = os.environ.get("TT_VISIBLE_DEVICES", "0")
         sm_env["TT_METAL_LOGGER_LEVEL"] = "FATAL"
-        sm_env["PYTHONPATH"] = str(tta)
         sm_env["TT_ATOM_REFENV"] = refenv_py
+        sm_env["TT_ATOM_CACHE"] = str(scratch / "cache")
         # one-time orb checkpoint download (ungated); off would block the first-use export
         sm_env["HF_HUB_OFFLINE"] = "0"
         # this board's UMD misreads the board ID without an explicit mesh graph descriptor
@@ -964,6 +1029,24 @@ def measure_install(out_path):
         result["fused_rotate"] = op_out
         op_ok = opc.returncode == 0 and op_out == "True True"
         note(f"[install] op check: {op_out!r} rc={opc.returncode}")
+        pkg = _run_cap(
+            [venv_py, "-c",
+             "import importlib.resources as r, tt_atom; "
+             "print(tt_atom.__file__); "
+             "print((r.files('tools')/'export_weights.py').is_file(), "
+             "(r.files('tools')/'export_orb_weights.py').is_file())"],
+            env=sm_env, timeout=120, check=False)
+        pkg_lines = pkg.stdout.strip().splitlines()
+        result["tt_atom_import"] = pkg_lines[0] if pkg_lines else ""
+        result["exporters"] = pkg_lines[-1] if pkg_lines else ""
+        wheel_ok = (
+            pkg.returncode == 0
+            and "site-packages" in result["tt_atom_import"]
+            and result["exporters"] == "True True"
+        )
+        result["wheel_ok"] = wheel_ok
+        note(f"[install] wheel import={result['tt_atom_import']!r}; "
+             f"exporters={result['exporters']!r}")
         uma_script = tta / "scripts" / "_install_gate_uma_smoke.py"
         uma_script.write_text(textwrap.dedent('''
             import math, pathlib, sys
@@ -1049,14 +1132,14 @@ def measure_install(out_path):
             orb_ok = False
         note(f"[install] Orb smoke rc={orb.returncode} E={result.get('orb_energy')} |F|={result.get('orb_force_norm')}")
         result["op_ok"], result["uma_ok"], result["orb_ok"] = op_ok, uma_ok, orb_ok
-        if op_ok and uma_ok and orb_ok and cli_ok:
+        if wheel_ok and op_ok and uma_ok and orb_ok and cli_ok:
             result["verdict"] = "PASS"
-            result["note"] = (f"from-zero install + smoke passed on tt-metal {head[:12]} "
+            result["note"] = (f"built-wheel install + smoke passed on tt-metal {head[:12]} "
                               f"(build {build_s:.0f}s); fused_rotate={op_out}, UMA end2end parity PASSED, "
                               f"CLI relax+parse PASSED, Orb E={result.get('orb_energy')}")
         else:
             result["verdict"] = "FAIL"
-            result["note"] = (f"op_ok={op_ok} uma_ok={uma_ok} cli_ok={cli_ok} "
+            result["note"] = (f"wheel_ok={wheel_ok} op_ok={op_ok} uma_ok={uma_ok} cli_ok={cli_ok} "
                               f"orb_ok={orb_ok}")
     except subprocess.TimeoutExpired as e:
         result["verdict"] = "FAIL"
@@ -1117,6 +1200,8 @@ def _print_install(res):
     print(f"pinned tt-metal commit: {res.get('pinned_commit', '?')}  (branch {res.get('branch', '?')})")
     print(f"built commit:           {res.get('built_commit', '?')}")
     print(f"build time:             {res.get('build_time_s', '?')}s  (rc={res.get('build_rc', '?')})")
+    print(f"installed package:      {res.get('tt_atom_import', '?')}  "
+          f"exporters={res.get('exporters', '?')}  -> {'PASS' if res.get('wheel_ok') else 'FAIL'}")
     print(f"fused_rotate / gc:      {res.get('fused_rotate', '?')}")
     print(f"UMA smoke (end2end):    rc={res.get('uma_smoke_rc', '?')}  E={res.get('uma_energy', '?')} (rel={res.get('uma_energy_rel', '?')}, pcc={res.get('uma_force_pcc', '?')})  -> {'PASS' if res.get('uma_ok') else 'FAIL'}")
     print(f"CLI relax + parse:      rc={res.get('cli_smoke_rc', '?')}/{res.get('cli_parse_rc', '?')}  -> {'PASS' if res.get('cli_ok') else 'FAIL'}")
@@ -1141,6 +1226,9 @@ def main():
                          "(CLI --help + output parses + live progress advances on a tiny H2O, Orb path).")
     ap.add_argument("--quick", action="store_true",
                     help="Fast smoke: fewer accuracy modules, smaller OOM sweep, fewer perf iters.")
+    ap.add_argument("--allow-gaps", action="store_true",
+                    help="Diagnostics only: return success when required rows are GAP. "
+                         "The release default requires PASS for every selected row.")
     ap.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
                     help=f"Perf regression %% allowed before FAIL (default {DEFAULT_THRESHOLD:g}).")
     ap.add_argument("--model", action="append", choices=list(PERF_SPECS),
@@ -1155,8 +1243,8 @@ def main():
     ap.add_argument("--cli-only", action="store_true",
                     help="UX leg only: run scripts/ux_regression.py --cli-only (no card). "
                          "Convenience passthrough; ignored for other legs.")
-    # internal: the in-process OOM sweep subprocess
-    ap.add_argument("--measure-oom", action="store_true", help=argparse.SUPPRESS)
+    # internal: one in-process family OOM sweep subprocess
+    ap.add_argument("--measure-oom", choices=list(OOM_SPECS), help=argparse.SUPPRESS)
     # internal: the per-model in-process perf measurement subprocess
     ap.add_argument("--measure-perf", metavar="MODEL", help=argparse.SUPPRESS)
     # internal: the clean-env install leg subprocess
@@ -1164,10 +1252,10 @@ def main():
     ap.add_argument("--out", type=pathlib.Path, default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
 
-    if args.measure_oom:
+    if args.measure_oom is not None:
         if args.out is None:
             sys.exit("--out is required with --measure-oom")
-        measure_oom(args.out, args.quick)
+        measure_oom(args.measure_oom, args.out, args.quick)
         return 0
 
     if args.measure_perf is not None:
@@ -1191,13 +1279,15 @@ def main():
     if "accuracy" in legs:
         rows, acc_pass = run_accuracy(ACCURACY_SPECS, args.quick)
         _print_accuracy(rows, acc_pass)
-        overall_pass &= acc_pass
+        has_gap = any(r["verdict"] == "GAP" for r in rows)
+        overall_pass &= acc_pass and (args.allow_gaps or not has_gap)
         ran_any = True
 
     if "oom" in legs:
         res = _run_oom(args.quick)
         _print_oom(res)
-        if res["verdict"] == "FAIL":
+        if res["verdict"] != "PASS" and not (
+                args.allow_gaps and res["verdict"] == "GAP"):
             overall_pass = False
         ran_any = True
 
@@ -1205,29 +1295,33 @@ def main():
         models = args.model or DEFAULT_PERF_MODELS
         res = run_perf(args.quick, models, args.update_baseline, args.note, args.threshold)
         _print_perf(res)
-        if res["verdict"] == "FAIL":
+        has_gap = any(r.get("verdict") == "GAP" for r in res.get("rows", []))
+        if res["verdict"] == "FAIL" or (has_gap and not args.allow_gaps):
             overall_pass = False
         ran_any = True
 
     if "ux" in legs:
         res = run_ux(args.quick, args.cli_only)
         _print_ux(res)
-        if res["verdict"] == "FAIL":
+        if res["verdict"] != "PASS" and not (
+                args.allow_gaps and res["verdict"] == "GAP"):
             overall_pass = False
         ran_any = True
 
     if "install" in legs:
         res = _run_install()
         _print_install(res)
-        if res.get("verdict") == "FAIL":
+        if res.get("verdict") != "PASS" and not (
+                args.allow_gaps and res.get("verdict") == "GAP"):
             overall_pass = False
         ran_any = True
 
     print(f"\n{'#' * 78}\nRELEASE GATE SUMMARY — legs: {', '.join(legs)}\n{'#' * 78}")
     if not ran_any:
         print("no legs selected")
+    gap_policy = "allowed for diagnostics" if args.allow_gaps else "release-blocking"
     print("OVERALL: " + ("PASS" if overall_pass else "FAIL") +
-          "  (GAP legs are reported, not counted as failures)")
+          f"  (GAP rows are {gap_policy})")
     print(f"{'#' * 78}")
     return 0 if overall_pass else 1
 

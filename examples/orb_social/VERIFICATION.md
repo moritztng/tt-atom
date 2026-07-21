@@ -1,5 +1,10 @@
 # Verification — Orb-v3 silicon melt on Tenstorrent Blackhole (qb2 run, 2026-07-14)
 
+> Withdrawn as verification evidence. The trajectory used an invalid neighbour-list skin policy,
+> and the fresh-graph parity samples do not validate forces used between rebuilds. All measurements
+> are retained below as historical data. Regenerate the trajectory with the corrected exact-cutoff
+> graph check before using any melt claim.
+
 All on-device numbers are from a single Blackhole p150 of tt-quietbox2 with the real
 `orb-v3-conservative-inf-omat` weights. The CPU reference is the public `orb-models` package
 (v0.5.5, same checkpoint) on the identical atomic configurations. Reproduce with `NOTES.md`.
@@ -7,8 +12,7 @@ All on-device numbers are from a single Blackhole p150 of tt-quietbox2 with the 
 This run extends the trajectory into a long liquid so the melt visibly flows (Moritz's
 ADDENDUM 4): NVT Langevin ramps 300 -> 2200 K, **holds at ~2200 K for several ps of real liquid
 diffusion**, then an 800-step NVE tail. dt = 0.5 fs, frames every 4 steps -> **2855 frames,
-5.70 ps**, 80 neighbour-list rebuilds (skin 1.5 A), so the graph topology stays correct as the
-solid becomes a liquid.
+5.70 ps** and 80 neighbour-list rebuilds (skin 1.5 A).
 
 ## 1. It is a real melt — T crosses T_m, the structure disorders, the liquid diffuses
 

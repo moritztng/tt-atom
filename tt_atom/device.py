@@ -134,26 +134,6 @@ L1_RESIDENCY_BUDGET = 12_000_000        # SO(2) edge tensors [E, nsph*Cin] (flat
 L1_NODE_BUDGET = 8_000_000              # grid / norm node tensors (pass tile-padded feature width)
 
 
-def coeff_reshape(ttnn, t, shape):
-    """Reshape that collapses/expands the spherical-harmonic coefficient dim (nsph, e.g. 9),
-    which is NOT tile-aligned. A direct ``ttnn.reshape`` on a TILE tensor physically repacks the
-    tile padding (9 -> 32, a 3.5x data reorg -> ~18 ms at E~46k); routing through ROW_MAJOR
-    (contiguous, no coeff padding) is ~4x faster and bit-exact (a lossless layout round-trip, no
-    dtype change). For an already-ROW_MAJOR tensor a plain reshape is cheap, so pass through.
-
-    Only use for reshapes that move the coefficient dim across the flat/3D boundary; a reshape
-    that only touches the batch (outer) dim never repacks and should stay a direct reshape."""
-    try:
-        is_tile = t.layout == ttnn.TILE_LAYOUT
-    except Exception:
-        is_tile = True
-    if is_tile:
-        r = ttnn.to_layout(t, ttnn.ROW_MAJOR_LAYOUT)
-        r = ttnn.reshape(r, shape)
-        return ttnn.to_layout(r, ttnn.TILE_LAYOUT)
-    return ttnn.reshape(t, shape)
-
-
 def l1_if_fits(ttnn, rows, width, *, dtype_bytes=2, budget=L1_RESIDENCY_BUDGET):
     """Return an L1 memory config if a tile-padded ``[rows, width]`` tensor of ``dtype_bytes``
     fits the per-tensor L1 residency budget, else DRAM-interleaved. Guards the residency wins so
@@ -163,12 +143,8 @@ def l1_if_fits(ttnn, rows, width, *, dtype_bytes=2, budget=L1_RESIDENCY_BUDGET):
     return ttnn.L1_MEMORY_CONFIG if rp * wp * dtype_bytes <= budget else ttnn.DRAM_MEMORY_CONFIG
 
 
-def compute_kernel_config(fast: bool = False):
-    """The TT-Atom matmul/compute numerics policy.
-
-    ``fast`` does not change the accumulation math here (operand dtype is chosen at weight
-    load time); HiFi4 + fp32 dest accumulation is kept in both modes for accuracy.
-    """
+def compute_kernel_config():
+    """The TT-Atom matmul/compute numerics policy."""
     import ttnn
 
     return ttnn.WormholeComputeKernelConfig(

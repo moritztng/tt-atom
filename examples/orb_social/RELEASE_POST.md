@@ -1,5 +1,8 @@
 # Orb-v3 release post — draft for Moritz
 
+WITHDRAWN: do not publish this draft. The underlying trajectory predates the corrected exact-cutoff
+graph check and must be regenerated before its melt, parity, or conservation claims are reused.
+
 DRAFT for Moritz to review and post himself. Nothing here is posted anywhere and no
 social account is touched. He'll attach the Si-melt video (`orb_si_melt.mp4`) himself;
 the text is deliberately short because the video does the showing.

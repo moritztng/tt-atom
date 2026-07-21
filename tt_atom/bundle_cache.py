@@ -13,6 +13,7 @@ so a scientist sees them at most once per composition.
 from __future__ import annotations
 
 import hashlib
+import importlib.resources
 import math
 import os
 import pathlib
@@ -25,6 +26,11 @@ from functools import reduce
 CACHE_DIR = pathlib.Path(
     os.environ.get("TT_ATOM_CACHE", pathlib.Path.home() / ".cache" / "tt_atom" / "bundles")
 )
+
+
+def exporter_path(name):
+    """Return an exporter installed with the package, including from a built wheel."""
+    return pathlib.Path(str(importlib.resources.files("tools").joinpath(name)))
 
 
 def infer_task(atoms):
@@ -129,7 +135,7 @@ def build_bundle(atoms, out_path, *, model="uma-s-1", task="omol", charge=0, spi
             "manually with tools/export_weights.py and load the .npz directly."
         )
     py = resolve_refenv(refenv)
-    tools = pathlib.Path(__file__).resolve().parent.parent / "tools" / "export_weights.py"
+    tools = exporter_path("export_weights.py")
     hint = (
         "\n\nIf this is a checkpoint/access error: the UMA weights are gated — accept the "
         "license at\n  https://huggingface.co/facebook/UMA\nand log in once with "

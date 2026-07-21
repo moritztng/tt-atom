@@ -12,13 +12,11 @@ license = "MIT"
 authors = [{ name = "Moritz Thüning" }]
 keywords = ["tenstorrent", "ttnn", "machine-learning-potential", "eSEN", "eSCN", "UMA", "Orb", "OrbMol", "equivariant", "MLIP"]
 
-# Core runtime deps. ttnn is NOT a pip dependency: this build routes the rotation through custom
-# tt-metal kernels (ttnn.experimental.fused_rotate) that the pip wheel does not carry, so ttnn must
-# come from a source tt-metal build that includes the op (see README "Install"). numpy is pinned <2
-# to match the source-ttnn numpy 1.x C ABI; torch is CPU-only (the model runs on the card).
+# Core runtime deps. ttnn is NOT a pip dependency: Orb can use the stock wheel, while UMA needs
+# source tt-metal with ttnn.experimental.fused_rotate (see README "Install"). numpy is pinned <2
+# to match ttnn's numpy 1.x C ABI; torch is CPU-only (the model runs on the card).
 # `import tt_atom` never imports ttnn, so it imports fine on a machine without a card.
 dependencies = [
-    # ttnn is provided by the source tt-metal build with the custom op -- see README "Install".
     "numpy<2",
     "torch>=2.0,<3",
     "ase>=3.26",
@@ -28,17 +26,13 @@ dependencies = [
 tt-atom = "tt_atom.cli:main"
 
 [project.optional-dependencies]
-# fairchem is needed ONLY to (a) load a real UMA/eSEN checkpoint and (b) generate the
-# golden reference tensors used by the parity tests. It pulls numpy>=2 and therefore
-# must live in a SEPARATE environment from ttnn (see README "Reference environment").
-reference = ["fairchem-core>=2.10"]
 dev = ["pytest", "matplotlib"]
 
 [project.urls]
 Homepage = "https://github.com/moritztng/tt-atom"
 
 [tool.setuptools.packages.find]
-include = ["tt_atom*"]
+include = ["tt_atom*", "tools"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

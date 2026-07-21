@@ -6,12 +6,10 @@ off the device at every step (Orb-v3 conservative ``F = -dE/dpos``); the host in
 
 Two things make this a *melt* rather than the solid-vibration demo in ``examples/orb_md.py``:
 
-* **Rebuildable neighbour list.** The traced engine in ``orb_md.py`` freezes the graph at the
-  initial geometry — exact for a solid, wrong the moment atoms diffuse. Here the engine is rebuilt
-  (new ``radius_graph`` + fresh trace capture) whenever any atom has moved more than a ``--skin``
-  margin since the last build, so the topology stays correct as the lattice disorders and the
-  liquid forms. Rebuild cost is amortised: most steps replay the captured trace at full speed, a
-  rebuild only fires when the structure has genuinely shifted.
+* **Exact changing neighbour graph.** The traced engine in ``orb_md.py`` freezes the graph at the
+  initial geometry, which is exact for a solid but wrong once atoms diffuse. Here the exact-cutoff
+  graph is checked every step. A fresh trace is captured only when its edges or periodic shifts
+  change, so unchanged steps still replay at full speed.
 * **NVT ramp -> NVE tail.** A Langevin thermostat ramps the target temperature from ``--t-start``
   to ``--t-end`` over ``--ramp-steps`` (robust melting — the bath keeps feeding energy as the
   lattice absorbs the latent heat of fusion, so the crystal reliably disorders instead of
@@ -47,18 +45,17 @@ class OrbMeltCalculator(Calculator):
     """ASE calculator: Orb-v3 energy + conservative forces on device, with a neighbour list that
     rebuilds as the structure disorders. The device modules (encoder / message-passing layers /
     energy head) are constructed once and reused across rebuilds; only the traced graph wrapper is
-    discarded and rebuilt when the topology moves past the skin margin."""
+    discarded and rebuilt when the exact-cutoff graph changes."""
 
     implemented_properties = ["energy", "forces"]
 
-    def __init__(self, weights_path, device_id=0, r_max=6.0, skin=1.5, *, fast=False):
+    def __init__(self, weights_path, device_id=0, r_max=6.0, *, fast=False):
         super().__init__()
         from tt_atom.device import open_device
         from tt_atom.orb_weights import OrbWeights
         from tt_atom.orb_model import Encoder, AttentionInteractionLayer, EnergyHead
 
         self.r_max = r_max
-        self.skin = skin
         self.device = open_device(device_id, trace_region_size=400_000_000)
         gw = OrbWeights.load(weights_path)
         cfg, w = gw.config, gw.weights
@@ -76,25 +73,31 @@ class OrbMeltCalculator(Calculator):
                                 fast=fast)
         self._node_row = gw.host("node_feat")[0:1]      # monatomic Si => one row tiled to N
         self.engine = None
-        self._build_pos = None
+        self._edge_index = None
+        self._cell_shift = None
         self._Z = None
         self.n_edges = None
         self.replay_ms = []
         self.rebuild_ms = []
         self.n_rebuilds = 0
 
-    def _build_engine(self, atoms):
+    def _current_graph(self, atoms):
         from tt_atom.geometry import radius_graph
+
+        pos = torch.tensor(atoms.get_positions(), dtype=torch.float64)
+        cell = torch.tensor(np.array(atoms.get_cell()), dtype=torch.float64)
+        edge_index, shift = radius_graph(
+            pos, self.r_max, cell=cell, pbc=[True, True, True])
+        return pos, edge_index, shift
+
+    def _build_engine(self, atoms, edge_index, shift):
         from tt_atom.orb_trace import OrbTracedEngine
 
         if self.engine is not None:
             self.engine.close()
             self.engine = None
-        pos = torch.tensor(atoms.get_positions(), dtype=torch.float64)
-        cell = torch.tensor(np.array(atoms.get_cell()), dtype=torch.float64)
         Z = torch.tensor(atoms.get_atomic_numbers(), dtype=torch.long)
         N = len(Z)
-        edge_index, shift = radius_graph(pos, self.r_max, cell=cell, pbc=[True, True, True])
         src, tgt = edge_index[0], edge_index[1]
         senders, receivers = tgt, src            # Orb convention is the opposite of UMA's
         self._Z = Z
@@ -104,7 +107,8 @@ class OrbMeltCalculator(Calculator):
             self.enc, self.layers, self.device, senders=senders, receivers=receivers,
             atomic_numbers=Z, node_feat=node_feat, ehead=self.ehead, cell_shift=shift,
             r_max=self.r_max)
-        self._build_pos = pos.clone()
+        self._edge_index = edge_index.clone()
+        self._cell_shift = shift.clone()
         self.n_rebuilds += 1
 
     def calculate(self, atoms=None, properties=("energy",), system_changes=all_changes):
@@ -112,21 +116,21 @@ class OrbMeltCalculator(Calculator):
         from tt_atom.orb_model import (host_conservative_force_denormalize,
                                         host_energy_denormalize)
 
-        pos_np = atoms.get_positions()
-        if self.engine is None:
+        pos, edge_index, shift = self._current_graph(atoms)
+        changed = (
+            self.engine is None
+            or self._edge_index.shape != edge_index.shape
+            or not torch.equal(self._edge_index, edge_index)
+            or self._cell_shift.shape != shift.shape
+            or not torch.equal(self._cell_shift, shift)
+        )
+        if changed:
             t0 = time.perf_counter()
-            self._build_engine(atoms)
+            self._build_engine(atoms, edge_index, shift)
             self.rebuild_ms.append((time.perf_counter() - t0) * 1e3)
-        else:
-            disp = np.linalg.norm(pos_np - self._build_pos.numpy(), axis=1).max()
-            if disp > self.skin:
-                t0 = time.perf_counter()
-                self._build_engine(atoms)
-                self.rebuild_ms.append((time.perf_counter() - t0) * 1e3)
 
         Z = self._Z
         N = len(Z)
-        pos = torch.tensor(pos_np, dtype=torch.float64)
 
         t0 = time.perf_counter()
         raw_e, raw_f = self.engine(pos)
@@ -180,7 +184,6 @@ def main():
     ap.add_argument("--t-start", type=float, default=300.0)
     ap.add_argument("--t-end", type=float, default=2800.0)
     ap.add_argument("--friction", type=float, default=0.02, help="Langevin friction (1/fs)")
-    ap.add_argument("--skin", type=float, default=1.5, help="neighbour-list rebuild margin (A)")
     ap.add_argument("--save-every", type=int, default=4)
     ap.add_argument("--out", required=True)
     ap.add_argument("--log-csv", default=None)
@@ -194,7 +197,7 @@ def main():
 
     atoms = bulk(args.element, "diamond", a=args.a, cubic=True) * (args.nx, args.ny, args.nz)
     N = len(atoms)
-    calc = OrbMeltCalculator(args.weights, device_id=args.device_id, skin=args.skin, fast=args.fast)
+    calc = OrbMeltCalculator(args.weights, device_id=args.device_id, fast=args.fast)
     atoms.calc = calc
 
     frames = []
@@ -339,7 +342,7 @@ def main():
 
         print("\n" + "=" * 70)
         print(f"system          : {args.element} diamond ({args.nx}x{args.ny}x{args.nz} = {N} atoms)")
-        print(f"edges (last)    : {calc.n_edges}   (rebuilt {calc.n_rebuilds} times, skin {args.skin} A)")
+        print(f"edges (last)    : {calc.n_edges}   (trace captured {calc.n_rebuilds} times)")
         t_hold_disp = args.t_hold if args.t_hold is not None else args.t_end
         t_pre_disp = args.t_prehold if args.t_prehold is not None else args.t_start
         print(f"MD              : prehold {args.prehold_steps} @ {t_pre_disp:.0f} K NVT (crystalline) "

@@ -40,9 +40,10 @@ GOLDEN_DIR = pathlib.Path(os.environ.get(
     "TTATOM_GOLDEN_DIR", str(pathlib.Path.home() / ".ttatom_run/goldens_real")))
 
 # (task label, bundle filename) — parametrized; each case skips if its bundle is absent.
-# omat/omc/odac are fully periodic (stress validated too); oc20 is mixed-pbc (stress skips).
+# omat/omc/odac are fully periodic and include stress; oc20 is mixed-PBC, where stress is undefined.
 PERIODIC_CASES = [("omat", "si_omat.npz"), ("oc20", "cuh_oc20.npz"),
                   ("odac", "mgo_odac.npz"), ("omc", "co2_omc.npz")]
+STRESS_CASES = [case for case in PERIODIC_CASES if case[0] != "oc20"]
 
 
 def _pcc(a, b):
@@ -125,23 +126,21 @@ def test_end_to_end_periodic_energy_forces(task, fname, device):
     assert fpcc > 0.99, f"[{task}] force PCC {fpcc}"
 
 
-@pytest.mark.parametrize("task,fname", PERIODIC_CASES)
+@pytest.mark.parametrize("task,fname", STRESS_CASES)
 def test_stress_matches_fairchem(task, fname, device):
     """Stress (virial = symmetrized dE/dstrain, / volume) vs the fairchem oracle on a fully
     periodic cell — the anchor for variable-cell relaxation / NPT. Runs through the ASE
-    ``TTAtomCalculator`` so the Voigt output + normalizer scaling + volume are all exercised.
-    Skips a mixed-pbc case (stress ill-defined; oracle stored zeros)."""
+    ``TTAtomCalculator`` so the Voigt output + normalizer scaling + volume are all exercised."""
     from ase import Atoms
 
     from tt_atom.calculator import TTAtomCalculator
     from tt_atom.weights import WeightBundle
 
     rg, path = _load(fname)
-    if "out@stress_oracle" not in rg.files or not np.any(rg["out@stress_oracle"]):
-        pytest.skip(f"[{task}] no oracle stress (mixed-pbc or pre-stress golden)")
     pbc = _pbc(rg)
-    if not all(pbc):
-        pytest.skip(f"[{task}] stress only validated for a fully periodic cell")
+    assert all(pbc), f"[{task}] stress cases must be fully periodic"
+    assert "out@stress_oracle" in rg.files and np.any(rg["out@stress_oracle"]), (
+        f"[{task}] stress case has no nonzero oracle")
 
     atoms = Atoms(
         numbers=rg["in@atomic_numbers"].copy(),

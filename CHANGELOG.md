@@ -5,6 +5,22 @@ releases are cut only from a commit that has passed the on-hardware release gate
 parity, no OOM across the supported size range, no perf or UX regression, and a clean install
 smoke (see `RELEASING.md`).
 
+## Unreleased
+
+### Fixed
+- Built wheels now include both weight exporters, so automatic UMA and Orb cache misses work
+  outside a source checkout.
+- Release mode now blocks every missing fixture, baseline, required op, and model-family OOM row.
+  `--allow-gaps` remains available for development diagnostics.
+- The silicon-melt example now checks the exact-cutoff neighbour graph every step and recaptures
+  only when it changes. The earlier trajectory is withdrawn because its skin policy could reuse
+  stale edges.
+
+### Changed
+- Accuracy coverage now includes all periodic UMA tasks and Orb's bf8 fast mode.
+- The clean-install gate builds the candidate wheel, installs it in isolation, and verifies the
+  exact pushed commit and packaged exporters.
+
 ## [0.2.1] - 2026-07-20
 
 No new model family this release. This is a consolidation release on top of v0.2.0's Orb-v3/
