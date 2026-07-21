@@ -52,7 +52,7 @@ def main():
     args = ap.parse_args()
 
     systems = make_systems(args.systems, args.cells)
-    natoms, nedges = len(systems[0][1]), None
+    natoms = len(systems[0][1])
     rows = []
     for n in range(1, args.max_cards + 1):
         ids = list(range(n))

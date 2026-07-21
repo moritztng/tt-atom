@@ -45,7 +45,7 @@ class EdgeDegreeEmbedding:
         ttnn = self.ttnn
         from . import rotation, scatter
 
-        E, C = graph.E, self.C
+        C = self.C
         nred, nsph, N = graph.nred, graph.nsph, graph.N
         edm = self.rad(graph.x_edge)                            # [E, m0*C]
         # place the m=0 block at the front of the reduced m-space (zeros in the tail coeffs): the
@@ -71,7 +71,7 @@ def edge_degree_bw(ede, graph, g_x_init, acc):
     blocks; l0 is constant (pass-through). Accumulates the geometric adjoints (g rot_inv,
     g_envelope) into ``acc`` and appends the radial adjoint so ``backbone_bw`` finishes g_x_edge."""
     ttnn = ede.ttnn
-    from . import rotation, scatter
+    from . import rotation
 
     C = ede.C
     N, nsph = g_x_init.shape[0], g_x_init.shape[1]

@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import pathlib
 import numpy as np
-import torch
 
 
 GOLDEN_DIR = pathlib.Path.home() / ".ttatom_run/goldens_real"

@@ -1,6 +1,6 @@
-"""Real-weight parity test for ``orb-v3-conservative-inf-omat``'s analytic forces
-(``F = -dE/dpos``, ``tt_atom/orb_forces.py``) -- the item flagged open in ``docs/orb-port.md``:
-conservative forces come from backprop through the energy, unlike direct-20's per-node ForceHead
+"""Real-weight parity for ``orb-v3-conservative-inf-omat`` analytic forces.
+
+Conservative forces come from backprop through the energy, unlike direct-20's per-node ForceHead
 MLP (already ported, see ``test_orb_direct_realweight.py``).
 
 Verifies against the REAL oracle: ``orb-models``' own ``torch.autograd`` forces, captured
@@ -19,7 +19,6 @@ import pathlib
 
 import numpy as np
 import pytest
-import torch
 
 REAL_GOLDEN = os.environ.get(
     "TTATOM_ORB_GOLDEN", str(pathlib.Path.home() / ".ttatom_run/goldens_real/si_omat_orb.npz")
@@ -107,8 +106,7 @@ def test_conservative_forces(gw, device):
     fmax = gold_forces.abs().max().item()
     print(f"\n[orb] conservative device forces (real units): PCC={pcc:.6f} MAE={mae:.4f} eV/A "
           f"(oracle |F|max {fmax:.4f})")
-    # ZBL forces (dV_ZBL/dr) are not yet ported (docs/orb-port.md Open item) -- the oracle
-    # includes them, this device path doesn't. ZBL energy was measured at 9.5e-8 eV (negligible)
-    # for this exact Si golden, so its force contribution is expected to be within noise here;
-    # held to the same bar as the already-merged direct-20 ForceHead parity test.
+    # This module isolates the learned conservative path and does not add the host ZBL force.
+    # The oracle includes it, but its energy is only 9.5e-8 eV for this Si golden. The dedicated
+    # short-contact ZBL parity is covered in test_orb_zbl_forces.py.
     assert pcc > 0.999, pcc

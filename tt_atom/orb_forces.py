@@ -323,7 +323,7 @@ def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers
     import ttnn
 
     from .orb_geometry import host_edge_features
-    from .orb_model import OrbGraphContext, _to_dev, host_cutoff
+    from .orb_model import OrbGraphContext, _to_dev
 
     pos = pos.detach().clone().requires_grad_(True)
     strain = torch.zeros(3, 3, dtype=pos.dtype, requires_grad=True) if compute_stress else None

@@ -36,7 +36,6 @@ def _pcc(a, b):
 
 
 def run_ref(args):
-    import torch
     from orb_models.forcefield import pretrained
     from orb_models.forcefield.calculator import ORBCalculator
 

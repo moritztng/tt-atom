@@ -1,7 +1,5 @@
-"""Warm eager forward latency for the Orb-v3 backbone, at both the toy 4-atom golden (the
-original port's measurement, docs/orb-port.md) and a production-scale periodic supercell -- to
-check whether the "dispatch-bound, no fusable per-edge pattern, trace capture is the lever"
-conclusion (measured at N=4) still holds at a bigger, more realistic graph size.
+"""Warm eager Orb-v3 backbone latency on a toy 4-atom golden and a production-scale periodic
+supercell.
 
     TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python benchmarks/bench_orb_profile.py
 

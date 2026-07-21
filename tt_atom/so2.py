@@ -233,7 +233,7 @@ class SO2Convolution:
         contiguous [real|imag] input with the [[Wa,Wb],[-Wb,Wa]] block [2K->2Hh]. No block-diagonal
         zeros (unlike a single whole-conv matmul) so no MAC blowup at large E, yet ~5 ops per conv
         instead of ~15 (kills the real/imag slices + subtract/add combine)."""
-        lmax, mmax, Cin = self.lmax, self.mmax, self.Cin
+        mmax = self.mmax
         w_m0 = weights[f"{prefix}.fc_m0.weight"].T.contiguous().float()       # [in0, 640]
         b_m0 = weights[f"{prefix}.fc_m0.bias"].float()
         self.fused_wm0 = _to_dev(w_m0.contiguous(), self.device, wdtype)

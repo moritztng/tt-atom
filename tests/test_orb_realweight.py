@@ -16,7 +16,6 @@ import pathlib
 
 import numpy as np
 import pytest
-import torch
 
 REAL_GOLDEN = os.environ.get(
     "TTATOM_ORB_GOLDEN", str(pathlib.Path.home() / ".ttatom_run/goldens_real/si_omat_orb.npz")

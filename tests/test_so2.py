@@ -33,8 +33,8 @@ def test_so2_conv_1(golden, device):
     cfg = golden.config
     Cin = 2 * cfg["sphere_channels"]
     extra = cfg["lmax"] * cfg["hidden_channels"]
-    p = pcc_val = _run(golden, device, "blocks.0.edge_wise.so2_conv_1",
-                       "block0.so2_1", Cin, cfg["hidden_channels"], extra)
+    p = _run(golden, device, "blocks.0.edge_wise.so2_conv_1",
+             "block0.so2_1", Cin, cfg["hidden_channels"], extra)
     assert p >= 0.98, f"so2_conv_1 PCC {p}"
 
 

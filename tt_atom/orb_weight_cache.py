@@ -1,7 +1,7 @@
 """Per-checkpoint weight cache — the machinery behind ``Calculator(atoms, "orb-...")``.
 
-Orb has no MoLE (or any) expert routing baked at merge time (see ``docs/orb-port.md``'s
-architecture verdict): the raw checkpoint weights are valid for *any* composition/charge/spin, so
+Orb has no MoLE or other expert routing baked at merge time (see ``docs/orb-port.md``): the raw
+checkpoint weights are valid for *any* composition/charge/spin, so
 unlike ``tt_atom.bundle_cache`` (one merged bundle per *(composition, charge, spin, task)*, a
 subprocess rebuild per system) this only ever needs one export per *checkpoint name*, ever. A
 cache hit is a plain ``np.load``, exactly like ``bundle_cache``'s. The refenv resolution and the

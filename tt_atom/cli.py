@@ -62,6 +62,47 @@ def _calc(args, bundle=None):
                             trace=getattr(args, "trace", False))
 
 
+def _run_relax(atoms, args, energy_before):
+    from ase.optimize import FIRE
+
+    FIRE(atoms, logfile="-").run(fmax=args.fmax, steps=args.steps)
+    energy_after = atoms.get_potential_energy()
+    fmax = float((atoms.get_forces() ** 2).sum(1).max() ** 0.5)
+    print(f"relax: E {energy_before:.6f} -> {energy_after:.6f} eV; "
+          f"fmax={fmax:.4f} (target {args.fmax}); converged={fmax <= args.fmax}")
+
+
+def _run_md(atoms, args, energy_before=None):
+    from ase import units
+    from ase.md.langevin import Langevin
+    from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
+
+    MaxwellBoltzmannDistribution(atoms, temperature_K=args.temp)
+    dyn = Langevin(atoms, timestep=args.dt * units.fs, temperature_K=args.temp,
+                   friction=0.01 / units.fs)
+    if energy_before is None:
+        energy_before = atoms.get_potential_energy()
+
+    def _log():
+        ekin = atoms.get_kinetic_energy()
+        print(f"  step {dyn.nsteps:4d}  E={atoms.get_potential_energy():.5f}  "
+              f"T={ekin / (1.5 * units.kB * len(atoms)):.1f} K")
+
+    dyn.attach(_log, interval=max(1, args.steps // 10))
+    dyn.run(args.steps)
+    print(f"md: {args.steps} steps ({args.dt} fs) at {args.temp} K; "
+          f"E {energy_before:.5f} -> {atoms.get_potential_energy():.5f} eV")
+
+
+def _write_output(args, atoms):
+    if not args.out:
+        return
+    from ase.io import write
+
+    write(args.out, atoms)
+    print(f"wrote {args.out}")
+
+
 def cmd_info(args):
     from .weights import WeightBundle
     b = WeightBundle.load(args.bundle)
@@ -110,8 +151,6 @@ def cmd_verify(args):
 
 
 def cmd_relax(args):
-    from ase.optimize import FIRE
-
     from .weights import WeightBundle
     bundle = WeightBundle.load(args.bundle) if isinstance(args.bundle, str) else args.bundle
     atoms = _atoms(args, bundle)
@@ -119,49 +158,22 @@ def cmd_relax(args):
     atoms.calc = calc
     try:
         e0 = atoms.get_potential_energy()
-        FIRE(atoms, logfile="-").run(fmax=args.fmax, steps=args.steps)
-        e1 = atoms.get_potential_energy()
-        fmax = float((atoms.get_forces() ** 2).sum(1).max() ** 0.5)
-        print(f"relax: E {e0:.6f} -> {e1:.6f} eV; fmax={fmax:.4f} (target {args.fmax}); "
-              f"converged={fmax <= args.fmax}")
-        if args.out:
-            from ase.io import write
-            write(args.out, atoms)
-            print(f"wrote {args.out}")
+        _run_relax(atoms, args, e0)
+        _write_output(args, atoms)
     finally:
         calc.close()
     return 0
 
 
 def cmd_md(args):
-    from ase import units
-    from ase.md.langevin import Langevin
-    from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
-
     from .weights import WeightBundle
     bundle = WeightBundle.load(args.bundle) if isinstance(args.bundle, str) else args.bundle
     atoms = _atoms(args, bundle)
     calc = _calc(args, bundle)
     atoms.calc = calc
     try:
-        MaxwellBoltzmannDistribution(atoms, temperature_K=args.temp)
-        dyn = Langevin(atoms, timestep=args.dt * units.fs, temperature_K=args.temp,
-                       friction=0.01 / units.fs)
-        e0 = atoms.get_potential_energy()
-
-        def _log():
-            ekin = atoms.get_kinetic_energy()
-            print(f"  step {dyn.nsteps:4d}  E={atoms.get_potential_energy():.5f}  "
-                  f"T={ekin / (1.5 * units.kB * len(atoms)):.1f} K")
-
-        dyn.attach(_log, interval=max(1, args.steps // 10))
-        dyn.run(args.steps)
-        print(f"md: {args.steps} steps ({args.dt} fs) at {args.temp} K; "
-              f"E {e0:.5f} -> {atoms.get_potential_energy():.5f} eV")
-        if args.out:
-            from ase.io import write
-            write(args.out, atoms)
-            print(f"wrote {args.out}")
+        _run_md(atoms, args)
+        _write_output(args, atoms)
     finally:
         calc.close()
     return 0
@@ -190,36 +202,10 @@ def cmd_run(args):
         print(f"energy: {e0:.6f} eV  ({len(atoms)} atoms, task={task}, "
               f"charge={int(args.charge)}, spin={int(args.spin)})")
         if args.relax:
-            from ase.optimize import FIRE
-
-            FIRE(atoms, logfile="-").run(fmax=args.fmax, steps=args.steps)
-            e1 = atoms.get_potential_energy()
-            fmax = float((atoms.get_forces() ** 2).sum(1).max() ** 0.5)
-            print(f"relax: E {e0:.6f} -> {e1:.6f} eV; fmax={fmax:.4f} (target {args.fmax}); "
-                  f"converged={fmax <= args.fmax}")
+            _run_relax(atoms, args, e0)
         elif args.md:
-            from ase import units
-            from ase.md.langevin import Langevin
-            from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
-
-            MaxwellBoltzmannDistribution(atoms, temperature_K=args.temp)
-            dyn = Langevin(atoms, timestep=args.dt * units.fs, temperature_K=args.temp,
-                           friction=0.01 / units.fs)
-
-            def _log():
-                ekin = atoms.get_kinetic_energy()
-                print(f"  step {dyn.nsteps:4d}  E={atoms.get_potential_energy():.5f}  "
-                      f"T={ekin / (1.5 * units.kB * len(atoms)):.1f} K")
-
-            dyn.attach(_log, interval=max(1, args.steps // 10))
-            dyn.run(args.steps)
-            print(f"md: {args.steps} steps ({args.dt} fs) at {args.temp} K; "
-                  f"E {e0:.5f} -> {atoms.get_potential_energy():.5f} eV")
-        if args.out:
-            from ase.io import write
-
-            write(args.out, atoms)
-            print(f"wrote {args.out}")
+            _run_md(atoms, args, e0)
+        _write_output(args, atoms)
     finally:
         calc.close()
     return 0
@@ -228,7 +214,7 @@ def cmd_run(args):
 def cmd_convert(args):
     """Fairchem UMA checkpoint -> TT-Atom bundle. Needs the reference (fairchem) environment."""
     try:
-        import fairchem  # noqa: F401
+        __import__("fairchem")
     except Exception:
         tools = pathlib.Path(__file__).resolve().parent.parent / "tools" / "export_weights.py"
         print("convert-checkpoint needs fairchem (numpy>=2), which cannot share this ttnn env.")

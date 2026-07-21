@@ -101,7 +101,7 @@ def unwrap_trajectory(traj_in, out_path):
     as a non-periodic trajectory (no cell). Returns (out_path, cloud_radius, max_consec_disp_stats).
     """
     frames = ase_read(traj_in, index=":")
-    F, N = len(frames), len(frames[0])
+    F = len(frames)
     L = np.asarray(frames[0].cell).diagonal().astype(float)     # orthorhombic Si supercell
     pos = np.array([a.get_positions() for a in frames])         # (F, N, 3)
 

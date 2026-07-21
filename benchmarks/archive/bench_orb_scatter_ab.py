@@ -27,7 +27,6 @@ def _med(fn, ttnn, device, *, warmup=3, iters=10):
 
 
 def _segment_sum_old(ttnn, msg, gather_dev, Dmax, N, W):
-    E = msg.shape[0]
     zrow = ttnn.multiply(ttnn.slice(msg, [0, 0], [1, W]), 0.0)
     mpad = ttnn.to_layout(ttnn.concat([msg, zrow], dim=0), ttnn.ROW_MAJOR_LAYOUT)
     g = ttnn.embedding(gather_dev, mpad)

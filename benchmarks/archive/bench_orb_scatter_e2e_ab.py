@@ -13,7 +13,6 @@ import os
 import statistics
 
 import numpy as np
-import torch
 from ase.build import bulk
 
 

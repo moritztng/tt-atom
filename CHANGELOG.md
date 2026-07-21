@@ -2,7 +2,8 @@
 
 All notable changes to TT-Atom are recorded here. Versioning is [SemVer](https://semver.org);
 releases are cut only from a commit that has passed the on-hardware release gate — accuracy
-parity, no OOM across the supported size range, and no perf regression (see `RELEASING.md`).
+parity, no OOM across the supported size range, no perf or UX regression, and a clean install
+smoke (see `RELEASING.md`).
 
 ## [0.2.1] - 2026-07-20
 
@@ -210,7 +211,7 @@ tracing removes proportionally *more* fixed dispatch overhead here, not less.
 - No accuracy regression vs v0.1.0's UMA numbers (code untouched; full suite re-run green on this
   commit).
 - Multi-card fan-out for Orb-v3/OrbMol did **not** work at v0.2.0: `tt_atom.batch`'s worker was
-  hardcoded to the UMA backbone (see the [Unreleased] fix above). The v0.2.0 gate ran on a single
+  hardcoded to the UMA backbone (see the v0.2.1 fix above). The v0.2.0 gate ran on a single
   card, so the gap was not caught by `test_multicard.py`'s 2+ card requirement.
 
 ## [0.1.0] - 2026-07-08

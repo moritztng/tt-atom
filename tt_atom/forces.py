@@ -107,7 +107,7 @@ def gate_bw(gate, g_out):
     gating = gate._cache_gating                         # pre-sigmoid [E, lmax*H]
     x = gate._cache_x                                   # pre-gate input flat [E, nsph*H]
     gate_exp = gate._cache_gate                         # expanded sigmoid gate [E,(nsph-1)*H] (cached fwd)
-    E, H, lmax, ei = x.shape[0], gate.H, gate.lmax, gate.expand_index
+    E, H = x.shape[0], gate.H
 
     from .activation import _FUSED_GATE
     if _FUSED_GATE and x.shape[1] % 32 == 0 and gate_exp.shape[1] % 32 == 0:
@@ -279,7 +279,6 @@ def _spectral_bw_flat(sp, g_out):
     """Fully-flat VJP of ``SpectralAtomwise`` -- mirror of ``SpectralAtomwise._call_flat``."""
     ttnn = sp.ttnn
     N, H, C, nsph = g_out.shape[0], sp.H, sp.C, sp.nsph
-    xf = sp._cache_xf                                          # [N, nsph*C]
     a_scalar, gating, hf = sp._cache_a_scalar, sp._cache_gating, sp._cache_hf
     gf = ttnn.reshape(g_out, (N, nsph * C))
     # so3_linear_2 backward (flat block-diagonal transpose-matmul)

@@ -1,5 +1,6 @@
-"""Periodic-image edge construction at production scale (``docs/orb-port.md`` Open item):
-UMA's ``tt_atom/geometry.py`` ``radius_graph`` (architecture-agnostic host neighbor-list, already
+"""Periodic-image edge construction at production scale.
+
+Checks UMA's ``tt_atom/geometry.py`` ``radius_graph`` (architecture-agnostic host neighbor-list,
 proven for UMA) against Orb's own neighbor-list convention, on a 24-atom / 1064-edge periodic Si
 supercell (``tests/gen_golden_orb.py --system supercell``) -- big enough to genuinely exercise
 periodic wraparound (unlike the tiny 4-atom golden used for the rest of the port, whose periodic
@@ -24,7 +25,6 @@ import pathlib
 
 import numpy as np
 import pytest
-import torch
 
 REAL_GOLDEN = os.environ.get(
     "TTATOM_ORB_SUPERCELL_GOLDEN",

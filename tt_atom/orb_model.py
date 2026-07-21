@@ -229,7 +229,7 @@ class AttentionInteractionLayer:
         ttnn = self.ttnn
         from . import scatter as _sc
 
-        E, N, C = graph.E, graph.N, self.C
+        N, C = graph.N, self.C
 
         if self.has_cond and graph.cond_nodes is not None:
             cond = ttnn.linear(graph.cond_nodes, self.cond_node_proj_w, bias=self.cond_node_proj_b,

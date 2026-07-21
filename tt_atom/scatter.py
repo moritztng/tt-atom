@@ -66,7 +66,6 @@ def segment_sum(ttnn, msg, gather_dev, Dmax, N, W):
     ``ttnn.sum`` runs on row-major data, converting only the small [N, W] result back to tile for
     the caller. Same reduction order (sum over the degree axis), so numerically equivalent to the
     prior path -- verified bit-exact on a 216-atom frame (force PCC 1.0, max_abs 0)."""
-    E = msg.shape[0]
     if not _scatter_rm_layout():
         zrow = ttnn.multiply(ttnn.slice(msg, [0, 0], [1, W]), 0.0)
         mpad = ttnn.to_layout(ttnn.concat([msg, zrow], dim=0), ttnn.ROW_MAJOR_LAYOUT)

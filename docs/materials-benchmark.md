@@ -77,29 +77,13 @@ a real architectural difference from UMA, not a port discrepancy; the
 full non-equivariance analysis and the ZBL pair-repulsion correction live
 in `docs/orb-port.md`.
 
-† The UMA row is a **release-gated environment gap, not a parity
-failure**. The device end-to-end forward
-(`tests/test_realweight.py::test_end_to_end_energy_forces`) raises
-`AttributeError: module 'ttnn._ttnn.operations.experimental' has no
-attribute 'fused_rotate'`: UMA's equivariant rotation
-(`tt_atom/rotation.py`) needs the custom `ttnn.experimental.fused_rotate`
-op, which is **absent from the `ttnn` build installed in
-`~/.ttatom_run/env` on this host**. The README's Install section says
-`ttnn` must come from a source `tt-metal` build of branch
-`moritztng/tt-atom` that carries `fused_rotate`; this host's env does not
-have that build (a prior rebuild was reverted the same day because it
-forced a `ttnn` downgrade that regressed Orb-v3 throughput by ~57%, see
-memory `pc-ttatom-env-missing-fused-rotate`). It is a multi-day rebase of
-that custom-kernel branch onto current `tt-metal`, out of scope here. The
-other four UMA tests in the module pass: config sanity (real `uma-s-1`,
-`ff_type=spectral`, 4 layers, `lmax=mmax=2`, `omol` task), the host MoLE
-merge anchor (merged vs unmerged-MoE oracle, energy rel err < 1e-6 and
-force PCC > 0.999), weight-bundle coverage, and the spectral-atomwise
-module (activation PCC ≥ 0.98 vs the golden). The device energy/forces X
-number is therefore not measurable on this card; the row is reported as
-GAP, not forced to PASS or skipped. Fix: build `ttnn` from a source
-`tt-metal` that carries `fused_rotate` on the release host, then re-run
-`scripts/release_gate.py --leg accuracy`.
+† The UMA row is an environment gap, not a parity failure. The `ttnn`
+environment used for this table did not contain UMA's required
+`ttnn.experimental.fused_rotate` op, so the end-to-end device result was
+not measurable and is reported as GAP. The host merge, weight coverage,
+and spectral module checks passed. Build the pinned source tt-metal from
+the README and rerun `scripts/release_gate.py --leg accuracy` to close
+the device row.
 
 ¶ The periodic-supercell row verifies the radius-graph reconstruction
 matches `orb-models`' neighbour list exactly (1064 edges, symmetric
@@ -151,8 +135,8 @@ charge / spin conditioning path is correct; only the direct `ForceHead`'s
 extra rounding depresses this one cell. The direct open-shell PCC bar is
 therefore re-baselined to 0.85 (below the 0.908 floor and the measured
 0.893, ~4.7% margin; still catches a structural regression, which would
-crash PCC on this tiny-signal system). Full analysis in
-`docs/orb-port.md` "OrbMol open-shell direct-forces PCC floor"; harness in
+crash PCC on this tiny-signal system). The summary is in
+`docs/orb-port.md`; the analysis harnesses are
 `scripts/orb_omol_noise_floor.py` and `scripts/orb_omol_ref_self_consistency.py`. This
 is a bounded, evidenced precision GAP, disclosed honestly — same standard
 as tt-bio's pharma-benchmark GAP disclosures.

@@ -1,5 +1,6 @@
-"""Real-weight parity test for ZBL pair-repulsion forces (``dV_ZBL/dr``, ``tt_atom/orb_model.py``
-``host_zbl_forces``) -- the item flagged open in ``docs/orb-port.md``: the existing bulk-Si
+"""Real-weight parity for ZBL pair-repulsion forces (``dV_ZBL/dr``).
+
+The existing bulk-Si
 golden's nearest-neighbor distance sits just outside the ZBL envelope cutoff (measured negligible,
 ~1e-7 eV), so it never exercises this term. This test uses a dedicated short-contact golden
 (``tests/gen_golden_orb.py --system short_contact``: two Si atoms 1.4 A apart, well inside the

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """UX-regression release gate — the user-experience leg of RELEASING.md.
 
-Complements ``scripts/release_gate.py`` (accuracy / no-OOM / perf). This leg does NOT
-measure accuracy or speed — it asserts the user-facing *plumbing* every release ships
+Runs as the UX leg of ``scripts/release_gate.py``. It does not measure accuracy or speed; it
+asserts that the user-facing plumbing every release ships
 with still works, headlessly and fast, on a tiny input:
 
   1. CLI BEHAVES — ``tt-atom run --help`` (and ``relax``/``md``/top-level ``--help``) exit 0
@@ -18,16 +18,10 @@ with still works, headlessly and fast, on a tiny input:
      advances through every real step for a multi-step run, not stuck/skipped — the direct
      analogue of tt-bio's "0 -> diffusion" live-progress-bug class.
 
-Orb-only by constraint: the literal ``tt-atom run``/``relax``/``md`` CLI subcommands are
-UMA-only (``WeightBundle`` + ``TTAtomCalculator``) and blocked on a host whose ``ttnn``
-build lacks the ALWAYS-ON ``fused_rotate`` kernel (memory
-``pc-ttatom-env-missing-fused-rotate``). Legs 2-3 therefore drive the *identical* ASE
-``FIRE``/``Langevin`` + ``_log`` print pattern the CLI uses, via the Orb ``Calculator`` API
-(``OrbCalculator.from_checkpoint("orb-v3-conservative-omol")``) — the stock-``ttnn`` path
-with no ``fused_rotate`` dependency. Leg 1 tests the literal CLI ``--help`` (argparse, no
-device), so the CLI surface itself is gated regardless of env. When the ``fused_rotate``
-env is rebuilt on the release host, a follow-up can swap legs 2-3 to invoke the literal
-``tt-atom run``/``md`` subcommands; the assertions below are already the ones that matter.
+The literal ``tt-atom run``/``relax``/``md`` commands are UMA-only and require the custom
+``fused_rotate`` op. To keep the regular gate runnable on stock ``ttnn``, legs 2 and 3 exercise
+the same ASE ``FIRE``/``Langevin`` and progress pattern through the Orb calculator. Leg 1 always
+tests the literal CLI help. The clean-install leg separately smokes the source-built UMA path.
 
 Fast + deterministic: H2O (3 atoms), MD ``--steps 5``, relax ``steps=20`` on a rattled
 geometry. This checks UX plumbing, not accuracy — it does not need a real relaxation.

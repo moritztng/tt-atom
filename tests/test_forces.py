@@ -47,8 +47,6 @@ def test_backbone_vjp(golden, device):
     # Rotation adjoints are now per-edge sparse coefficients (rotation.py). Compare only the
     # structural-nonzero pattern: off-pattern dE/dW entries are nonzero but irrelevant to the
     # force (W is structurally zero there for *all* directions, so dW/dpos == 0).
-    nsph = graph.nsph
-
     def on_pattern(g_coef_key, ij, ref_grad):
         g_coef = ttnn.to_torch(acc[g_coef_key]).float()
         ref = torch.stack([ref_grad[:, i, j] for (i, j) in ij], dim=1)   # [E, nnz]

@@ -35,8 +35,7 @@ from contextlib import contextmanager
 # The ``=1`` opt-in is honored only when the capability is present, so setting it on a stock ttnn
 # wheel (e.g. 0.68, which lacks the custom kernels) downgrades to the safe path instead of crashing
 # -- the ESMFold2 ``fuse_swiglu`` build-probe pattern. ``=0`` always forces off. The *default* is
-# the capability probe for fused_lnbw and OFF for the two size-dependent wins, not an env var (see
-# memory ``prefer-args-over-envvars``).
+# the capability probe for fused_lnbw and OFF for the two size-dependent wins.
 _CAP_CACHE: dict = {}
 
 
@@ -195,25 +194,6 @@ def open_device(device_id: int = 0, *, l1_small_size: int = 0, trace_region_size
     )
     dev.enable_program_cache()
     return dev
-
-
-def open_mesh(device_ids, *, l1_small_size: int = 0, trace_region_size: int = 0):
-    """Open a row mesh over ``device_ids`` for multi-card throughput.
-
-    Requires ``TT_MESH_GRAPH_DESC_PATH`` to point at the matching fabric descriptor
-    (e.g. ``p150_x4_mesh_graph_descriptor.textproto`` for a 4-card QuietBox).
-    """
-    import ttnn
-
-    ids = list(device_ids)
-    mesh = ttnn.open_mesh_device(
-        ttnn.MeshShape(1, len(ids)),
-        l1_small_size=l1_small_size,
-        trace_region_size=trace_region_size,
-        device_ids=ids,
-    )
-    mesh.enable_program_cache()
-    return mesh
 
 
 @contextmanager

@@ -18,7 +18,6 @@ Each system/checkpoint pair auto-skips if its golden is absent.
 """
 from __future__ import annotations
 
-import os
 import pathlib
 
 import numpy as np

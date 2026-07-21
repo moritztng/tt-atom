@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""TT-Atom release gate — one command, four legs, machine-readable PASS/FAIL/GAP per leg.
+"""TT-Atom release gate with machine-readable PASS/FAIL/GAP results.
 
 The runnable equivalent of ``RELEASING.md``'s manual checklist, and the live harness behind the
 parity table in ``docs/materials-benchmark.md`` (run ``--leg accuracy`` to reproduce those R/D/X
-numbers on your card). Four legs, matching the four things a tagged release must clear on real
-hardware before it ships:
+numbers on your card). Four regular legs run before each tag:
 
   1. ACCURACY — numerical parity vs each shipped model family's own reference, within tolerance
      (energy rel-error, force/stress PCC), across every supported task and graph regime for which
@@ -19,8 +18,8 @@ hardware before it ships:
      over K=1..K_max small systems in one device forward), reusing
      ``benchmarks/bench_orb_evaluate_batch.py``'s exact protocol — the batch ceiling is the OOM
      frontier. UMA OOM sweep is a documented GAP: UMA's batched forward goes through the same
-     ALWAYS-ON ``fused_rotate`` kernel as its accuracy leg, absent from this host's ttnn build
-     (memory pc-ttatom-env-missing-fused-rotate); the per-composition bundle is not the blocker.
+     ALWAYS-ON ``fused_rotate`` kernel as its accuracy leg. A host without that op reports GAP;
+     the per-composition bundle is not the blocker.
   3. PERF — warm steady-state throughput on a fixed small input vs a committed per-card,
      per-model baseline (``docs/perf_baselines.json``), FAILs beyond a configurable noise
      margin. One entry per shipped family's throughput path (OrbMol ``conservative-omol``,
@@ -30,14 +29,16 @@ hardware before it ships:
      against a P150a run), fails loudly on NO BASELINE, and updates only via
      ``--update-baseline --note "<why>"``. Seeds the baseline the first time a card type is
      run for a model. UMA's batched forward needs the ALWAYS-ON ``fused_rotate`` kernel
-     absent from this host's ttnn build (memory pc-ttatom-env-missing-fused-rotate), so on
-     such a host the UMA row reports GAP (env), not FAIL — reported loudly, not skipped.
+     absent from stock ttnn builds, so on such a host the UMA row reports GAP (env), not FAIL.
   4. UX — the user-facing plumbing still works headlessly on a tiny input (H2O): CLI --help
      behaves and lists the core flags, a real single-point + relax + MD(--steps 5) write an
      --out geometry that parses under ase.io.read with finite energy/forces, and the CLI's
      per-step MD/relax progress stream advances through every real step (the "0 -> diffusion"
      bug-class analogue). Mirrors tt-bio's scripts/ux_regression.py in methodology; lives in
      the sibling scripts/ux_regression.py (also runnable standalone, --cli-only needs no card).
+
+The opt-in INSTALL leg runs once per release. It builds the pinned tt-metal source in a clean
+environment, installs the exact committed TT-Atom source from origin, and smokes UMA and Orb.
 
 Honest reporting: every leg prints PASS / FAIL / GAP with the real numbers (or the real skip
 reason). Nothing fabricated. Exit 0 iff every leg that ran PASSES (GAP does not fail the gate —
@@ -55,6 +56,7 @@ Usage::
     python3 scripts/release_gate.py --leg perf --model orb-conservative-inf-omat-batch
     python3 scripts/release_gate.py --leg ux
     python3 scripts/release_gate.py --leg ux --cli-only   # no card — GitHub CI
+    python3 scripts/release_gate.py --leg install          # clean source build, per release
 
     # seed / refresh one model's perf baseline from the current warm run (explicit, needs a note)
     python3 scripts/release_gate.py --leg perf --model orb-conservative-inf-omat-batch \
@@ -123,11 +125,9 @@ QUICK_ACCURACY = [
 # benchmarks/bench_orb_evaluate_batch.py. UMA's OOM sweep is a GAP: UMA's batched forward
 # (TTAtomCalculator.evaluate_batch -> energy_and_forces_batch -> edgewise -> rotation.rotate)
 # goes through the same ALWAYS-ON fused_rotate kernel as its accuracy leg's end-to-end test,
-# which is absent from this host's ttnn build (see memory pc-ttatom-env-missing-fused-rotate /
-# ttatom-uma-fused-rotate-env-downgrade-reverted). The per-composition bundle itself is not the
-# blocker — the bundle cache works and evaluate_batch enforces same-composition batching; the
-# blocker is the env. Reported as GAP, not forced to a number; closes automatically once the
-# fused_rotate env is rebuilt on the release host.
+# which is absent from stock ttnn builds. The per-composition bundle itself is not the blocker:
+# the bundle cache works and evaluate_batch enforces same-composition batching. Reported as GAP,
+# not forced to a number; closes automatically with a source build carrying fused_rotate.
 OOM_CHECKPOINT = "orb-v3-conservative-omol"
 OOM_MOL = "CH3CH2OH"
 OOM_KS_DEFAULT = [1, 2, 4, 8, 16, 32, 64, 128]
@@ -144,10 +144,9 @@ OOM_KS_QUICK = [1, 2, 4, 8]
 # entry is unchanged — same checkpoint, mol, K, warmup/repeat as before the generalization.
 #
 # UMA's batched forward goes through the same ALWAYS-ON ``fused_rotate`` kernel as its accuracy
-# leg, absent from this host's ttnn build (memory pc-ttatom-env-missing-fused-rotate), so on such
-# a host the UMA row measures as GAP (env), not FAIL — the gate reports it loudly rather than
-# silently skipping the family. Once the fused_rotate env is rebuilt on the release host, the
-# UMA row measures and gates against its seeded baseline like any other model.
+# leg, absent from stock ttnn builds, so the UMA row measures as GAP (env), not FAIL. The gate
+# reports it loudly rather than silently skipping the family. With a source build carrying the op,
+# the UMA row measures and gates against its seeded baseline like any other model.
 PERF_SPECS: dict[str, dict] = {
     "orb-conservative-omol-batch": dict(
         family="orbmol", checkpoint="orb-v3-conservative-omol",
@@ -172,8 +171,7 @@ PERF_WARMUP_QUICK = 1
 PERF_REPEAT_QUICK = 3
 DEFAULT_THRESHOLD = 15.0  # % regression allowed before FAIL
 # A normal measurement (warmup+repeat evaluate_batch calls) finishes in seconds; this only
-# guards against a wedged device hanging the whole gate forever (memory
-# tt-atom-release-gate-perf-leg-wedge — recurred 3x on the same model before this fix).
+# guards against a wedged device hanging the whole gate forever.
 PERF_MEASURE_TIMEOUT_S = 240
 OOM_MEASURE_TIMEOUT_S = 600
 # Per-release clean-env install leg: a full from-zero tt-metal build + tt-atom install + smoke.
@@ -314,8 +312,7 @@ def _run_pytest_module(spec):
     if proc.returncode != 0 and failed == 0:
         failed = 1
         env_gap_only = False
-    # The known pre-existing fused_rotate env gap (memory pc-ttatom-env-missing-fused-rotate,
-    # docs/materials-benchmark.md) crashes mid-test rather than auto-skipping, so it otherwise
+    # A missing fused_rotate op crashes mid-test rather than auto-skipping, so it otherwise
     # reads as FAIL here while the OOM/perf legs already classify the identical cause as GAP.
     if failed > 0 and env_gap_only:
         verdict = "GAP"
@@ -326,7 +323,7 @@ def _run_pytest_module(spec):
     if skipped > 0:
         note = f"{skipped} skipped (missing fixture or condition)"
     if fail_names:
-        tag = "env gap (fused_rotate, see pc-ttatom-env-missing-fused-rotate): " if (
+        tag = "env gap (missing fused_rotate): " if (
             failed > 0 and env_gap_only) else "failed: "
         note = (note + "; " if note else "") + tag + ",".join(fail_names[:3])
     shutil.rmtree(xml_dir, ignore_errors=True)
@@ -416,8 +413,8 @@ def run_oom(quick):
     verdict = "PASS" if ceiling == ks[-1] else ("FAIL" if failed_at is not None else "GAP")
     note = (f"batch ceiling = {ceiling} systems ({None if ceiling is None else natoms*ceiling} atoms) "
             f"in one device forward; UMA OOM sweep is a GAP — UMA's batched forward goes through the "
-            f"same ALWAYS-ON fused_rotate kernel as its accuracy leg, absent from this host's ttnn "
-            f"build (memory pc-ttatom-env-missing-fused-rotate), not a per-composition-bundle issue")
+            f"same ALWAYS-ON fused_rotate kernel as its accuracy leg, absent from stock ttnn builds; "
+            f"this is not a per-composition-bundle issue")
     return dict(verdict=verdict, ceiling=ceiling, failed_at=failed_at, note=note, rows=rows)
 
 
@@ -706,8 +703,8 @@ def _compare_perf(rows, card, threshold):
                 r["baseline"] = None
                 r["delta"] = "n/a"
                 r["note"] = (f"env gap: {r.get('error','')} — UMA's batched forward needs the "
-                             f"custom fused_rotate ttnn op, absent from this host's ttnn build "
-                             f"(memory pc-ttatom-env-missing-fused-rotate); not a perf regression")
+                             f"custom fused_rotate ttnn op, absent from stock ttnn builds; "
+                             f"not a perf regression")
             else:
                 r["verdict"] = "FAIL"
                 r["baseline"] = None
@@ -842,7 +839,7 @@ def run_ux(quick, cli_only):
     try:
         proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env, timeout=600)
     except subprocess.TimeoutExpired:
-        return dict(verdict="FAIL", note=f"ux_regression timed out after 600s",
+        return dict(verdict="FAIL", note="ux_regression timed out after 600s",
                     wall_s=time.monotonic() - t0)
     wall = time.monotonic() - t0
     verdict = "PASS" if proc.returncode == 0 else "FAIL"
@@ -864,8 +861,14 @@ def _print_ux(res):
 # box where everything is already built. Opt-in (`--leg install`), per-release: the build takes
 # tens of minutes, so it is NOT wired into the default per-tick gate invocation.
 
-def _run_cap(cmd, env=None, cwd=None, timeout=None):
-    return subprocess.run(cmd, env=env, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+def _run_cap(cmd, env=None, cwd=None, timeout=None, *, check=True):
+    proc = subprocess.run(cmd, env=env, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    if check and proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        tail = "\n".join(detail[-10:])
+        raise RuntimeError(f"{' '.join(str(c) for c in cmd)} exited {proc.returncode}"
+                           + (f":\n{tail}" if tail else ""))
+    return proc
 
 
 def measure_install(out_path):
@@ -893,6 +896,11 @@ def measure_install(out_path):
 
     try:
         note(f"[install] scratch={scratch}")
+        source_status = _run_cap(
+            ["git", "status", "--porcelain"], cwd=REPO_ROOT, timeout=30).stdout.strip()
+        if source_status:
+            raise RuntimeError(
+                "tt-atom worktree is dirty; commit the exact source before running the install gate")
         _run_cap([sys.executable, "-m", "venv", str(venv)], timeout=120)
         _run_cap([venv_pip, "install", "--upgrade", "pip"], timeout=180)
         _run_cap(["git", "clone", "--recursive", "-b", PINNED_TT_METAL_BRANCH,
@@ -918,8 +926,14 @@ def measure_install(out_path):
             out_path.write_text(json.dumps(result))
             return
         _run_cap([venv_pip, "install", "-e", "."], cwd=ttm, env=env, timeout=600)
-        _run_cap(["git", "clone", "https://github.com/moritztng/tt-atom.git", str(tta)],
-                 cwd=scratch, timeout=600)
+        source_commit = _run_cap(
+            ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, timeout=30).stdout.strip()
+        source_url = _run_cap(
+            ["git", "remote", "get-url", "origin"], cwd=REPO_ROOT, timeout=30).stdout.strip()
+        result["tt_atom_source_commit"] = source_commit
+        note(f"[install] tt-atom source={source_commit} from {source_url}")
+        _run_cap(["git", "clone", source_url, str(tta)], cwd=scratch, timeout=600)
+        _run_cap(["git", "checkout", source_commit], cwd=tta, timeout=120)
         _run_cap([venv_pip, "install", "-e", str(tta)], cwd=scratch, env=env, timeout=600)
         # reference env for the one-time Orb weight export (numpy>=2, has orb-models). Pinned to
         # 0.5.5 — the export tool's target; newer orb-models changed the pretrained API. UMA's
@@ -945,7 +959,7 @@ def measure_install(out_path):
         opc = _run_cap([venv_py, "-c",
                         "import ttnn; e=ttnn._ttnn.operations.experimental; "
                         "print(hasattr(e,'fused_rotate'), hasattr(e,'fused_rotate_gc'))"],
-                       env=sm_env, timeout=300)
+                       env=sm_env, timeout=300, check=False)
         op_out = opc.stdout.strip()
         result["fused_rotate"] = op_out
         op_ok = opc.returncode == 0 and op_out == "True True"
@@ -976,7 +990,7 @@ def measure_install(out_path):
                 {"energy": E, "eref": Eref, "rel": rel, "force_pcc": p, "finite": finite}))
             assert finite and rel < 0.05 and p >= 0.98
         '''))
-        uma = _run_cap([venv_py, str(uma_script)], env=sm_env, timeout=900)
+        uma = _run_cap([venv_py, str(uma_script)], env=sm_env, timeout=900, check=False)
         result["uma_smoke_rc"] = uma.returncode
         result["uma_smoke_tail"] = uma.stdout[-1500:]
         uma_ok = False
@@ -991,6 +1005,24 @@ def measure_install(out_path):
         except Exception as e:
             result["uma_parse_err"] = f"{type(e).__name__}: {e}"
         note(f"[install] UMA end2end smoke rc={uma.returncode} E={result.get('uma_energy')} pcc={result.get('uma_force_pcc')}")
+        cli_out = scratch / "cli_relaxed.xyz"
+        cli = _run_cap(
+            [venv_py, "-m", "tt_atom.cli", "relax",
+             str(tta / "examples" / "model_tiny_demo.npz"),
+             "--molecule", "H2O", "--steps", "1", "--out", str(cli_out)],
+            env=sm_env, timeout=900, check=False)
+        cli_parse = _run_cap(
+            [venv_py, "-c",
+             "from ase.io import read; import sys; "
+             "a=read(sys.argv[1]); assert len(a)==3 and a.positions.shape==(3,3)",
+             str(cli_out)],
+            env=sm_env, timeout=120, check=False) if cli_out.exists() else None
+        cli_ok = cli.returncode == 0 and cli_parse is not None and cli_parse.returncode == 0
+        result["cli_smoke_rc"] = cli.returncode
+        result["cli_parse_rc"] = None if cli_parse is None else cli_parse.returncode
+        result["cli_ok"] = cli_ok
+        note(f"[install] CLI relax+parse smoke rc={cli.returncode} "
+             f"parse_rc={result['cli_parse_rc']}")
         orb_script = tta / "scripts" / "_install_gate_orb_smoke.py"
         orb_script.write_text(textwrap.dedent('''
             from ase.build import molecule
@@ -1003,7 +1035,7 @@ def measure_install(out_path):
             print("ORB_SMOKE_JSON", json.dumps({"energy": E, "force_norm": fnorm, "finite": finite}))
             assert finite and abs(E) > 0
         '''))
-        orb = _run_cap([venv_py, str(orb_script)], env=sm_env, timeout=900)
+        orb = _run_cap([venv_py, str(orb_script)], env=sm_env, timeout=900, check=False)
         result["orb_smoke_rc"] = orb.returncode
         orb_ok = orb.returncode == 0
         try:
@@ -1017,14 +1049,15 @@ def measure_install(out_path):
             orb_ok = False
         note(f"[install] Orb smoke rc={orb.returncode} E={result.get('orb_energy')} |F|={result.get('orb_force_norm')}")
         result["op_ok"], result["uma_ok"], result["orb_ok"] = op_ok, uma_ok, orb_ok
-        if op_ok and uma_ok and orb_ok:
+        if op_ok and uma_ok and orb_ok and cli_ok:
             result["verdict"] = "PASS"
             result["note"] = (f"from-zero install + smoke passed on tt-metal {head[:12]} "
                               f"(build {build_s:.0f}s); fused_rotate={op_out}, UMA end2end parity PASSED, "
-                              f"Orb E={result.get('orb_energy')}")
+                              f"CLI relax+parse PASSED, Orb E={result.get('orb_energy')}")
         else:
             result["verdict"] = "FAIL"
-            result["note"] = f"op_ok={op_ok} uma_ok={uma_ok} orb_ok={orb_ok}"
+            result["note"] = (f"op_ok={op_ok} uma_ok={uma_ok} cli_ok={cli_ok} "
+                              f"orb_ok={orb_ok}")
     except subprocess.TimeoutExpired as e:
         result["verdict"] = "FAIL"
         result["note"] = f"timeout: {e}"
@@ -1080,11 +1113,13 @@ def _run_install():
 
 def _print_install(res):
     print(f"\n{'#' * 78}\nRELEASE GATE — leg 5: CLEAN-ENV INSTALL (per-release, from-zero on pinned commit)\n{'#' * 78}")
+    print(f"tt-atom source commit:  {res.get('tt_atom_source_commit', '?')}")
     print(f"pinned tt-metal commit: {res.get('pinned_commit', '?')}  (branch {res.get('branch', '?')})")
     print(f"built commit:           {res.get('built_commit', '?')}")
     print(f"build time:             {res.get('build_time_s', '?')}s  (rc={res.get('build_rc', '?')})")
     print(f"fused_rotate / gc:      {res.get('fused_rotate', '?')}")
     print(f"UMA smoke (end2end):    rc={res.get('uma_smoke_rc', '?')}  E={res.get('uma_energy', '?')} (rel={res.get('uma_energy_rel', '?')}, pcc={res.get('uma_force_pcc', '?')})  -> {'PASS' if res.get('uma_ok') else 'FAIL'}")
+    print(f"CLI relax + parse:      rc={res.get('cli_smoke_rc', '?')}/{res.get('cli_parse_rc', '?')}  -> {'PASS' if res.get('cli_ok') else 'FAIL'}")
     print(f"Orb smoke (stock ttnn): rc={res.get('orb_smoke_rc', '?')}  E={res.get('orb_energy', '?')}  |F|={res.get('orb_force_norm', '?')}  -> {'PASS' if res.get('orb_ok') else 'FAIL'}")
     print(f"wall: {res.get('wall_s', '?')}s")
     print(f"verdict: {res.get('verdict', '?')}")

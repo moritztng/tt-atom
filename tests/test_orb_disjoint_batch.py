@@ -1,5 +1,6 @@
-"""Disjoint-union (block-diagonal) batching for Orb (``docs/orb-port.md`` Open item): verifies
--- rather than assumes -- that ``tt_atom``'s existing UMA batching methodology (bit-exact
+"""Disjoint-union (block-diagonal) batching parity for Orb.
+
+Verifies that ``tt_atom``'s existing UMA batching methodology (bit-exact
 row-independence, see ``ttatom-batching``/``ttatom-qb2-multicard-fanout``) applies unmodified to
 ``Encoder``/``AttentionInteractionLayer``.
 
@@ -68,7 +69,6 @@ def test_disjoint_batch_row_independence(gw, device):
     receivers = gw.inp("receivers").long()
     cutoff_np = gw.inp("vectors").norm(dim=-1)
     N = node_feat.shape[0]
-    E = senders.shape[0]
 
     def run(node_feat, edge_feat, senders, receivers, cutoff, num_nodes):
         enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
@@ -117,7 +117,7 @@ def test_disjoint_batch_row_independence(gw, device):
     # EnergyHead.batch: Orb means node FEATURES first (unlike UMA's per-node-scalar
     # segment-sum, see EnergyHead.batch's docstring), so it needs its own row-normalized
     # segment-matrix adapter -- verify it reproduces the single-system EnergyHead exactly.
-    from tt_atom.orb_model import EnergyHead, _to_dev
+    from tt_atom.orb_model import EnergyHead
 
     ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"], hidden_dim=1024)
     single_e = ttnn.to_torch(ehead(_to_dev(single_out, device, ttnn.bfloat16))).float()

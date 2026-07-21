@@ -1,4 +1,4 @@
-"""Real-weight parity test for stress (``docs/orb-port.md`` Open item), both checkpoints.
+"""Real-weight stress parity for both Orb material checkpoints.
 
 Conservative (``orb-v3-conservative-inf-omat``): same displacement-gradient pattern as forces
 (``tt_atom/forces.py``'s ``strain`` leaf) -- ``tt_atom/orb_geometry.py``'s ``host_edge_features``
@@ -9,8 +9,7 @@ Orb's own ``base.create_and_apply_stress_displacement`` uses the identical conve
 
 Direct (``orb-v3-direct-20-omat``): a dedicated ``StressHead`` device MLP (same 2-Linear shape as
 ``EnergyHead``, mean-aggregated node features -> Voigt-6, with two SEPARATE diag/off-diag
-``ScalarNormalizer``s) -- needs the golden regenerated to capture ``stress_head`` weights (the
-original ``gen_golden_orb.py`` only saved ``energy_head``/``forces_head``/``pair_repulsion``).
+``ScalarNormalizer``s).
 
     ~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py --ckpt direct-20-omat \
         --out ~/.ttatom_run/goldens_real/si_omat_orb_direct20.npz   # regenerate: now has stress_head

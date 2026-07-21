@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import statistics
 import time
 from datetime import datetime, timezone
@@ -72,7 +71,7 @@ def _logical_bytes(shapes, dtype_bytes=2):
 
 def _profile_forward(ttnn, device, layer, graph, nodes, edges, *, iters):
     """Replicate AttentionInteractionLayer.__call__ op-by-op with sync barriers."""
-    C, N, E = layer.C, graph.N, graph.E
+    C, N = layer.C, graph.N
     kcfg = layer.kcfg
 
     def attn_linears():
@@ -146,7 +145,7 @@ def _profile_forward(ttnn, device, layer, graph, nodes, edges, *, iters):
 def _profile_backward(ttnn, device, layer, graph, g_nodes_out, g_edges_out, *, iters):
     """Replicate orb_forces.attn_layer_bw op-by-op with sync barriers."""
     from tt_atom import scatter as _sc
-    from tt_atom.orb_forces import _mm, mlpnorm_bw, silu_bw
+    from tt_atom.orb_forces import _mm, mlpnorm_bw
 
     C, N, E = layer.C, graph.N, graph.E
     c = layer._cache
@@ -286,7 +285,7 @@ def main():
 
     import ttnn
     from tt_atom.device import open_device, orb_fused_silu_bw
-    from tt_atom.orb_model import AttentionInteractionLayer, Encoder, _to_dev
+    from tt_atom.orb_model import AttentionInteractionLayer, _to_dev
     from tt_atom.orb_weights import OrbWeights
 
     torch.manual_seed(17)
@@ -297,8 +296,6 @@ def main():
         cfg, w = gw.config, gw.weights
         C, H = cfg["latent_dim"], 1024
         L = cfg["num_message_passing_steps"]
-        enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                      latent_dim=C, hidden_dim=H)
         layer = AttentionInteractionLayer(w, "gnn_stacks.0", device, latent_dim=C, hidden_dim=H)
         graph, N, E = _build_graph(device, nx=args.nx, ny=args.ny, nz=args.nz,
                                    latent_dim=C, ttnn=ttnn)

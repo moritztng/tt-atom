@@ -86,7 +86,7 @@ def main():
     args = ap.parse_args()
 
     d = np.genfromtxt(args.csv, delimiter=",", names=True, dtype=None, encoding="utf-8")
-    step = d["step"]; t = d["time_fs"]; epot = d["epot_ev_atom"]; ekin = d["ekin_ev_atom"]
+    t = d["time_fs"]; epot = d["epot_ev_atom"]; ekin = d["ekin_ev_atom"]
     etot = d["etot_ev_atom"]; T = d["temp_K"]; reg = d["regime"]
     nve = reg == "nve"
     t_nve0 = float(t[nve].min())

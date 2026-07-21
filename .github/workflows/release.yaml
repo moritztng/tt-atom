@@ -1,9 +1,9 @@
 name: release
 
 # Cut a release by pushing a version tag AFTER the on-hardware release gate is green
-# (accuracy parity, no OOM across the supported size range, no perf regression — see
+# (accuracy parity, no OOM, no perf or UX regression, and a clean install; see
 # RELEASING.md):
-#   git tag v0.1.0 && git push origin master --tags
+#   git tag vX.Y.Z && git push origin master vX.Y.Z
 # This builds the artifacts and publishes a GitHub Release with notes + wheel. No PyPI
 # job: tt-atom requires a source tt-metal/ttnn build, so a pip wheel can't run standalone
 # (see the NOTE below and RELEASING.md).
@@ -63,9 +63,5 @@ jobs:
             gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
           fi
 
-  # NOTE: tt-atom is distributed via GitHub Releases only, NOT PyPI. It is the
-  # custom-kernel-only build and requires a source tt-metal/ttnn build (see RELEASING.md
-  # / README Install), so a `pip install tt-atom` wheel can't run standalone — publishing
-  # to PyPI would be misleading. (tt-bio, which is genuinely pip-installable, keeps PyPI.)
-  # Do NOT recreate a `pypi` environment or re-push tags v0.1.0/v0.2.0/v0.2.1 — their baked-in
-  # .yml workflow has a dead pypi-publish job. See RELEASING.md "Distribution" section.
+  # TT-Atom is distributed through GitHub Releases, not PyPI. UMA requires a source
+  # tt-metal/ttnn build with its custom rotation op; see README.md and RELEASING.md.

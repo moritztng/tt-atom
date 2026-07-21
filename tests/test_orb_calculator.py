@@ -71,7 +71,7 @@ def test_conservative_omat_end_to_end(device):
         F = atoms.get_forces()
         S = atoms.get_stress()
 
-        gold_E, gold_F, gold_S = float(gold["out@energy"][0]), gold["out@forces"], gold["out@stress"][0]
+        gold_E, gold_F = float(gold["out@energy"][0]), gold["out@forces"]
         e_rel_err = abs(E - gold_E) / abs(gold_E)
         f_pcc = np.corrcoef(F.ravel(), gold_F.ravel())[0, 1]
         print(f"\n[Orb(atoms) conservative-inf-omat] E={E:.6f} (oracle {gold_E:.6f}, "

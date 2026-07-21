@@ -3,8 +3,8 @@
 The Orb-family counterpart to ``tt_atom.calculator.TTAtomCalculator``: it shares the ASE device
 lifecycle + results packing (:class:`ase_base.DeviceCalculator`) and is reachable through the same
 unified ``Calculator(atoms, model=...)`` front door (:mod:`tt_atom.auto`), differing only in the
-backbone it drives. The one
-genuine architectural difference (see ``docs/orb-port.md``'s "Architecture verdict"): Orb has no
+backbone it drives. The one genuine architectural difference (see ``docs/orb-port.md``):
+Orb has no
 MoLE (or any) expert routing baked in at merge time, so its weights are valid for *any*
 composition/charge/spin — there is no per-system bundle to build or cache, only a per-*checkpoint*
 weight export (``tt_atom.orb_weight_cache``), built once ever and reused across every structure.

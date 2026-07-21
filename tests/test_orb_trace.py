@@ -1,12 +1,7 @@
-"""Trace-capture parity for Orb-v3 (``tt_atom/orb_trace.py``'s ``OrbTracedEngine``) -- the item
-flagged open in ``docs/orb-port.md``'s "Profiling re-measurement at production scale" section: a
-quick exploratory attempt wired raw ``begin_trace_capture``/``execute_trace`` with no refresh
-logic and measured a real 1.28x replay speedup, but the replayed output did NOT match eager
-(missing the UMA ``TracedEngine`` pattern of explicit captured-tensor handles + in-place
-``copy_host_to_device_tensor`` refreshes). This test is the correctness gate for the proper port:
-the trace-replayed device forward(+backward) must match eager -- a trace only removes host
-dispatch, so energy is bit-exact; the optimized analytic host geometry VJP is checked to 1e-6
-against eager autograd -- for both checkpoints
+"""Trace-capture parity for ``tt_atom.orb_trace.OrbTracedEngine``.
+
+The trace-replayed device forward and backward must match eager: energy is bit-exact, and the
+analytic host geometry VJP is checked to 1e-6 against eager autograd for both checkpoints
 (conservative-inf-omat: analytic-VJP forces; direct-20-omat: forward-only ForceHead) at both the
 toy 4-atom golden and the 24-atom/1064-edge production-scale supercell golden.
 
