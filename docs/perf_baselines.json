@@ -5,8 +5,8 @@
         "orb-conservative-omol-batch": {
           "unit": "sys/s",
           "direction": "higher",
-          "value": 194.1703459611415,
-          "latency_ms": 5.150117001903709,
+          "value": 463.91522419389514,
+          "latency_ms": 2.1555662497121375,
           "checkpoint": "orb-v3-conservative-omol",
           "k": 8,
           "warmup": 2,
@@ -16,15 +16,15 @@
           "fixture": "molecule",
           "mol": "CH3CH2OH",
           "tt_atom_version": "0.2.1",
-          "ttnn_version": "0.65.1rc17.dev5884+g8d759240fdd",
-          "date": "2026-07-21",
-          "note": "seed baselines on the pinned tt-metal 8d759240 release environment"
+          "ttnn_version": "0.68.0",
+          "date": "2026-07-25",
+          "note": "ttnn 0.65.1rc17 -> 0.68.0 bump, measured on pc p150a 2026-07-25"
         },
         "orb-conservative-inf-omat-batch": {
           "unit": "sys/s",
           "direction": "higher",
-          "value": 189.3608729811036,
-          "latency_ms": 5.28092199965613,
+          "value": 374.4622548238998,
+          "latency_ms": 2.6704961237555835,
           "checkpoint": "orb-v3-conservative-inf-omat",
           "k": 8,
           "warmup": 2,
@@ -34,9 +34,9 @@
           "fixture": "bulk-si",
           "mol": "Si",
           "tt_atom_version": "0.2.1",
-          "ttnn_version": "0.65.1rc17.dev5884+g8d759240fdd",
-          "date": "2026-07-21",
-          "note": "seed baselines on the pinned tt-metal 8d759240 release environment"
+          "ttnn_version": "0.68.0",
+          "date": "2026-07-25",
+          "note": "ttnn 0.65.1rc17 -> 0.68.0 bump, measured on pc p150a 2026-07-25"
         },
         "uma-s-1-omol-batch": {
           "unit": "sys/s",
@@ -57,9 +57,9 @@
           "note": "seed baselines on the pinned tt-metal 8d759240 release environment"
         }
       },
-      "date": "2026-07-21",
+      "date": "2026-07-25",
       "tt_atom_version": "0.2.1",
-      "note": "seed baselines on the pinned tt-metal 8d759240 release environment"
+      "note": "ttnn 0.65.1rc17 -> 0.68.0 bump, measured on pc p150a 2026-07-25"
     }
   }
 }
