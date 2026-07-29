@@ -206,3 +206,168 @@ class MultiCard:
 
     def __exit__(self, *exc):
         self.close()
+
+
+# ── multi-card relax / MD fan-out ───────────────────────────────────────────
+# Each worker builds a real ASE Calculator on its pinned card and runs the FULL relax/MD
+# loop (FIRE / Langevin) for every structure it pulls — the same code path as the single-card
+# CLI (``cmd_run`` / ``cmd_relax`` / ``cmd_md`` via ``tt_atom.simulate``). Per-structure parity
+# is bit-exact BY CONSTRUCTION: each structure runs in exactly one worker's Calculator +
+# optimizer, identical code to the single-card path; there is no cross-system batching or
+# regrouping (the same argument ``test_multicard.py`` makes for energies). The worker caches
+# one Calculator per (family, reduced-composition, charge, spin): Orb reuses one Calculator
+# for all structures (composition-independent); UMA reuses one per composition group (MoLE
+# bakes composition; the bundle cache makes repeat compositions a plain load).
+
+def _worker_sim(device_id, model, task, refenv, cache_dir, fast, trace, sim_params, in_q, out_q):
+    import os
+
+    os.environ["TT_VISIBLE_DEVICES"] = str(device_id)          # pin one card -> it is device 0
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    import torch
+
+    torch.set_num_threads(1)
+
+    from .auto import Calculator
+    from .simulate import relax_atoms, md_atoms
+
+    mode = sim_params["mode"]
+    calcs = {}        # (reduced_composition, charge, spin) -> Calculator (UMA); None key for Orb
+    natoms_cache = {}
+
+    def get_calc(atoms):
+        if str(model).lower().startswith("orb"):
+            key = None
+        else:
+            from .bundle_cache import reduced_composition
+            t = task
+            if t is None:
+                t = "omat" if bool(np.asarray(atoms.get_pbc()).all()) else "omol"
+            key = (reduced_composition(atoms.get_atomic_numbers()),
+                   float(atoms.info.get("charge", 0.0)), float(atoms.info.get("spin", 0.0)), t)
+        if key not in calcs:
+            calcs[key] = Calculator(atoms, model, task=task, refenv=refenv, cache_dir=cache_dir,
+                                    device_id=0, fast=fast, trace=trace)
+        return calcs[key]
+
+    out_q.put(("ready", device_id))
+
+    while True:
+        job = in_q.get()
+        if job is None:
+            break
+        idx, sys_dict = job
+        try:
+            from ase import Atoms
+            atoms = Atoms(numbers=sys_dict["Z"], positions=sys_dict["pos"],
+                          cell=sys_dict.get("cell"), pbc=sys_dict.get("pbc", False))
+            atoms.info.update(charge=sys_dict.get("charge", 0.0), spin=sys_dict.get("spin", 0.0))
+            calc = get_calc(atoms)
+            atoms.calc = calc
+            if mode == "relax":
+                res = relax_atoms(atoms, fmax=sim_params["fmax"], steps=sim_params["steps"],
+                                  logfile=None)
+            else:
+                res = md_atoms(atoms, steps=sim_params["steps"], dt=sim_params["dt"],
+                               temp=sim_params["temp"], logfile=None,
+                               seed=sim_params.get("seed"))
+            out_q.put((idx, dict(ok=True, pos=atoms.get_positions(), Z=sys_dict["Z"],
+                                 energy=res["energy"], forces=res["forces"],
+                                 fmax=res.get("fmax"), nsteps=res.get("nsteps"),
+                                 converged=res.get("converged"))))
+        except Exception as e:        # noqa: BLE001 - ship the error back, don't kill the worker
+            import traceback
+            out_q.put((idx, dict(ok=False, error=f"{type(e).__name__}: {e}",
+                                 tb=traceback.format_exc())))
+
+    for c in calcs.values():
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
+class MultiCardSim:
+    """A persistent pool of one worker per device that runs full relax/MD loops, not just a
+    forward energy pass. Use as a context manager.
+
+    The counterpart to :class:`MultiCard` for the headline materials-screening use case
+    (high-throughput virtual screening): fan a batch of *independent* structures across N
+    local cards, each card owning a full ASE ``Calculator`` + FIRE/Langevin loop for its
+    assigned structures. Per-structure results (final geometry, energy, forces) come back in
+    input order, bit-exact vs running each structure on one card through ``tt-atom run
+    --relax``/``--md`` — each structure runs the identical single-card code path inside its
+    worker, so sharding changes nothing about a structure's own numerics.
+
+    ``model`` selects the family by name (``"uma-s-1"`` or an Orb checkpoint), exactly like
+    ``tt_atom.auto.Calculator``. ``sim_params`` is a dict with ``mode`` (``"relax"``/``"md"``)
+    and the optimizer/integrator knobs (``fmax``/``steps`` for relax; ``steps``/``dt``/``temp``
+    for md; an optional ``seed`` pins the MD velocity draw for reproducible parity).
+    """
+
+    def __init__(self, model, device_ids=(0, 1, 2, 3), *, task=None, refenv=None,
+                 cache_dir=None, fast=False, trace=False, sim_params=None):
+        if sim_params is None or sim_params.get("mode") not in ("relax", "md"):
+            raise ValueError("sim_params must be a dict with mode 'relax' or 'md'")
+        self.ctx = mp.get_context("spawn")
+        self.in_q = self.ctx.Queue()
+        self.out_q = self.ctx.Queue()
+        self.sim_params = sim_params
+        self.procs = [self.ctx.Process(
+            target=_worker_sim,
+            args=(d, model, task, refenv, cache_dir, fast, trace, sim_params,
+                  self.in_q, self.out_q),
+            daemon=True) for d in device_ids]
+        for p in self.procs:
+            p.start()
+        for _ in self.procs:                                   # wait until every card is ready
+            self.out_q.get()
+
+    def run(self, systems):
+        """``systems``: list of dicts (or ASE ``Atoms``) with ``pos``, ``Z``, optional
+        ``charge``/``spin``/``cell``/``pbc``. Returns one result dict per system in input
+        order: ``{ok, pos, Z, energy, forces, fmax, nsteps, converged}`` (relax) or
+        ``{ok, pos, Z, energy, forces, nsteps, ...}`` (md); ``{ok: False, error}`` on a
+        per-system failure (the pool keeps the other systems' results)."""
+        norm = [_to_system_dict(s, i) for i, s in enumerate(systems)]
+        for i, d in norm:
+            self.in_q.put((i, d))
+        out = [None] * len(systems)
+        for _ in systems:
+            idx, res = self.out_q.get()
+            out[idx] = res
+        return out
+
+    def close(self):
+        for _ in self.procs:
+            self.in_q.put(None)
+        for p in self.procs:
+            p.join(timeout=10)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def _to_system_dict(system, idx):
+    """Normalize an ASE ``Atoms`` / ``(pos, Z)`` tuple / dict to the worker message."""
+    if isinstance(system, dict) and "pos" in system and "Z" in system:
+        return idx, system
+    if isinstance(system, tuple) and len(system) == 2:        # (positions, atomic_numbers)
+        import numpy as np
+        return idx, dict(pos=np.asarray(system[0], dtype=np.float32),
+                         Z=np.asarray(system[1], dtype=np.int64))
+    # ASE Atoms (duck-typed)
+    import numpy as np
+    cell = system.get_cell()
+    pbc = system.get_pbc()
+    return idx, dict(
+        pos=np.asarray(system.get_positions(), dtype=np.float32),
+        Z=np.asarray(system.get_atomic_numbers(), dtype=np.int64),
+        charge=float(system.info.get("charge", 0.0)),
+        spin=float(system.info.get("spin", 0.0)),
+        cell=np.asarray(cell) if np.asarray(pbc).any() else None,
+        pbc=bool(np.asarray(pbc).any()),
+    )

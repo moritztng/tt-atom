@@ -84,8 +84,15 @@ tt-atom run structure.xyz --relax --out relaxed.xyz
 tt-atom run structure.xyz --md --steps 200 --temp 300
 ```
 
+Run a screening batch across several cards (each card relaxes its assigned structures):
+
+```bash
+tt-atom run s1.xyz s2.xyz s3.xyz s4.xyz --relax --devices 0,1,2,3 --out relaxed/
+```
+
 These CLI simulation commands currently use UMA. For either model family, use the Python
-`Calculator` interface shown above with standard ASE optimizers and MD drivers.
+`Calculator` interface shown above with standard ASE optimizers and MD drivers, or
+`MultiCardSim` directly to fan independent structures across cards.
 
 Add `--trace` (or `Calculator(atoms, trace=True)`, UMA only) to reuse the device graph across
 steps; see [`custom_kernels/README.md`](custom_kernels/README.md) for measured performance.
@@ -148,8 +155,11 @@ Every supported family is release-gated on-device against its upstream reference
 
 ## Throughput
 
-Both families support batching and trace replay. `MultiCard` provides energy-only fan-out; its Orb
-path currently accepts neutral, aperiodic systems. See [`docs/orb-port.md`](docs/orb-port.md) and
+Both families support batching and trace replay. `MultiCard` fans independent systems out
+across N local cards for energy evaluation; `MultiCardSim` does the same for full relax/MD
+loops — each card owns a complete ASE calculator and optimizer/integrator for its assigned
+structures, so a high-throughput screening batch runs data-parallel with bit-exact per-
+structure results. See [`docs/orb-port.md`](docs/orb-port.md) and
 [`custom_kernels/README.md`](custom_kernels/README.md) for measured performance.
 
 ## Compared to upstream (fairchem / orb-models)
@@ -166,6 +176,7 @@ weights and matches them.
 | Tasks / checkpoints | UMA: omol/omat/oc20/odac/omc; Orb-v3/OrbMol: omat/omol | `uma-s-1`; all 4 public Orb-v3/OrbMol checkpoints |
 | ASE relax and MD | ✅ | ✅ (plus a traced loop, both models) |
 | Batched inference | ✅ | ✅ both models: UMA (one composition per batch), Orb (any mix of compositions/charge/spin), `calc.evaluate_batch` |
+| Multi-card batch relax/MD | ❌ | ✅ `MultiCardSim` / `tt-atom run --devices 0,1,2,...` (data-parallel, bit-exact per structure) |
 | LAMMPS interface | ✅ (fairchem; not verified whether orb-models ships one) | ❌ |
 | Training, fine-tuning | ✅ | ❌ (inference only) |
 

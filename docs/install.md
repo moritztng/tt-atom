@@ -20,7 +20,8 @@ Some board and firmware combinations require an explicit mesh descriptor:
 export TT_MESH_GRAPH_DESC_PATH=$TT_METAL_HOME/tt_metal/fabric/mesh_graph_descriptors/p150_mesh_graph_descriptor.textproto
 ```
 
-Set it before constructing `tt_atom.batch.MultiCard` so worker processes inherit it.
+Set it before constructing `tt_atom.batch.MultiCard` / `MultiCardSim` so worker processes
+inherit it.
 
 ## Bundles and reference dependencies
 

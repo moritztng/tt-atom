@@ -13,7 +13,7 @@ except PackageNotFoundError:  # running from a source tree, not an installed dis
     __version__ = "0+unknown"
 
 __all__ = ["Calculator", "TTAtomCalculator", "OrbCalculator", "WeightBundle", "Backbone",
-          "HostGeometry", "MultiCard"]
+          "HostGeometry", "MultiCard", "MultiCardSim", "relax_atoms", "md_atoms"]
 
 
 def __getattr__(name):
@@ -46,4 +46,16 @@ def __getattr__(name):
         from .batch import MultiCard
 
         return MultiCard
+    if name == "MultiCardSim":
+        from .batch import MultiCardSim
+
+        return MultiCardSim
+    if name == "relax_atoms":
+        from .simulate import relax_atoms
+
+        return relax_atoms
+    if name == "md_atoms":
+        from .simulate import md_atoms
+
+        return md_atoms
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

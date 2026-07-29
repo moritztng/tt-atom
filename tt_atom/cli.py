@@ -1,17 +1,21 @@
 """``tt-atom`` console entry — the user-facing commands for the ttnn runtime environment.
 
-    tt-atom run     STRUCTURE [--task] [--charge --spin] [--relax|--md] [--trace] [--out]
+    tt-atom run     STRUCTURE [STRUCTURE ...] [--task] [--charge --spin] [--relax|--md]
+                    [--devices 0,1,2,...] [--trace] [--out]
     tt-atom info    BUNDLE                      # config / task / weight coverage
     tt-atom verify  BUNDLE                      # device parity vs the embedded fairchem reference
     tt-atom relax   BUNDLE [--input geom.xyz | --molecule NAME] [--trace] [--fmax --steps]
     tt-atom md      BUNDLE [--input geom.xyz | --molecule NAME] [--trace] [--steps --dt --temp]
     tt-atom convert-checkpoint CKPT.pt --out BUNDLE.npz --molecule NAME [--task --charge --spin]
 
-``run`` is the fairchem-parallel one-shot: a structure file in, energy/relax/MD out, with the
-composition-specific uma-s-1 bundle auto-built (first use per composition) and cached. All commands
-run here (numpy<2 + ttnn); the one-time bundle build ``run`` triggers on a cache miss shells out to
-the reference (fairchem, numpy>=2) environment. ``convert-checkpoint`` is the explicit/advanced
-form of that build and detects a missing fairchem, printing the exact reference-env invocation.
+``run`` is the fairchem-parallel one-shot: one or more structure files in, energy/relax/MD out,
+with the composition-specific uma-s-1 bundle auto-built (first use per composition) and cached.
+A single structure runs on one card; several structures with ``--devices`` fan out data-parallel
+across the listed cards (each card owns a full Calculator + relax/MD loop for its shard). All
+commands run here (numpy<2 + ttnn); the one-time bundle build ``run`` triggers on a cache miss
+shells out to the reference (fairchem, numpy>=2) environment. ``convert-checkpoint`` is the
+explicit/advanced form of that build and detects a missing fairchem, printing the exact
+reference-env invocation.
 """
 from __future__ import annotations
 
@@ -57,35 +61,22 @@ def _calc(args, bundle):
 
 
 def _run_relax(atoms, args, energy_before):
-    from ase.optimize import FIRE
+    from .simulate import relax_atoms
 
-    FIRE(atoms, logfile="-").run(fmax=args.fmax, steps=args.steps)
-    energy_after = atoms.get_potential_energy()
-    fmax = float((atoms.get_forces() ** 2).sum(1).max() ** 0.5)
-    print(f"relax: E {energy_before:.6f} -> {energy_after:.6f} eV; "
-          f"fmax={fmax:.4f} (target {args.fmax}); converged={fmax <= args.fmax}")
+    res = relax_atoms(atoms, fmax=args.fmax, steps=args.steps, logfile="-")
+    print(f"relax: E {energy_before:.6f} -> {res['energy']:.6f} eV; "
+          f"fmax={res['fmax']:.4f} (target {args.fmax}); "
+          f"converged={res['converged']} over {res['nsteps']} steps")
 
 
 def _run_md(atoms, args, energy_before=None):
-    from ase import units
-    from ase.md.langevin import Langevin
-    from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
+    from .simulate import md_atoms
 
-    MaxwellBoltzmannDistribution(atoms, temperature_K=args.temp)
-    dyn = Langevin(atoms, timestep=args.dt * units.fs, temperature_K=args.temp,
-                   friction=0.01 / units.fs)
     if energy_before is None:
         energy_before = atoms.get_potential_energy()
-
-    def _log():
-        ekin = atoms.get_kinetic_energy()
-        print(f"  step {dyn.nsteps:4d}  E={atoms.get_potential_energy():.5f}  "
-              f"T={ekin / (1.5 * units.kB * len(atoms)):.1f} K")
-
-    dyn.attach(_log, interval=max(1, args.steps // 10))
-    dyn.run(args.steps)
-    print(f"md: {args.steps} steps ({args.dt} fs) at {args.temp} K; "
-          f"E {energy_before:.5f} -> {atoms.get_potential_energy():.5f} eV")
+    res = md_atoms(atoms, steps=args.steps, dt=args.dt, temp=args.temp, logfile="-")
+    print(f"md: {res['nsteps']} steps ({args.dt} fs) at {args.temp} K; "
+          f"E {energy_before:.5f} -> {res['energy']:.5f} eV")
 
 
 def _write_output(args, atoms):
@@ -173,20 +164,49 @@ def cmd_md(args):
     return 0
 
 
+def _parse_devices(s):
+    """Parse a ``--devices`` string (``"0,1,2"``) into a tuple of ints; raise on garbage."""
+    try:
+        return tuple(int(p) for p in str(s).split(",") if p.strip() != "")
+    except ValueError as e:
+        raise SystemExit(f"--devices expects a comma-separated list of card ids (e.g. 0,1,2): {e}")
+
+
 def cmd_run(args):
     """One-shot: STRUCTURE -> auto-built/cached bundle -> single-point / relax / MD -> result.
 
     The fairchem-parallel entry point. Reads any ASE-readable structure, transparently builds and
     caches the composition-specific uma-s-1 bundle on first use (via the reference env), then runs
-    on device. A cached composition needs no fairchem."""
+    on device. A cached composition needs no fairchem.
+
+    With ``--devices 0,1,2,...`` and more than one structure, the structures fan out across the
+    listed cards: each card owns a full ASE Calculator + relax/MD loop for its assigned
+    structures (data-parallel, bit-exact per structure vs the single-card path). This is the
+    high-throughput virtual-screening path — many independent structures, N cards."""
+    structures = _read_structures(args.structures)
+    for a in structures:
+        a.info.setdefault("charge", args.charge)
+        a.info.setdefault("spin", args.spin)
+
+    devices = _parse_devices(args.devices) if args.devices else (args.device_id,)
+    multi = args.devices is not None and (len(devices) > 1 or len(structures) > 1)
+    return _run_multicard(args, structures, devices) if multi else _run_single_card(args, structures)
+
+
+def _read_structures(paths):
+    """Read a list of ASE-readable structure files (mocked in tests to avoid file I/O)."""
     from ase.io import read
+
+    return [read(f) for f in paths]
+
+
+def _run_single_card(args, structures):
+    """Original single-card path (one structure on one card) — unchanged."""
     from . import bundle_cache as BC
     from .calculator import TTAtomCalculator
 
-    atoms = read(args.structure)
-    atoms.info.setdefault("charge", args.charge)
-    atoms.info.setdefault("spin", args.spin)
-    task = args.task or BC.infer_task(atoms)     # zero-config: omat for a bulk cell, else omol
+    atoms = structures[0]
+    task = args.task or BC.infer_task(atoms)
     calc = TTAtomCalculator.from_uma(model="uma-s-1", task_name=task, atoms=atoms,
                                      charge=args.charge, spin=args.spin, refenv=args.refenv,
                                      device_id=args.device_id, fast=args.fast, trace=args.trace)
@@ -203,6 +223,71 @@ def cmd_run(args):
     finally:
         calc.close()
     return 0
+
+
+def _run_multicard(args, structures, devices):
+    """Multi-card data-parallel fan-out: each card runs the full relax/MD loop for its shard."""
+    from .batch import MultiCardSim
+
+    mode = "relax" if args.relax else ("md" if args.md else "energy")
+    sim_params = dict(mode=mode, fmax=args.fmax, steps=args.steps, dt=args.dt,
+                      temp=args.temp, seed=args.seed)
+    print(f"multicard: {len(structures)} structure(s) across {len(devices)} card(s) "
+          f"({','.join(str(d) for d in devices)}), mode={mode}")
+    systems = [_atoms_to_system_dict(a) for a in structures]
+    with MultiCardSim("uma-s-1", device_ids=devices, task=args.task, refenv=args.refenv,
+                      fast=args.fast, trace=args.trace, sim_params=sim_params) as pool:
+        results = pool.run(systems)
+    _report_and_write_batch(args, structures, results)
+    return 0
+
+
+def _atoms_to_system_dict(atoms):
+    import numpy as np
+    pbc = np.asarray(atoms.get_pbc())
+    return dict(
+        pos=np.asarray(atoms.get_positions(), dtype=np.float32),
+        Z=np.asarray(atoms.get_atomic_numbers(), dtype=np.int64),
+        charge=float(atoms.info.get("charge", 0.0)),
+        spin=float(atoms.info.get("spin", 0.0)),
+        cell=np.asarray(atoms.get_cell()) if pbc.any() else None,
+        pbc=bool(pbc.any()),
+    )
+
+
+def _report_and_write_batch(args, structures, results):
+    """Print a per-structure summary and write final geometries when ``--out`` is given.
+
+    With multiple structures, ``--out`` is treated as a directory (created if needed); each
+    structure's final geometry is written as ``<stem>_<i>.<ext>`` (stem from the input file,
+    ext from ``--out`` if it has one, else ``.xyz``)."""
+    import pathlib
+    from ase.io import write
+
+    out_dir = pathlib.Path(args.out) if args.out else None
+    if out_dir is not None and out_dir.suffix:
+        # user passed a file pattern for a single structure in batch mode — treat parent as dir
+        out_dir = out_dir.parent
+    if out_dir is not None:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    for i, (src, res) in enumerate(zip(structures, results)):
+        if not res.get("ok"):
+            print(f"  [{i}] FAILED: {res.get('error', '?')}")
+            if res.get("tb"):
+                print(res["tb"])
+            continue
+        print(f"  [{i}] {pathlib.Path(args.structures[i]).name}: "
+              f"E={res['energy']:.6f} eV, fmax={res.get('fmax', float('nan')):.4f}, "
+              f"steps={res.get('nsteps', '?')}, converged={res.get('converged')}")
+        if out_dir is not None:
+            stem = pathlib.Path(args.structures[i]).stem
+            ext = pathlib.Path(args.out).suffix or ".xyz"
+            out_path = out_dir / f"{stem}_{i}{ext}"
+            from ase import Atoms
+            final = Atoms(numbers=res["Z"], positions=res["pos"],
+                          cell=src.get_cell(), pbc=src.get_pbc())
+            write(str(out_path), final)
+            print(f"      wrote {out_path}")
 
 
 def cmd_convert(args):
@@ -241,7 +326,9 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("run", help="one-shot: structure -> auto-bundle -> single-point/relax/md")
-    p.add_argument("structure", help="ASE-readable structure (.xyz/.cif/.pdb/...)")
+    p.add_argument("structures", nargs="+",
+                   help="ASE-readable structure file(s) (.xyz/.cif/.pdb/...); one runs on one "
+                        "card, several fan out across --devices")
     # Accepted silently for compatibility with the original one-model CLI.
     p.add_argument("--uma-s-1", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--task", default=None,
@@ -250,6 +337,12 @@ def main(argv=None):
     p.add_argument("--spin", type=float, default=1.0)
     p.add_argument("--refenv", default=None, help="fairchem python for the one-time bundle build")
     p.add_argument("--trace", action="store_true", help="trace-captured device loop (~2x)")
+    p.add_argument("--devices", default=None,
+                   help="comma-separated card ids for data-parallel batch relax/MD fan-out "
+                        "(e.g. 0,1,2,3); each card runs the full relax/MD loop for its structures")
+    p.add_argument("--seed", type=int, default=None,
+                   help="MD velocity-draw seed (pins the Maxwell-Boltzmann draw for reproducible "
+                        "multi-card MD parity)")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--relax", action="store_true", help="FIRE geometry relaxation")
     g.add_argument("--md", action="store_true", help="Langevin molecular dynamics")
@@ -257,7 +350,8 @@ def main(argv=None):
     p.add_argument("--steps", type=int, default=200)
     p.add_argument("--dt", type=float, default=1.0)
     p.add_argument("--temp", type=float, default=300.0)
-    p.add_argument("--out", help="write final geometry/trajectory here")
+    p.add_argument("--out", help="write final geometry here (one structure) or to a directory "
+                                 "(multiple structures: <stem>_<i>.<ext>)")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("info", help="show bundle config/task/coverage"); p.add_argument("bundle")
