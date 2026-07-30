@@ -24,6 +24,8 @@ def test_parse_devices():
     assert _parse_devices("") == ()
     with pytest.raises(SystemExit):
         _parse_devices("0,a,2")
+    with pytest.raises(SystemExit):
+        _parse_devices("0,0")          # two workers pinned to one card would contend for it
 
 
 def test_to_system_dict_from_atoms():
@@ -118,3 +120,35 @@ def test_cmd_run_branches_to_multicard(monkeypatch):
     # one structure, --devices 0,1 -> multi-card (explicit multi-device)
     cli.cmd_run(mk(["a.xyz"], devices="0,1"))
     assert calls["multi"] == 2
+
+
+def test_run_single_card_processes_every_structure(monkeypatch, capsys):
+    """The sequential single-card path must run ALL given structures, not just the first."""
+    import tt_atom.cli as cli
+
+    built = []
+
+    class FakeCalc:
+        @classmethod
+        def from_uma(cls, model, task_name, atoms, **kw):
+            built.append((task_name, len(atoms)))
+            return cls()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("tt_atom.calculator.TTAtomCalculator", FakeCalc)
+    monkeypatch.setattr("tt_atom.bundle_cache.infer_task", lambda atoms: "omol")
+    import ase
+    monkeypatch.setattr(ase.Atoms, "get_potential_energy", lambda self: 1.5)
+
+    args = argparse.Namespace(structures=["a.xyz", "b.xyz", "c.xyz"], devices=None, device_id=0,
+                              task=None, charge=0.0, spin=1.0, refenv=None, fast=False,
+                              trace=False, relax=False, md=False, fmax=0.05, steps=200,
+                              dt=1.0, temp=300.0, seed=None, out=None)
+    structures = [molecule("H2O"), molecule("CO2"), molecule("NH3")]
+    for a in structures:
+        a.info.update(charge=0.0, spin=1.0)
+    assert cli._run_single_card(args, structures) == 0
+    assert built == [("omol", 3), ("omol", 3), ("omol", 4)]
+    assert capsys.readouterr().out.count("energy:") == 3

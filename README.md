@@ -84,7 +84,8 @@ tt-atom run structure.xyz --relax --out relaxed.xyz
 tt-atom run structure.xyz --md --steps 200 --temp 300
 ```
 
-Run a screening batch across several cards (each card relaxes its assigned structures):
+Run a screening batch across several cards (each card relaxes its assigned structures;
+without `--relax`/`--md` each structure gets a single-point energy and forces):
 
 ```bash
 tt-atom run s1.xyz s2.xyz s3.xyz s4.xyz --relax --devices 0,1,2,3 --out relaxed/
@@ -157,9 +158,9 @@ Every supported family is release-gated on-device against its upstream reference
 
 Both families support batching and trace replay. `MultiCard` fans independent systems out
 across N local cards for energy evaluation; `MultiCardSim` does the same for full relax/MD
-loops — each card owns a complete ASE calculator and optimizer/integrator for its assigned
-structures, so a high-throughput screening batch runs data-parallel with bit-exact per-
-structure results. See [`docs/orb-port.md`](docs/orb-port.md) and
+loops (or single points) — each card owns a complete ASE calculator and optimizer/integrator
+for its assigned structures, so a high-throughput screening batch runs data-parallel with
+bit-exact per-structure results. See [`docs/orb-port.md`](docs/orb-port.md) and
 [`custom_kernels/README.md`](custom_kernels/README.md) for measured performance.
 
 ## Compared to upstream (fairchem / orb-models)

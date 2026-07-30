@@ -44,7 +44,7 @@ def main():
     ap.add_argument("--n-systems", type=int, default=12)
     ap.add_argument("--steps", type=int, default=20)
     ap.add_argument("--fmax", type=float, default=0.05)
-    ap.add_argument("--mode", default="relax", choices=["relax", "md"])
+    ap.add_argument("--mode", default="relax", choices=["relax", "md", "energy"])
     args = ap.parse_args()
 
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

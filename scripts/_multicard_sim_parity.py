@@ -50,6 +50,7 @@ def _build_systems():
 _PHASE_SCRIPT = '''
 import json, os, sys
 sys.path.insert(0, os.environ["PARITY_REPO"])
+import numpy as np
 from ase import Atoms
 from tt_atom import Calculator, MultiCardSim, relax_atoms, md_atoms
 
@@ -73,10 +74,13 @@ def single():
             a.calc = calc
             if mode == "relax":
                 r = relax_atoms(a, fmax=0.05, steps=relax_steps, logfile=None)
-            else:
+            elif mode == "md":
                 r = md_atoms(a, steps=md_steps, dt=1.0, temp=300.0, logfile=None, seed=seed)
+            else:
+                r = dict(energy=float(a.get_potential_energy()),
+                         forces=a.get_forces(), nsteps=0)
             results.append(dict(pos=a.get_positions().tolist(), energy=float(r["energy"]),
-                                 forces=r["forces"].tolist(), nsteps=int(r["nsteps"])))
+                                 forces=np.asarray(r["forces"]).tolist(), nsteps=int(r["nsteps"])))
     finally:
         calc.close()
     return results
@@ -84,8 +88,10 @@ def single():
 def multi():
     if mode == "relax":
         sim = dict(mode="relax", fmax=0.05, steps=relax_steps)
-    else:
+    elif mode == "md":
         sim = dict(mode="md", steps=md_steps, dt=1.0, temp=300.0, seed=seed)
+    else:
+        sim = dict(mode="energy")
     with MultiCardSim(model, device_ids=devices, sim_params=sim) as pool:
         return pool.run([dict(pos=a.get_positions().tolist(), Z=a.get_atomic_numbers().tolist())
                          for a in systems])
@@ -136,7 +142,6 @@ def main():
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env.setdefault("TT_VISIBLE_DEVICES", "0")
-    env.setdefault("TT_BIO_LEASE_HOLDER", "worker:tt-atom-multicard-relax-md-scale")
     env["TT_METAL_LOGGER_LEVEL"] = "FATAL"
     env["PARITY_REPO"] = str(REPO)
     env["PARITY_MODEL"] = MODEL
@@ -159,14 +164,19 @@ def main():
     mc_m = _run_phase("multi", "md", systems_path, env)
     probs_m = _cmp("md", ref_m, mc_m)
 
-    all_probs = probs_r + probs_m
+    print("\n-- energy (single point) --")
+    ref_e = _run_phase("single", "energy", systems_path, env)
+    mc_e = _run_phase("multi", "energy", systems_path, env)
+    probs_e = _cmp("energy", ref_e, mc_e)
+
+    all_probs = probs_r + probs_m + probs_e
     print("\n" + "=" * 60)
     if all_probs:
         print("PARITY FAIL:")
         for p in all_probs:
             print("  " + p)
         return 1
-    print("PARITY PASS: bit-exact per-structure relax AND md, single-card vs MultiCardSim")
+    print("PARITY PASS: bit-exact per-structure relax, md AND energy, single-card vs MultiCardSim")
     return 0
 
 

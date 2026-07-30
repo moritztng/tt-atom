@@ -165,11 +165,15 @@ def cmd_md(args):
 
 
 def _parse_devices(s):
-    """Parse a ``--devices`` string (``"0,1,2"``) into a tuple of ints; raise on garbage."""
+    """Parse a ``--devices`` string (``"0,1,2"``) into a tuple of distinct ints; raise on
+    garbage or a duplicate (two workers pinned to one card would contend for it)."""
     try:
-        return tuple(int(p) for p in str(s).split(",") if p.strip() != "")
+        ids = tuple(int(p) for p in str(s).split(",") if p.strip() != "")
     except ValueError as e:
         raise SystemExit(f"--devices expects a comma-separated list of card ids (e.g. 0,1,2): {e}")
+    if len(set(ids)) != len(ids):
+        raise SystemExit(f"--devices lists a card twice: {s}")
+    return ids
 
 
 def cmd_run(args):
@@ -179,10 +183,13 @@ def cmd_run(args):
     caches the composition-specific uma-s-1 bundle on first use (via the reference env), then runs
     on device. A cached composition needs no fairchem.
 
+    The default (no ``--relax``/``--md``) is a single-point energy+forces per structure.
+
     With ``--devices 0,1,2,...`` and more than one structure, the structures fan out across the
     listed cards: each card owns a full ASE Calculator + relax/MD loop for its assigned
     structures (data-parallel, bit-exact per structure vs the single-card path). This is the
-    high-throughput virtual-screening path — many independent structures, N cards."""
+    high-throughput virtual-screening path — many independent structures, N cards. Without
+    ``--devices`` the structures run one after another on the single card."""
     structures = _read_structures(args.structures)
     for a in structures:
         a.info.setdefault("charge", args.charge)
@@ -201,32 +208,34 @@ def _read_structures(paths):
 
 
 def _run_single_card(args, structures):
-    """Original single-card path (one structure on one card) — unchanged."""
+    """Single-card path: each structure in turn on one card (no fan-out requested)."""
     from . import bundle_cache as BC
     from .calculator import TTAtomCalculator
 
-    atoms = structures[0]
-    task = args.task or BC.infer_task(atoms)
-    calc = TTAtomCalculator.from_uma(model="uma-s-1", task_name=task, atoms=atoms,
-                                     charge=args.charge, spin=args.spin, refenv=args.refenv,
-                                     device_id=args.device_id, fast=args.fast, trace=args.trace)
-    atoms.calc = calc
-    try:
-        e0 = atoms.get_potential_energy()
-        print(f"energy: {e0:.6f} eV  ({len(atoms)} atoms, task={task}, "
-              f"charge={int(args.charge)}, spin={int(args.spin)})")
-        if args.relax:
-            _run_relax(atoms, args, e0)
-        elif args.md:
-            _run_md(atoms, args, e0)
-        _write_output(args, atoms)
-    finally:
-        calc.close()
+    for atoms in structures:
+        task = args.task or BC.infer_task(atoms)
+        calc = TTAtomCalculator.from_uma(model="uma-s-1", task_name=task, atoms=atoms,
+                                         charge=args.charge, spin=args.spin, refenv=args.refenv,
+                                         device_id=args.device_id, fast=args.fast,
+                                         trace=args.trace)
+        atoms.calc = calc
+        try:
+            e0 = atoms.get_potential_energy()
+            print(f"energy: {e0:.6f} eV  ({len(atoms)} atoms, task={task}, "
+                  f"charge={int(args.charge)}, spin={int(args.spin)})")
+            if args.relax:
+                _run_relax(atoms, args, e0)
+            elif args.md:
+                _run_md(atoms, args, e0)
+            _write_output(args, atoms)
+        finally:
+            calc.close()
     return 0
 
 
 def _run_multicard(args, structures, devices):
-    """Multi-card data-parallel fan-out: each card runs the full relax/MD loop for its shard."""
+    """Multi-card data-parallel fan-out: each card runs the full relax/MD loop (or the
+    single-point energy default) for its shard."""
     from .batch import MultiCardSim
 
     mode = "relax" if args.relax else ("md" if args.md else "energy")
@@ -234,25 +243,11 @@ def _run_multicard(args, structures, devices):
                       temp=args.temp, seed=args.seed)
     print(f"multicard: {len(structures)} structure(s) across {len(devices)} card(s) "
           f"({','.join(str(d) for d in devices)}), mode={mode}")
-    systems = [_atoms_to_system_dict(a) for a in structures]
     with MultiCardSim("uma-s-1", device_ids=devices, task=args.task, refenv=args.refenv,
                       fast=args.fast, trace=args.trace, sim_params=sim_params) as pool:
-        results = pool.run(systems)
+        results = pool.run(structures)
     _report_and_write_batch(args, structures, results)
     return 0
-
-
-def _atoms_to_system_dict(atoms):
-    import numpy as np
-    pbc = np.asarray(atoms.get_pbc())
-    return dict(
-        pos=np.asarray(atoms.get_positions(), dtype=np.float32),
-        Z=np.asarray(atoms.get_atomic_numbers(), dtype=np.int64),
-        charge=float(atoms.info.get("charge", 0.0)),
-        spin=float(atoms.info.get("spin", 0.0)),
-        cell=np.asarray(atoms.get_cell()) if pbc.any() else None,
-        pbc=bool(pbc.any()),
-    )
 
 
 def _report_and_write_batch(args, structures, results):
@@ -260,10 +255,11 @@ def _report_and_write_batch(args, structures, results):
 
     With multiple structures, ``--out`` is treated as a directory (created if needed); each
     structure's final geometry is written as ``<stem>_<i>.<ext>`` (stem from the input file,
-    ext from ``--out`` if it has one, else ``.xyz``)."""
+    ext from ``--out`` if it has one, else ``.xyz``) with its energy/forces attached."""
     import pathlib
     from ase.io import write
 
+    mode = "relax" if args.relax else ("md" if args.md else "energy")
     out_dir = pathlib.Path(args.out) if args.out else None
     if out_dir is not None and out_dir.suffix:
         # user passed a file pattern for a single structure in batch mode — treat parent as dir
@@ -276,18 +272,30 @@ def _report_and_write_batch(args, structures, results):
             if res.get("tb"):
                 print(res["tb"])
             continue
-        print(f"  [{i}] {pathlib.Path(args.structures[i]).name}: "
-              f"E={res['energy']:.6f} eV, fmax={res.get('fmax', float('nan')):.4f}, "
-              f"steps={res.get('nsteps', '?')}, converged={res.get('converged')}")
+        line = f"  [{i}] {pathlib.Path(args.structures[i]).name}: E={res['energy']:.6f} eV"
+        if mode == "energy":
+            line += f", fmax={_force_max(res['forces']):.4f}"
+        else:
+            line += f", steps={res.get('nsteps', '?')}"
+            if mode == "relax":
+                line += f", fmax={res['fmax']:.4f}, converged={res['converged']}"
+        print(line)
         if out_dir is not None:
             stem = pathlib.Path(args.structures[i]).stem
             ext = pathlib.Path(args.out).suffix or ".xyz"
             out_path = out_dir / f"{stem}_{i}{ext}"
             from ase import Atoms
+            from ase.calculators.singlepoint import SinglePointCalculator
             final = Atoms(numbers=res["Z"], positions=res["pos"],
                           cell=src.get_cell(), pbc=src.get_pbc())
+            final.calc = SinglePointCalculator(final, energy=float(res["energy"]),
+                                               forces=np.asarray(res["forces"], dtype=float))
             write(str(out_path), final)
             print(f"      wrote {out_path}")
+
+
+def _force_max(forces):
+    return float(np.max(np.linalg.norm(np.asarray(forces, dtype=float), axis=1)))
 
 
 def cmd_convert(args):
