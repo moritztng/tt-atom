@@ -7,6 +7,19 @@ smoke (see `RELEASING.md`).
 
 ## Unreleased
 
+### Added
+- **Multi-card data-parallel fan-out for `tt-atom run`**: pass several structure files with
+  `--devices 0,1,...` and each card runs a full `Calculator` + relax/MD loop (or the
+  single-point energy default) for its shard of structures — the high-throughput
+  virtual-screening path. Per-structure results come back in input order, bit-exact vs the
+  single-card path (`scripts/_multicard_sim_parity.py`); without `--devices`, multiple
+  structures run one after another on one card. `--out` is a directory in batch mode and each
+  written geometry carries its energy and forces. The new `tt_atom.batch.MultiCardSim` pool
+  backs the CLI and is usable directly; `scripts/multicard_sim_scaling.py` measures the
+  throughput scaling.
+- Orb's batched path (`evaluate_batch`) now applies ZBL pair repulsion union-wide through one
+  autograd pass, matching the per-system path at short contact.
+
 ### Fixed
 - Built wheels now include both weight exporters, so automatic UMA and Orb cache misses work
   outside a source checkout.
@@ -30,6 +43,8 @@ smoke (see `RELEASING.md`).
 - Accuracy coverage now includes all periodic UMA tasks, both families' batch-vs-separate parity,
   Orb's bf8 fast mode, and short-contact ZBL stress.
 - Performance baselines now cover UMA and record the `ttnn` version that produced them.
+- p150a performance baselines are refreshed for the `ttnn` 0.68.0 wheel
+  (`docs/perf_baselines.json`); a protocol-mismatch guard refuses stale comparisons.
 - The clean-install gate builds the candidate wheel, installs it and its runtime dependencies in
   isolation, and verifies the exact pushed commit and packaged exporters.
 

@@ -20,18 +20,55 @@ from __future__ import annotations
 import multiprocessing as mp
 
 
-def _worker(device_id, weights_path, fast, in_q, out_q):
-    import json
+def _pin_worker(device_id):
+    """Pin this worker process to one card (it becomes device 0) and one host thread: the host
+    geometry (torch) otherwise grabs every core, so N workers oversubscribe the CPU and throttle
+    each other (4-card went *slower* than 1)."""
     import os
-    import pathlib
 
-    os.environ["TT_VISIBLE_DEVICES"] = str(device_id)          # pin one card -> it is device 0
-    # one host thread per worker: the host geometry (torch) otherwise grabs every core, so N
-    # workers oversubscribe the CPU and throttle each other (4-card went *slower* than 1).
+    os.environ["TT_VISIBLE_DEVICES"] = str(device_id)
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     import torch
 
     torch.set_num_threads(1)
+
+
+class _WorkerPool:
+    """One spawn-context worker process per device, pulling jobs off a shared queue.
+
+    The parent never imports ``ttnn`` or touches a device — that is what keeps the fan-out
+    deadlock-free. Subclasses pass their worker ``target`` plus per-device leading args (the
+    shared queues are appended), then implement their own submit/collect on top of the pool."""
+
+    def __init__(self, target, args_per_device):
+        self.ctx = mp.get_context("spawn")
+        self.in_q = self.ctx.Queue()
+        self.out_q = self.ctx.Queue()
+        self.procs = [self.ctx.Process(target=target, args=(*a, self.in_q, self.out_q),
+                                       daemon=True) for a in args_per_device]
+        for p in self.procs:
+            p.start()
+        for _ in self.procs:                                   # wait until every card is ready
+            self.out_q.get()
+
+    def close(self):
+        for _ in self.procs:
+            self.in_q.put(None)
+        for p in self.procs:
+            p.join(timeout=10)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def _worker(device_id, weights_path, fast, in_q, out_q):
+    import json
+    import pathlib
+
+    _pin_worker(device_id)
 
     import numpy as np
 
@@ -164,7 +201,7 @@ def _run_orb(b, cfg, fast, device_id, in_q, out_q):
     ttnn.close_device(dev)
 
 
-class MultiCard:
+class MultiCard(_WorkerPool):
     """A persistent pool of one worker per device. Use as a context manager.
 
     ``weights_path`` is a UMA bundle (``WeightBundle``) or an Orb weights file (``OrbWeights``);
@@ -172,15 +209,7 @@ class MultiCard:
     """
 
     def __init__(self, weights_path, device_ids=(0, 1, 2, 3), *, fast=False):
-        self.ctx = mp.get_context("spawn")
-        self.in_q = self.ctx.Queue()
-        self.out_q = self.ctx.Queue()
-        self.procs = [self.ctx.Process(target=_worker, args=(d, weights_path, fast, self.in_q, self.out_q),
-                                       daemon=True) for d in device_ids]
-        for p in self.procs:
-            p.start()
-        for _ in self.procs:                                   # wait until every card is ready
-            self.out_q.get()
+        super().__init__(_worker, [(d, weights_path, fast) for d in device_ids])
 
     def energies(self, systems):
         """``systems``: list of (positions[N,3], atomic_numbers[N]) numpy arrays.
@@ -195,18 +224,6 @@ class MultiCard:
             total_edges += E
         return out, total_edges
 
-    def close(self):
-        for _ in self.procs:
-            self.in_q.put(None)
-        for p in self.procs:
-            p.join(timeout=10)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
-
 
 # ── multi-card relax / MD fan-out ───────────────────────────────────────────
 # Each worker builds a real ASE Calculator on its pinned card and runs the FULL relax/MD
@@ -220,31 +237,24 @@ class MultiCard:
 # bakes composition; the bundle cache makes repeat compositions a plain load).
 
 def _worker_sim(device_id, model, task, refenv, cache_dir, fast, trace, sim_params, in_q, out_q):
-    import os
+    _pin_worker(device_id)
 
-    os.environ["TT_VISIBLE_DEVICES"] = str(device_id)          # pin one card -> it is device 0
-    os.environ.setdefault("OMP_NUM_THREADS", "1")
-    import torch
+    import numpy as np
 
-    torch.set_num_threads(1)
-
-    from .auto import Calculator
+    from .auto import Calculator, _family
     from .simulate import relax_atoms, md_atoms
 
     mode = sim_params["mode"]
-    calcs = {}        # (reduced_composition, charge, spin) -> Calculator (UMA); None key for Orb
-    natoms_cache = {}
+    calcs = {}        # (reduced_composition, charge, spin, task) -> Calculator (UMA); None for Orb
 
     def get_calc(atoms):
-        if str(model).lower().startswith("orb"):
+        if _family(model) == "orb":
             key = None
         else:
-            from .bundle_cache import reduced_composition
-            t = task
-            if t is None:
-                t = "omat" if bool(np.asarray(atoms.get_pbc()).all()) else "omol"
+            from .bundle_cache import infer_task, reduced_composition
             key = (reduced_composition(atoms.get_atomic_numbers()),
-                   float(atoms.info.get("charge", 0.0)), float(atoms.info.get("spin", 0.0)), t)
+                   float(atoms.info.get("charge", 0.0)), float(atoms.info.get("spin", 0.0)),
+                   task or infer_task(atoms))
         if key not in calcs:
             calcs[key] = Calculator(atoms, model, task=task, refenv=refenv, cache_dir=cache_dir,
                                     device_id=0, fast=fast, trace=trace)
@@ -267,10 +277,14 @@ def _worker_sim(device_id, model, task, refenv, cache_dir, fast, trace, sim_para
             if mode == "relax":
                 res = relax_atoms(atoms, fmax=sim_params["fmax"], steps=sim_params["steps"],
                                   logfile=None)
-            else:
+            elif mode == "md":
                 res = md_atoms(atoms, steps=sim_params["steps"], dt=sim_params["dt"],
                                temp=sim_params["temp"], logfile=None,
                                seed=sim_params.get("seed"))
+            else:        # energy: a single point through the same cached Calculator
+                res = dict(energy=float(atoms.get_potential_energy()),
+                           forces=np.asarray(atoms.get_forces(), dtype=np.float64),
+                           fmax=None, nsteps=0, converged=None)
             out_q.put((idx, dict(ok=True, pos=atoms.get_positions(), Z=sys_dict["Z"],
                                  energy=res["energy"], forces=res["forces"],
                                  fmax=res.get("fmax"), nsteps=res.get("nsteps"),
@@ -287,68 +301,49 @@ def _worker_sim(device_id, model, task, refenv, cache_dir, fast, trace, sim_para
             pass
 
 
-class MultiCardSim:
-    """A persistent pool of one worker per device that runs full relax/MD loops, not just a
-    forward energy pass. Use as a context manager.
+class MultiCardSim(_WorkerPool):
+    """A persistent pool of one worker per device that runs full relax/MD loops or single
+    points, not just a forward energy pass. Use as a context manager.
 
     The counterpart to :class:`MultiCard` for the headline materials-screening use case
     (high-throughput virtual screening): fan a batch of *independent* structures across N
     local cards, each card owning a full ASE ``Calculator`` + FIRE/Langevin loop for its
     assigned structures. Per-structure results (final geometry, energy, forces) come back in
-    input order, bit-exact vs running each structure on one card through ``tt-atom run
-    --relax``/``--md`` — each structure runs the identical single-card code path inside its
-    worker, so sharding changes nothing about a structure's own numerics.
+    input order, bit-exact vs running each structure on one card through ``tt-atom run``
+    (``--relax``/``--md`` or the single-point default) — each structure runs the identical
+    single-card code path inside its worker, so sharding changes nothing about a structure's
+    own numerics.
 
     ``model`` selects the family by name (``"uma-s-1"`` or an Orb checkpoint), exactly like
-    ``tt_atom.auto.Calculator``. ``sim_params`` is a dict with ``mode`` (``"relax"``/``"md"``)
-    and the optimizer/integrator knobs (``fmax``/``steps`` for relax; ``steps``/``dt``/``temp``
-    for md; an optional ``seed`` pins the MD velocity draw for reproducible parity).
+    ``tt_atom.auto.Calculator``. ``sim_params`` is a dict with ``mode`` (``"relax"``/``"md"``/
+    ``"energy"``) and the optimizer/integrator knobs (``fmax``/``steps`` for relax;
+    ``steps``/``dt``/``temp`` for md; an optional ``seed`` pins the MD velocity draw for
+    reproducible parity; ``"energy"`` is a single point and ignores the knobs).
     """
 
     def __init__(self, model, device_ids=(0, 1, 2, 3), *, task=None, refenv=None,
                  cache_dir=None, fast=False, trace=False, sim_params=None):
-        if sim_params is None or sim_params.get("mode") not in ("relax", "md"):
-            raise ValueError("sim_params must be a dict with mode 'relax' or 'md'")
-        self.ctx = mp.get_context("spawn")
-        self.in_q = self.ctx.Queue()
-        self.out_q = self.ctx.Queue()
+        if sim_params is None or sim_params.get("mode") not in ("relax", "md", "energy"):
+            raise ValueError("sim_params must be a dict with mode 'relax', 'md', or 'energy'")
         self.sim_params = sim_params
-        self.procs = [self.ctx.Process(
-            target=_worker_sim,
-            args=(d, model, task, refenv, cache_dir, fast, trace, sim_params,
-                  self.in_q, self.out_q),
-            daemon=True) for d in device_ids]
-        for p in self.procs:
-            p.start()
-        for _ in self.procs:                                   # wait until every card is ready
-            self.out_q.get()
+        super().__init__(_worker_sim,
+                         [(d, model, task, refenv, cache_dir, fast, trace, sim_params)
+                          for d in device_ids])
 
     def run(self, systems):
         """``systems``: list of dicts (or ASE ``Atoms``) with ``pos``, ``Z``, optional
         ``charge``/``spin``/``cell``/``pbc``. Returns one result dict per system in input
-        order: ``{ok, pos, Z, energy, forces, fmax, nsteps, converged}`` (relax) or
-        ``{ok, pos, Z, energy, forces, nsteps, ...}`` (md); ``{ok: False, error}`` on a
-        per-system failure (the pool keeps the other systems' results)."""
-        norm = [_to_system_dict(s, i) for i, s in enumerate(systems)]
-        for i, d in norm:
+        order: ``{ok, pos, Z, energy, forces, fmax, nsteps, converged}`` (relax; ``fmax``/
+        ``converged`` are ``None`` for md and energy, ``nsteps`` is 0 for energy);
+        ``{ok: False, error}`` on a per-system failure (the pool keeps the other systems'
+        results)."""
+        for i, d in (_to_system_dict(s, i) for i, s in enumerate(systems)):
             self.in_q.put((i, d))
         out = [None] * len(systems)
         for _ in systems:
             idx, res = self.out_q.get()
             out[idx] = res
         return out
-
-    def close(self):
-        for _ in self.procs:
-            self.in_q.put(None)
-        for p in self.procs:
-            p.join(timeout=10)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
 
 
 def _to_system_dict(system, idx):
