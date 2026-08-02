@@ -64,7 +64,7 @@ class _WorkerPool:
         self.close()
 
 
-def _worker(device_id, weights_path, fast, in_q, out_q):
+def _worker(device_id, weights_path, fast, bucketing, in_q, out_q):
     import json
     import pathlib
 
@@ -81,7 +81,7 @@ def _worker(device_id, weights_path, fast, in_q, out_q):
     else:                                                      # Orb MPNN bundle
         from .orb_weights import OrbWeights
 
-        _run_orb(OrbWeights(npz), cfg, fast, device_id, in_q, out_q)
+        _run_orb(OrbWeights(npz), cfg, fast, device_id, in_q, out_q, bucketing=bucketing)
 
 
 def _run_uma(b, cfg, fast, device_id, in_q, out_q):
@@ -121,14 +121,19 @@ def _run_uma(b, cfg, fast, device_id, in_q, out_q):
     ttnn.close_device(dev)
 
 
-def _run_orb(b, cfg, fast, device_id, in_q, out_q):
+def _run_orb(b, cfg, fast, device_id, in_q, out_q, bucketing=False):
     """Energy-only Orb forward, mirroring ``OrbCalculator.calculate``'s direct/conservative
     forward path (the two share the same encoder/layers/``EnergyHead``; only forces differ, and
     ``MultiCard`` returns energies). The systems come in as ``(pos, Z)`` tuples with no
     charge/spin/cell, so this is the aperiodic, neutral path — ``cond_nodes`` is built from
     charge=0/spin=0 for the OrbMol checkpoints (deterministic; both sharded and sequential use the
     same default, so parity is unaffected) and is ``None`` for the omat checkpoints that carry no
-    conditioning weights."""
+    conditioning weights.
+
+    ``bucketing=True`` pads each system's edges to the ``tt_atom.bucketing`` ladder (same
+    post-encoder zero-pad construction as ``OrbCalculator(bucketing=True)``) so a screening
+    stream of differently-sized systems reuses compiled kernel shapes instead of compiling
+    fresh per size."""
     import torch
 
     from .device import open_device
@@ -180,13 +185,28 @@ def _run_orb(b, cfg, fast, device_id, in_q, out_q):
         node_feat = host_node_features(w, Z)
         cond_nodes = (host_charge_spin_embedding(w, 0.0, 0.0, N, latent_dim)
                       if has_cond else None)
-        edge_feat, cutoff, vectors = host_edge_features(pos, senders, receivers, cell_shift,
-                                                        r_max=r_max, num_bases=num_bases)
-        graph = OrbGraphContext(dev, senders=senders, receivers=receivers,
-                                cutoff=cutoff.detach().float(), num_nodes=N, cond_nodes=cond_nodes)
+        edge_feat, cutoff, _vec = host_edge_features(pos, senders, receivers, cell_shift,
+                                                     r_max=r_max, num_bases=num_bases)
+        vectors = pos[receivers] - pos[senders] + cell_shift       # true edges, for ZBL
+        dev_senders, dev_receivers, gkw = senders, receivers, {}
+        e_bucket = 0
+        if bucketing:
+            from .bucketing import bucket_size, gather_kwargs, pad_edge_index, pad_host_rows
+
+            e_bucket = bucket_size(E)
+            dev_senders, dev_receivers = pad_edge_index(senders, receivers, e_bucket)
+            cutoff = pad_host_rows(cutoff, e_bucket)
+            gkw = gather_kwargs(E, max_num_neighbors)
+        graph = OrbGraphContext(dev, senders=dev_senders, receivers=dev_receivers,
+                                cutoff=cutoff.detach().float(), num_nodes=N, cond_nodes=cond_nodes,
+                                **gkw)
         node_dev = _to_dev(node_feat, dev, ttnn.bfloat16)
         edge_dev = _to_dev(edge_feat.detach().float(), dev, ttnn.bfloat16)
         nodes, edges = encoder(node_dev, edge_dev)
+        if e_bucket:
+            from .bucketing import pad_device_rows
+
+            edges = pad_device_rows(ttnn, edges, e_bucket)
         for layer in layers:
             nodes, edges = layer(nodes, edges, graph)
         raw_e = ttnn.to_torch(ehead(nodes)).double().view(())
@@ -206,10 +226,14 @@ class MultiCard(_WorkerPool):
 
     ``weights_path`` is a UMA bundle (``WeightBundle``) or an Orb weights file (``OrbWeights``);
     the worker detects the family from the bundle's ``config`` and builds the matching backbone.
+
+    ``bucketing=True`` (Orb bundles only) pads each system's edges to the fixed ladder in
+    ``tt_atom.bucketing`` so differently-sized systems reuse compiled kernel shapes — the
+    screening-stream win (energies bit-exact vs unpadded; see ``tests/test_bucketing.py``).
     """
 
-    def __init__(self, weights_path, device_ids=(0, 1, 2, 3), *, fast=False):
-        super().__init__(_worker, [(d, weights_path, fast) for d in device_ids])
+    def __init__(self, weights_path, device_ids=(0, 1, 2, 3), *, fast=False, bucketing=False):
+        super().__init__(_worker, [(d, weights_path, fast, bucketing) for d in device_ids])
 
     def energies(self, systems):
         """``systems``: list of (positions[N,3], atomic_numbers[N]) numpy arrays.

@@ -172,11 +172,16 @@ def energy_bw(ehead):
     return ttnn.matmul(ehead._bw_onesN1, g_mean, compute_kernel_config=kcfg)  # [N, C], every row identical
 
 
-def backbone_bw(encoder, layers, ehead, graph):
+def backbone_bw(encoder, layers, ehead, graph, e_true=None):
     """Full reverse pass: energy head -> all interaction layers (reversed) -> encoder's edge MLP.
     Returns ``(g_edge_feat, g_cutoff)``, the device adjoints at the two pos-dependent uploaded
     inputs. ``node_feat`` has no ``pos`` dependence (atomic-number embedding only), so its
     adjoint is discarded -- the encoder's node path is never differentiated further.
+
+    ``e_true`` (edge bucketing) slices the edge adjoints back to the true rows BEFORE the
+    encoder backward: every op in between is rowwise, so slice-before == slice-after
+    bitwise, and the encoder's narrow-K backward matmuls then run at the true edge count
+    (they are not M-shape-stable -- see tt_atom.bucketing).
 
     The zero-seed edge gradient is cached on ``ehead`` (guarded by ``(E, C)``) for the same
     trace-capture-allocation reason as ``energy_bw``'s cached constants."""
@@ -193,6 +198,8 @@ def backbone_bw(encoder, layers, ehead, graph):
         g_nodes, g_edges, g_c = attn_layer_bw(layer, graph, g_nodes, g_edges)
         g_cutoff = g_c if g_cutoff is None else ttnn.add(g_cutoff, g_c)
 
+    if e_true is not None and e_true < graph.E:
+        g_edges = ttnn.slice(g_edges, [0, 0], [e_true, g_edges.shape[1]])
     g_edge_feat = mlpnorm_bw(encoder.edge_fn, g_edges)        # encoder's edge_fn input adjoint
     return g_edge_feat, g_cutoff
 
@@ -299,7 +306,7 @@ def energy_and_forces_batch(encoder, layers, ehead, device, *, pos, senders, rec
 
 def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers, atomic_numbers,
                       node_feat, cell_shift=None, r_max=6.0, num_bases=8, compute_stress=False,
-                      cond_nodes=None):
+                      cond_nodes=None, edge_bucket=0, gather_width=0):
     """Conservative energy + analytic forces ``F = -dE/dpos`` for one system
     (``orb-v3-conservative-inf-omat``). One device forward at the current geometry, one device
     reverse VJP, and a host ``torch.autograd.grad`` finish through the differentiable edge
@@ -319,6 +326,14 @@ def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers
     ``pos``/``strain`` dependence, so it needs no adjoint of its own: the backward algebra below
     (``backbone_bw``/``attn_layer_bw``) is unmodified, since the conditioning term is just an
     additive shift on ``nodes`` with an identity Jacobian back to this function's own inputs.
+
+    Edge bucketing (``tt_atom.bucketing``): ``edge_bucket`` > E pads the graph indices +
+    cutoff pre-upload and the ENCODED edge block post-encoder on device (the narrow-K
+    encoder matmuls are not M-shape-stable, so the encoder always runs at the true edge
+    count). Forces stay bit-exact: pad rows are gated to exactly zero by their 0.0 cutoff,
+    gather tables cover the true edges only (width floored at ``gather_width``), and the
+    device VJP slices the edge adjoints back to the true rows before the encoder backward,
+    so the host ``autograd.grad`` finish sees only the unpadded graph.
     """
     import ttnn
 
@@ -331,19 +346,33 @@ def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers
                                                     r_max=r_max, num_bases=num_bases, strain=strain)
 
     N = atomic_numbers.shape[0]
+    E_true = senders.shape[0]
+    gkw = {}
+    cutoff_dev = cutoff
+    if edge_bucket:
+        from .bucketing import gather_kwargs, pad_edge_index, pad_host_rows
+
+        senders, receivers = pad_edge_index(senders, receivers, edge_bucket)
+        cutoff_dev = pad_host_rows(cutoff, edge_bucket)
+        gkw = gather_kwargs(E_true, gather_width)
     graph = OrbGraphContext(device, senders=senders, receivers=receivers,
-                            cutoff=cutoff.detach().float(), num_nodes=N, cond_nodes=cond_nodes)
+                            cutoff=cutoff_dev.detach().float(), num_nodes=N,
+                            cond_nodes=cond_nodes, **gkw)
 
     node_dev = _to_dev(node_feat, device, ttnn.bfloat16)
     edge_dev = _to_dev(edge_feat.detach().float(), device, ttnn.bfloat16)
     nodes, edges = encoder(node_dev, edge_dev)
+    if edge_bucket:
+        from .bucketing import pad_device_rows
+
+        edges = pad_device_rows(ttnn, edges, edge_bucket)
     for layer in layers:
         nodes, edges = layer(nodes, edges, graph)
     raw_pred = ttnn.to_torch(ehead(nodes)).double().view(())
 
-    g_edge_feat_dev, g_cutoff_dev = backbone_bw(encoder, layers, ehead, graph)
+    g_edge_feat_dev, g_cutoff_dev = backbone_bw(encoder, layers, ehead, graph, e_true=E_true)
     g_edge_feat = ttnn.to_torch(g_edge_feat_dev).float()
-    g_cutoff = ttnn.to_torch(g_cutoff_dev).float()
+    g_cutoff = ttnn.to_torch(g_cutoff_dev).float()[:E_true]
 
     inputs = [pos] if strain is None else [pos, strain]
     grads = torch.autograd.grad([edge_feat, cutoff], inputs, grad_outputs=[g_edge_feat, g_cutoff])

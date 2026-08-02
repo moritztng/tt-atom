@@ -160,7 +160,10 @@ Both families support batching and trace replay. `MultiCard` fans independent sy
 across N local cards for energy evaluation; `MultiCardSim` does the same for full relax/MD
 loops (or single points) — each card owns a complete ASE calculator and optimizer/integrator
 for its assigned structures, so a high-throughput screening batch runs data-parallel with
-bit-exact per-structure results. See [`docs/orb-port.md`](docs/orb-port.md) and
+bit-exact per-structure results. For a screening stream of differently-sized systems,
+`bucketing=True` (Orb) pads edges to a fixed ladder so one compile set serves many sizes:
+measured 1.4x faster cold wall-clock on a 20-system stream, bit-exact per system
+([numbers](docs/orb-port.md#throughput)). See [`docs/orb-port.md`](docs/orb-port.md) and
 [`custom_kernels/README.md`](custom_kernels/README.md) for measured performance.
 
 ## Compared to upstream (fairchem / orb-models)

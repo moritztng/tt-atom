@@ -1,0 +1,14 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-9.1.1, pluggy-1.6.0 -- /home/ttuser/.coworker/wt/tt-atom-edge-bucketing/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/ttuser/.coworker/wt/tt-atom-edge-bucketing
+configfile: pyproject.toml
+collecting ... collected 5 items
+
+tests/test_bucketing.py::test_helpers PASSED                             [ 20%]
+tests/test_bucketing.py::test_bucketing_bitexact[conservative-inf-omat] PASSED [ 40%]
+tests/test_bucketing.py::test_bucketing_bitexact[direct-20-omat] PASSED  [ 60%]
+tests/test_bucketing.py::test_bucketing_bitexact[conservative-omol] PASSED [ 80%]
+tests/test_bucketing.py::test_bucketing_bitexact[direct-omol] PASSED     [100%]
+
+============================== 5 passed in 13.60s ==============================

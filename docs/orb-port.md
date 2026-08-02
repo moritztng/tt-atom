@@ -84,6 +84,25 @@ ordinary matmul and activation path.
 stream in bf16 and accumulation in fp32. It is opt-in because the measured conservative-force MAE
 is 0.0490 eV/Å versus 0.0089 eV/Å for bf16.
 
+`bucketing=True` on `OrbCalculator` (and `MultiCard`) pads a system graph to the next edge count
+in a fixed ladder (256 to 22016, about 1.55x rung spacing) so differently-sized systems share
+compiled kernels. Production screening feeds each (atoms, edges) pair once, so the compile cache
+never helps an unbucketed stream: a cold first eval at a new size costs 40 to 47 s versus 1.3 to
+1.7 s warm (five Si supercell sizes, 16 to 432 atoms, warm-repeat noise under 2%), and even a
+second geometry at the same atom count costs another 11+ s when its edge count crosses a tile
+boundary (`benchmarks/compile_pain_orb_si_p150a.jsonl`). Padded edges carry exact zeros; energies,
+forces and stress are bit-exact against unpadded runs within the device instance-noise floor (the
+parity gate is `tests/test_bucketing.py`, 6 sizes x all 4 Orb checkpoints). Measured on a 20-system
+Si stream (16 to 256 atoms, 670 to 10934 edges, p150a):
+
+| stream | cold wall clock | distinct edge shapes | kernel files compiled |
+|---|---:|---:|---:|
+| unbucketed | 463.1 s | 20 / 20 | 22299 |
+| bucketed | 334.4 s (1.38x) | 7 buckets | 19885 (-11%) |
+
+Warm, the same stream runs 13.0 s unbucketed versus 11.7 s bucketed (0.65 s versus 0.58 s per
+system). Raw log: `benchmarks/screening_orb_si_p150a.jsonl`.
+
 ## H200 comparison
 
 The committed comparison uses the same `orb-v3-conservative-inf-omat` checkpoint and periodic Si
