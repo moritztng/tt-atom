@@ -84,6 +84,22 @@ ordinary matmul and activation path.
 stream in bf16 and accumulation in fp32. It is opt-in because the measured conservative-force MAE
 is 0.0490 eV/Å versus 0.0089 eV/Å for bf16.
 
+`bucketing=True` on `OrbCalculator` (and `MultiCard`) pads a system graph to the next edge count
+in a fixed ladder (256 to 22016, about 1.55x rung spacing) so differently-sized systems share
+compiled kernels. Production screening feeds each (atoms, edges) pair once, so the compile cache
+never helps an unbucketed stream. Padded edges carry exact zeros; energies, forces and stress are
+bit-exact against unpadded runs within the device instance-noise floor (the parity gate is
+`tests/test_bucketing.py`, 4 sizes x all 4 Orb checkpoints). Measured on a 20-system Si stream
+(edge counts 65 to 7296, random order, p150a):
+
+| stream | wall clock | distinct shape tuples | kernel files compiled |
+|---|---:|---:|---:|
+| unbucketed | 463.1 s | 20 / 20 | 22299 |
+| bucketed | 334.4 s (1.38x) | 11 / 20 | 19885 (-11%) |
+
+Warm per-system evals are unchanged (0.40 s vs 0.53 s mean; the stream was compute-bound after
+compile, so the win is the avoided compiles). Raw log: `benchmarks/screening_orb_si_p150a.jsonl`.
+
 ## H200 comparison
 
 The committed comparison uses the same `orb-v3-conservative-inf-omat` checkpoint and periodic Si
