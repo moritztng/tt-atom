@@ -38,8 +38,9 @@ EDGE_BUCKETS = (1024, 1584, 2464, 3808, 5920, 9152, 14208, 22016)
 NODE_BUCKETS = (32, 64, 128, 192, 320, 512, 768, 1216)
 
 
-def bucket_size(n: int, ladder=EDGE_BUCKETS) -> int:
+def bucket_size(n: int, ladder=None) -> int:
     """Smallest ladder rung >= n; n itself (unpadded) when above the top rung."""
+    ladder = EDGE_BUCKETS if ladder is None else ladder
     for b in ladder:
         if n <= b:
             return b
@@ -68,7 +69,7 @@ def pad_edge_index(senders: torch.Tensor, receivers: torch.Tensor, cell_shift: t
 
 
 def pad_graph(senders: torch.Tensor, receivers: torch.Tensor, cell_shift: torch.Tensor, *,
-              r_max: float, max_num_neighbors: int, ladder=EDGE_BUCKETS):
+              r_max: float, max_num_neighbors: int, ladder=None):
     """Pad an edge set to its ladder rung and return the ``OrbGraphContext`` kwargs that keep
     padded evaluation bit-exact: ``(senders, receivers, cell_shift, gather_kwargs)``.
 
