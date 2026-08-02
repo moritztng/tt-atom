@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import time
@@ -116,6 +117,12 @@ def run_leg(weights, systems, home, tag, card):
             break
         print(f"[{tag}] attempt {attempt} failed rc={proc.returncode}: "
               f"{proc.stderr[-800:]}", file=sys.stderr, flush=True)
+        if tag.startswith("cold"):
+            # A crashed cold attempt leaves a partially populated cache; rerunning on it
+            # would measure a warm-ish first eval. Wipe so the retry is a true cold leg.
+            shutil.rmtree(home, ignore_errors=True)
+            pathlib.Path(home).mkdir(parents=True, exist_ok=True)
+            files0, _ = cache_stats(home)
         time.sleep(5)
     files1, bytes1 = cache_stats(home)
     if proc.returncode != 0:
