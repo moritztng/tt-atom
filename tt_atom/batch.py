@@ -131,7 +131,7 @@ def _run_orb(b, cfg, fast, device_id, in_q, out_q, bucketing=False):
     conditioning weights.
 
     ``bucketing=True`` pads each system's edges to the ``tt_atom.bucketing`` ladder (same
-    sentinel/zero-gather construction as ``OrbCalculator(bucketing=True)``) so a screening
+    post-encoder zero-pad construction as ``OrbCalculator(bucketing=True)``) so a screening
     stream of differently-sized systems reuses compiled kernel shapes instead of compiling
     fresh per size."""
     import torch
@@ -185,22 +185,28 @@ def _run_orb(b, cfg, fast, device_id, in_q, out_q, bucketing=False):
         node_feat = host_node_features(w, Z)
         cond_nodes = (host_charge_spin_embedding(w, 0.0, 0.0, N, latent_dim)
                       if has_cond else None)
-        dev_senders, dev_receivers, dev_shift = senders, receivers, cell_shift
-        gkw = {}
-        if bucketing:
-            from .bucketing import pad_graph
-
-            dev_senders, dev_receivers, dev_shift, gkw = pad_graph(
-                senders, receivers, cell_shift, r_max=r_max, max_num_neighbors=max_num_neighbors)
-        edge_feat, cutoff, _vec = host_edge_features(pos, dev_senders, dev_receivers, dev_shift,
+        edge_feat, cutoff, _vec = host_edge_features(pos, senders, receivers, cell_shift,
                                                      r_max=r_max, num_bases=num_bases)
         vectors = pos[receivers] - pos[senders] + cell_shift       # true edges, for ZBL
+        dev_senders, dev_receivers, gkw = senders, receivers, {}
+        e_bucket = 0
+        if bucketing:
+            from .bucketing import bucket_size, gather_kwargs, pad_edge_index, pad_host_rows
+
+            e_bucket = bucket_size(E)
+            dev_senders, dev_receivers = pad_edge_index(senders, receivers, e_bucket)
+            cutoff = pad_host_rows(cutoff, e_bucket)
+            gkw = gather_kwargs(E, max_num_neighbors)
         graph = OrbGraphContext(dev, senders=dev_senders, receivers=dev_receivers,
                                 cutoff=cutoff.detach().float(), num_nodes=N, cond_nodes=cond_nodes,
                                 **gkw)
         node_dev = _to_dev(node_feat, dev, ttnn.bfloat16)
         edge_dev = _to_dev(edge_feat.detach().float(), dev, ttnn.bfloat16)
         nodes, edges = encoder(node_dev, edge_dev)
+        if e_bucket:
+            from .bucketing import pad_device_rows
+
+            edges = pad_device_rows(ttnn, edges, e_bucket)
         for layer in layers:
             nodes, edges = layer(nodes, edges, graph)
         raw_e = ttnn.to_torch(ehead(nodes)).double().view(())

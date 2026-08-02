@@ -31,9 +31,10 @@ class OrbCalculator(DeviceCalculator):
         rebuild, since Orb bakes no routing into the weights.
 
         ``bucketing=True`` pads each system's edge set to the fixed ladder in
-        ``tt_atom.bucketing`` (zero-contributing sentinel edges, scatter tables built from the
-        true edges only) so differently-sized systems reuse the same compiled kernel shapes —
-        the screening-stream win measured in ``benchmarks/bench_compile_pain.py``. Energies and
+        ``tt_atom.bucketing`` (the encoder always runs at the true edge count; zero pad rows
+        enter post-encoder, gated by their 0.0 cutoff; scatter tables built from the true
+        edges only) so differently-sized systems reuse the same compiled kernel shapes — the
+        screening-stream win measured in ``benchmarks/bench_compile_pain.py``. Energies and
         forces are bit-exact vs the unpadded path (gated by ``tests/test_bucketing.py``); the
         cost is ~23% mean extra message-passing work, bounded by the ladder's ~1.55 ratio."""
         super().__init__(device=device, device_id=device_id, fast=fast, **kwargs)
@@ -122,19 +123,6 @@ class OrbCalculator(DeviceCalculator):
                 "rather than silently return a different graph than Orb's own inference would use."
             )
 
-        # Edge bucketing: pad the DEVICE graph to the ladder rung (sentinel self-loops that
-        # contribute exactly zero, gather tables over the true edges only). The true, unpadded
-        # edge set keeps feeding every host post-processing term (ZBL energy/forces/stress,
-        # edge vectors) — the sentinel's ZBL term at exactly r_max is not guaranteed 0.0.
-        dev_senders, dev_receivers, dev_shift = senders, receivers, cell_shift
-        gkw = {}
-        if self.bucketing:
-            from .bucketing import pad_graph
-
-            dev_senders, dev_receivers, dev_shift, gkw = pad_graph(
-                senders, receivers, cell_shift, r_max=self.r_max,
-                max_num_neighbors=self.max_num_neighbors)
-
         node_feat = host_node_features(self._w, Z)
         cond_nodes = None
         if self.has_cond:
@@ -152,16 +140,34 @@ class OrbCalculator(DeviceCalculator):
             want_stress = False  # implicit-only (a periodic system that didn't ask for stress)
 
         if self.is_direct:
-            edge_feat, cutoff, _vec = host_edge_features(pos, dev_senders, dev_receivers,
-                                                         dev_shift, r_max=self.r_max,
+            # Features on the TRUE edges only (bit-stability, see tt_atom.bucketing); the
+            # true edge set keeps feeding every host post-processing term (ZBL adds, edge
+            # vectors). Bucketing pads indices + cutoff pre-upload and the ENCODED edge
+            # block post-encoder on device: the narrow-K encoder matmuls are not
+            # M-shape-stable, so the encoder always runs at the true edge count.
+            edge_feat, cutoff, _vec = host_edge_features(pos, senders, receivers,
+                                                         cell_shift, r_max=self.r_max,
                                                          num_bases=self.num_bases)
             vectors = pos[receivers] - pos[senders] + cell_shift   # true edges, for the ZBL adds
+            dev_senders, dev_receivers, gkw = senders, receivers, {}
+            e_bucket = 0
+            if self.bucketing:
+                from .bucketing import bucket_size, gather_kwargs, pad_edge_index, pad_host_rows
+
+                e_bucket = bucket_size(senders.shape[0])
+                dev_senders, dev_receivers = pad_edge_index(senders, receivers, e_bucket)
+                cutoff = pad_host_rows(cutoff, e_bucket)
+                gkw = gather_kwargs(senders.shape[0], self.max_num_neighbors)
             graph = OrbGraphContext(self.device, senders=dev_senders, receivers=dev_receivers,
                                     cutoff=cutoff.detach().float(), num_nodes=N,
                                     cond_nodes=cond_nodes, **gkw)
             node_dev = _to_dev(node_feat, self.device, ttnn.bfloat16)
             edge_dev = _to_dev(edge_feat.detach().float(), self.device, ttnn.bfloat16)
             nodes, edges = self.encoder(node_dev, edge_dev)
+            if e_bucket:
+                from .bucketing import pad_device_rows
+
+                edges = pad_device_rows(ttnn, edges, e_bucket)
             for layer in self.layers:
                 nodes, edges = layer(nodes, edges, graph)
             raw_e = ttnn.to_torch(self.ehead(nodes)).double().view(())
@@ -186,11 +192,17 @@ class OrbCalculator(DeviceCalculator):
                     offdiag_var=self._w["stress_head.offdiag_normalizer.bn.running_var"],
                 ).view(6)
         else:
+            edge_bucket = 0
+            if self.bucketing:
+                from .bucketing import bucket_size
+
+                edge_bucket = bucket_size(senders.shape[0])
             raw_e, F_raw, *rest = energy_and_forces(
-                self.encoder, self.layers, self.ehead, self.device, pos=pos, senders=dev_senders,
-                receivers=dev_receivers, atomic_numbers=Z, node_feat=node_feat,
-                cell_shift=dev_shift, r_max=self.r_max, num_bases=self.num_bases,
-                compute_stress=want_stress, cond_nodes=cond_nodes, **gkw)
+                self.encoder, self.layers, self.ehead, self.device, pos=pos, senders=senders,
+                receivers=receivers, atomic_numbers=Z, node_feat=node_feat,
+                cell_shift=cell_shift, r_max=self.r_max, num_bases=self.num_bases,
+                compute_stress=want_stress, cond_nodes=cond_nodes,
+                edge_bucket=edge_bucket, gather_width=self.max_num_neighbors)
             E = host_energy_denormalize(
                 torch.tensor(raw_e, dtype=torch.float64), Z, N,
                 running_mean=self._w["energy_head.normalizer.bn.running_mean"],
