@@ -92,7 +92,7 @@ never helps an unbucketed stream: a cold first eval at a new size costs 40 to 47
 second geometry at the same atom count costs another 11+ s when its edge count crosses a tile
 boundary (`benchmarks/compile_pain_orb_si_p150a.jsonl`). Padded edges carry exact zeros; energies,
 forces and stress are bit-exact against unpadded runs within the device instance-noise floor (the
-parity gate is `tests/test_bucketing.py`, 6 sizes x 3 Orb checkpoints). Measured on a 20-system
+parity gate is `tests/test_bucketing.py`, 6 sizes x all 4 Orb checkpoints). Measured on a 20-system
 Si stream (16 to 256 atoms, 670 to 10934 edges, p150a):
 
 | stream | cold wall clock | distinct edge shapes | kernel files compiled |

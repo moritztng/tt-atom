@@ -3,10 +3,12 @@ fixed ladder so compiled kernel shapes repeat across differently-sized systems.
 
 Why this exists (measured by benchmarks/bench_compile_pain.py on qb1, orb-v3-conservative-
 inf-omat): ttnn compiles kernels per tile-padded shape, and a screening stream of
-continuously-sized systems almost never repeats a shape -- a brand-new size costs ~40 s of
-compiles on first eval (vs ~1.4 s disk-warm, ~0.1-0.3 s resident-warm), and even crossing ONE
-32-row edge-tile boundary at a familiar size costs ~11 s. With edges padded to the ladder
-below, a whole stream collapses to <=8 shapes: each compiles once ever, then everything is warm.
+continuously-sized systems almost never repeats a shape -- a brand-new size costs 40-47 s of
+compiles on first eval (vs 1.3-1.7 s disk-warm, ~0.1-0.4 s resident-warm; five supercell sizes,
+16..432 atoms, warm-repeat noise under 2%), and even crossing ONE 32-row edge-tile boundary at
+a familiar size costs ~11 s. With edges padded to the ladder below, a whole stream collapses to
+one shape per ladder rung (9 total; the measured 20-system stream used 7): each compiles once
+ever, then everything is warm.
 
 The ladder: ratio ~1.55 between consecutive buckets from 1024 up, covering ~1k..22k edges
 (the production screening range; bench_multicard's default mix is ~2.2k edges/system). For

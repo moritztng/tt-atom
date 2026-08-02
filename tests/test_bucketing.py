@@ -30,7 +30,7 @@ import numpy as np
 import pytest
 
 WEIGHTS_DIR = pathlib.Path.home() / ".cache" / "tt_atom" / "orb_weights"
-CHECKPOINTS = ["conservative-inf-omat", "direct-20-omat", "conservative-omol"]
+CHECKPOINTS = ["conservative-inf-omat", "direct-20-omat", "conservative-omol", "direct-omol"]
 
 pytestmark = pytest.mark.skipif(not WEIGHTS_DIR.is_dir(), reason="no cached Orb weights")
 
