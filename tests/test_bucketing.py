@@ -27,7 +27,7 @@ pytestmark = pytest.mark.skipif(not WEIGHTS_DIR.is_dir(), reason="no cached Orb 
 
 def _systems():
     """(name, ASE Atoms) covering >=2 ladder rungs + the pad-up case, >=5 distinct sizes."""
-    from ase.build import bulk, molecule
+    from ase.build import bulk
 
     systems = []
     for cells, seed in [(2, 0), (3, 1), (4, 2), (5, 3), (6, 4)]:
@@ -35,9 +35,10 @@ def _systems():
         atoms.rattle(stdev=0.1, seed=seed)
         atoms.pbc = True
         systems.append((f"si{cells}", atoms))
-    mol = molecule("H2O") * (3, 3, 3)          # 81 atoms, aperiodic -> pads UP to 1024
-    mol.rattle(stdev=0.05, seed=5)
-    systems.append(("h2o27", mol))
+    clus = bulk("Si", "diamond", a=5.43) * (2, 2, 2)
+    clus.rattle(stdev=0.1, seed=6)
+    clus.pbc = False                             # aperiodic, few edges -> pads UP to 1024
+    systems.append(("si2_ap", clus))
     return systems
 
 

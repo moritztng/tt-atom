@@ -117,7 +117,9 @@ def main():
     ap.add_argument("--weights",
                     default="/home/ttuser/.cache/tt_atom/orb_weights/conservative-inf-omat.npz")
     ap.add_argument("--card", type=int, default=0)
-    ap.add_argument("--workdir", default="/tmp/ttatom_probe_shapes")
+    ap.add_argument("--workdir", default=None,
+                    help="default: unique per launch — a stale orphan child from an earlier "
+                         "launch must never share this run's sandbox cache root")
     ap.add_argument("--no-wait", action="store_true")
     ap.add_argument("--child", action="store_true")
     args = ap.parse_args()
@@ -129,9 +131,8 @@ def main():
     if not args.no_wait and not wait_for_quiet():
         print("no quiet window within budget; rerun later", flush=True)
         sys.exit(2)
-    home = pathlib.Path(args.workdir) / "home_cold"
-    import shutil
-    shutil.rmtree(pathlib.Path(args.workdir), ignore_errors=True)
+    workdir = pathlib.Path(args.workdir or f"/tmp/ttatom_probe_shapes_{os.getpid()}")
+    home = workdir / "home_cold"
     home.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     env["HOME"] = str(home)
