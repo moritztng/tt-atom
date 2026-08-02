@@ -277,7 +277,8 @@ class OrbGraphContext:
     checks ``graph.cond_nodes is not None`` before using it).
     """
 
-    def __init__(self, device, *, senders, receivers, cutoff, num_nodes, cond_nodes=None):
+    def __init__(self, device, *, senders, receivers, cutoff, num_nodes, cond_nodes=None,
+                 gather_edge_count=None, gather_width=0):
         import ttnn
         from . import scatter as _sc
 
@@ -288,8 +289,17 @@ class OrbGraphContext:
         self.cutoff = _to_dev(cutoff, device, ttnn.bfloat16)
         self.cond_nodes = _to_dev(cond_nodes, device, ttnn.bfloat16) if cond_nodes is not None else None
 
-        tgt_g, self.Dmax_t = _sc.build_gather(receivers, num_nodes, E)
-        src_g, self.Dmax_s = _sc.build_gather(senders, num_nodes, E)
+        # Bucketing (tt_atom.bucketing): senders/receivers may carry zero-contributing sentinel
+        # edges beyond ``gather_edge_count``; the scatter tables are built from the TRUE edges only
+        # (real nodes keep their unpadded reduction order; sentinel message rows are never
+        # gathered), with the table width floored at ``gather_width`` so the data-dependent max
+        # degree stays out of the compiled-shape key. Padding slots use sentinel ``E`` -- the zero
+        # row segment_sum appends beyond the (padded) message block.
+        ge = E if gather_edge_count is None else gather_edge_count
+        tgt_g, self.Dmax_t = _sc.build_gather(receivers[:ge], num_nodes, ge, sentinel=E,
+                                              min_width=gather_width)
+        src_g, self.Dmax_s = _sc.build_gather(senders[:ge], num_nodes, ge, sentinel=E,
+                                              min_width=gather_width)
         self.tgt_gather = _to_dev(torch.from_numpy(tgt_g), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
         self.src_gather = _to_dev(torch.from_numpy(src_g), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
 
@@ -316,15 +326,27 @@ class EnergyHead:
         self.w1 = _to_dev(weights["energy_head.mlp.NN-1.weight"].T.contiguous(), device, wdtype)
         self.b1 = _to_dev(weights["energy_head.mlp.NN-1.bias"], device, wdtype)
 
-    def __call__(self, node_features):
+    def __call__(self, node_features, node_mask=None, n_true=None):
         """``node_features``: ttnn ``[N, latent_dim]`` (single system) -> ttnn ``[1, 1]`` raw
-        (normalized-space) energy prediction."""
+        (normalized-space) energy prediction.
+
+        With ``node_mask`` (node bucketing): ``node_features`` is [N_bucket, latent_dim] with
+        isolated zero-feature rows beyond ``n_true``; the mean is taken as
+        ``sum(nodes * mask) / n_true`` -- padded rows contribute exactly 0.0, and the masked sum
+        over tile-aligned zero rows reproduces ``ttnn.mean`` on the true rows bitwise (gated by
+        tests/test_bucketing.py)."""
         ttnn = self.ttnn
-        N = node_features.shape[0]
-        mean = ttnn.mean(node_features, dim=0, keepdim=True)
+        if node_mask is None:
+            N = node_features.shape[0]
+            mean = ttnn.mean(node_features, dim=0, keepdim=True)
+        else:
+            N = n_true
+            mean = ttnn.multiply(
+                ttnn.sum(ttnn.multiply(node_features, node_mask), dim=0, keepdim=True), 1.0 / N)
         a0 = ttnn.linear(mean, self.w0, bias=self.b0, compute_kernel_config=self.kcfg)
         h = ttnn.silu(a0)
         self._cache_a0, self._cache_N = a0, N             # for orb_forces.energy_bw
+        self._cache_mask = node_mask                      # [N_bucket,1] or None
         return ttnn.linear(h, self.w1, bias=self.b1, compute_kernel_config=self.kcfg)
 
     def batch(self, node_features, seg_mean):

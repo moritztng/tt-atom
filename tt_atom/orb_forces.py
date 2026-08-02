@@ -299,7 +299,7 @@ def energy_and_forces_batch(encoder, layers, ehead, device, *, pos, senders, rec
 
 def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers, atomic_numbers,
                       node_feat, cell_shift=None, r_max=6.0, num_bases=8, compute_stress=False,
-                      cond_nodes=None):
+                      cond_nodes=None, gather_edge_count=None, gather_width=0):
     """Conservative energy + analytic forces ``F = -dE/dpos`` for one system
     (``orb-v3-conservative-inf-omat``). One device forward at the current geometry, one device
     reverse VJP, and a host ``torch.autograd.grad`` finish through the differentiable edge
@@ -319,6 +319,13 @@ def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers
     ``pos``/``strain`` dependence, so it needs no adjoint of its own: the backward algebra below
     (``backbone_bw``/``attn_layer_bw``) is unmodified, since the conditioning term is just an
     additive shift on ``nodes`` with an identity Jacobian back to this function's own inputs.
+
+    Edge bucketing (``tt_atom.bucketing``): the caller pads ``senders``/``receivers``/
+    ``cell_shift`` with zero-contributing sentinel edges and passes ``gather_edge_count``/
+    ``gather_width`` straight through to ``OrbGraphContext``. Forces stay bit-exact: every
+    device adjoint path to a sentinel row is gated by its exactly-0.0 attention cutoff, and the
+    host ``autograd.grad`` finish sees a self-loop Jacobian (``pos[0] - pos[0]``) that cancels
+    exactly, so the padded rows contribute exactly nothing to ``forces`` or ``virial``.
     """
     import ttnn
 
@@ -332,7 +339,8 @@ def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers
 
     N = atomic_numbers.shape[0]
     graph = OrbGraphContext(device, senders=senders, receivers=receivers,
-                            cutoff=cutoff.detach().float(), num_nodes=N, cond_nodes=cond_nodes)
+                            cutoff=cutoff.detach().float(), num_nodes=N, cond_nodes=cond_nodes,
+                            gather_edge_count=gather_edge_count, gather_width=gather_width)
 
     node_dev = _to_dev(node_feat, device, ttnn.bfloat16)
     edge_dev = _to_dev(edge_feat.detach().float(), device, ttnn.bfloat16)

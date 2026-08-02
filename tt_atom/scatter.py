@@ -33,14 +33,22 @@ def _scatter_rm_layout() -> bool:
 
 
 
-def build_gather(idx: torch.Tensor, num_nodes: int, E: int):
+def build_gather(idx: torch.Tensor, num_nodes: int, E: int, sentinel=None, min_width: int = 0):
     """``idx`` [E] (int, the src or tgt node of each edge) -> (``gather_flat`` [N*Dmax] int32 with
     sentinel ``E`` in the padding slots, ``Dmax``). Row ``n`` of the [N, Dmax] table lists the edge
-    indices whose node is ``n``; the sentinel points at the zero pad row appended to the messages."""
+    indices whose node is ``n``; the sentinel points at the zero pad row appended to the messages.
+
+    ``sentinel`` overrides the padding-slot value (default ``E``): bucketing passes the PADDED edge
+    count so slots point at the zero row appended beyond the padded message block. ``min_width``
+    floors ``Dmax`` (bucketing floors it at the checkpoint's max_num_neighbors, removing the
+    data-dependent max degree from the compiled-shape key); extra slots are sentinel-filled, so
+    per-node sums keep their exact reduction order either way."""
     idx_np = idx.detach().cpu().numpy().astype(np.int64)
     deg = np.bincount(idx_np, minlength=num_nodes)
     Dmax = int(deg.max()) if E > 0 else 1
-    gather = np.full((num_nodes, Dmax), E, dtype=np.int64)   # sentinel -> zero pad row
+    Dmax = max(Dmax, min_width)
+    sv = E if sentinel is None else sentinel
+    gather = np.full((num_nodes, Dmax), sv, dtype=np.int64)   # sentinel -> zero pad row
     order = np.argsort(idx_np, kind="stable")                # edges grouped by node
     node_of = idx_np[order]
     starts = np.zeros(num_nodes, dtype=np.int64)
