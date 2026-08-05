@@ -306,7 +306,7 @@ def energy_and_forces_batch(encoder, layers, ehead, device, *, pos, senders, rec
 
 def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers, atomic_numbers,
                       node_feat, cell_shift=None, r_max=6.0, num_bases=8, compute_stress=False,
-                      cond_nodes=None, edge_bucket=0, gather_width=0):
+                      cond_nodes=None, bucketing=False, max_num_neighbors=0):
     """Conservative energy + analytic forces ``F = -dE/dpos`` for one system
     (``orb-v3-conservative-inf-omat``). One device forward at the current geometry, one device
     reverse VJP, and a host ``torch.autograd.grad`` finish through the differentiable edge
@@ -327,16 +327,17 @@ def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers
     (``backbone_bw``/``attn_layer_bw``) is unmodified, since the conditioning term is just an
     additive shift on ``nodes`` with an identity Jacobian back to this function's own inputs.
 
-    Edge bucketing (``tt_atom.bucketing``): ``edge_bucket`` > E pads the graph indices +
-    cutoff pre-upload and the ENCODED edge block post-encoder on device (the narrow-K
-    encoder matmuls are not M-shape-stable, so the encoder always runs at the true edge
-    count). Forces stay bit-exact: pad rows are gated to exactly zero by their 0.0 cutoff,
-    gather tables cover the true edges only (width floored at ``gather_width``), and the
+    Edge bucketing (``tt_atom.bucketing``): with ``bucketing`` set, the graph indices + cutoff
+    are padded to the ladder rung pre-upload and the ENCODED edge block post-encoder on device
+    (the narrow-K encoder matmuls are not M-shape-stable, so the encoder always runs at the true
+    edge count). Forces stay bit-exact: pad rows are gated to exactly zero by their 0.0 cutoff,
+    gather tables cover the true edges only (width floored at ``max_num_neighbors``), and the
     device VJP slices the edge adjoints back to the true rows before the encoder backward,
     so the host ``autograd.grad`` finish sees only the unpadded graph.
     """
     import ttnn
 
+    from .bucketing import pad_device_rows, pad_graph
     from .orb_geometry import host_edge_features
     from .orb_model import OrbGraphContext, _to_dev
 
@@ -347,14 +348,11 @@ def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers
 
     N = atomic_numbers.shape[0]
     E_true = senders.shape[0]
-    gkw = {}
+    gkw, edge_bucket = {}, 0
     cutoff_dev = cutoff
-    if edge_bucket:
-        from .bucketing import gather_kwargs, pad_edge_index, pad_host_rows
-
-        senders, receivers = pad_edge_index(senders, receivers, edge_bucket)
-        cutoff_dev = pad_host_rows(cutoff, edge_bucket)
-        gkw = gather_kwargs(E_true, gather_width)
+    if bucketing:
+        senders, receivers, cutoff_dev, gkw, edge_bucket = pad_graph(
+            senders, receivers, cutoff, max_num_neighbors=max_num_neighbors)
     graph = OrbGraphContext(device, senders=senders, receivers=receivers,
                             cutoff=cutoff_dev.detach().float(), num_nodes=N,
                             cond_nodes=cond_nodes, **gkw)
@@ -363,8 +361,6 @@ def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers
     edge_dev = _to_dev(edge_feat.detach().float(), device, ttnn.bfloat16)
     nodes, edges = encoder(node_dev, edge_dev)
     if edge_bucket:
-        from .bucketing import pad_device_rows
-
         edges = pad_device_rows(ttnn, edges, edge_bucket)
     for layer in layers:
         nodes, edges = layer(nodes, edges, graph)

@@ -32,14 +32,15 @@ def _scatter_rm_layout() -> bool:
     return os.environ.get("TT_ATOM_ORB_SCATTER_RM", "1") != "0"
 
 
-
 def build_gather(idx: torch.Tensor, num_nodes: int, E: int, sentinel=None, min_width: int = 0):
     """``idx`` [E] (int, the src or tgt node of each edge) -> (``gather_flat`` [N*Dmax] int32 with
-    sentinel ``E`` in the padding slots, ``Dmax``). Row ``n`` of the [N, Dmax] table lists the edge
+    a sentinel in the padding slots, ``Dmax``). Row ``n`` of the [N, Dmax] table lists the edge
     indices whose node is ``n``; the sentinel points at the zero pad row appended to the messages.
 
-    ``sentinel`` overrides the padding-slot value (default ``E``): bucketing passes the PADDED edge
-    count so slots point at the zero row appended beyond the padded message block. ``min_width``
+    ``E`` is the number of edges to table (``len(idx)``); the sentinel is the index of that zero
+    pad row, i.e. the length of the message block the table will index into, which defaults to
+    ``E``. The two differ only under bucketing, which tables the TRUE edges while the messages
+    are padded to the ladder rung, and so passes the PADDED count as ``sentinel``. ``min_width``
     floors ``Dmax`` (bucketing floors it at the checkpoint's max_num_neighbors, removing the
     data-dependent max degree from the compiled-shape key); extra slots are sentinel-filled, so
     per-node sums keep their exact reduction order either way."""

@@ -25,7 +25,9 @@ import subprocess
 import sys
 import time
 
-LEASES = "/home/ttuser/.coworker/state/leases"
+LEASES = pathlib.Path.home() / ".coworker" / "state" / "leases"
+HOLDER = os.environ.get("TT_BIO_LEASE_HOLDER", "tt-atom-benchmark")
+DEFAULT_WEIGHTS = pathlib.Path.home() / ".cache/tt_atom/orb_weights/conservative-inf-omat.npz"
 
 
 def run_child(weights, systems, tag, card):
@@ -33,18 +35,18 @@ def run_child(weights, systems, tag, card):
     import fcntl
     import socket
 
-    import numpy as np
     import torch
     from ase.build import bulk
 
-    lease_path = pathlib.Path(LEASES) / f"{socket.gethostname()}-card{card}.json"
+    LEASES.mkdir(parents=True, exist_ok=True)
+    lease_path = LEASES / f"{socket.gethostname()}-card{card}.json"
     lease_fd = os.open(lease_path, os.O_RDWR | os.O_CREAT)
     t_wait0 = time.perf_counter()
     fcntl.flock(lease_fd, fcntl.LOCK_EX)          # serialize with tt_bio device_lease holders
     wait_s = time.perf_counter() - t_wait0
     with open(lease_path, "w") as f:
         json.dump({"host": socket.gethostname(), "card": str(card),
-                   "holder": "worker:tt-atom-edge-bucketing", "pid": os.getpid(),
+                   "holder": HOLDER, "pid": os.getpid(),
                    "acquired": time.time(), "released": None}, f)
 
     from tt_atom.geometry import radius_graph
@@ -165,8 +167,7 @@ def wait_for_quiet(poll_s=15, settle_s=10, max_wait_s=2400):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--weights",
-                    default="/home/ttuser/.cache/tt_atom/orb_weights/conservative-inf-omat.npz")
+    ap.add_argument("--weights", default=str(DEFAULT_WEIGHTS))
     ap.add_argument("--out", default=None)
     ap.add_argument("--card", type=int, default=3)
     ap.add_argument("--cells", type=int, nargs="+", default=[2, 3, 4, 5, 6])

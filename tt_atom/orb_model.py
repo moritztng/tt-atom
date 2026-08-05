@@ -326,27 +326,15 @@ class EnergyHead:
         self.w1 = _to_dev(weights["energy_head.mlp.NN-1.weight"].T.contiguous(), device, wdtype)
         self.b1 = _to_dev(weights["energy_head.mlp.NN-1.bias"], device, wdtype)
 
-    def __call__(self, node_features, node_mask=None, n_true=None):
+    def __call__(self, node_features):
         """``node_features``: ttnn ``[N, latent_dim]`` (single system) -> ttnn ``[1, 1]`` raw
-        (normalized-space) energy prediction.
-
-        With ``node_mask`` (node bucketing): ``node_features`` is [N_bucket, latent_dim] with
-        isolated zero-feature rows beyond ``n_true``; the mean is taken as
-        ``sum(nodes * mask) / n_true`` -- padded rows contribute exactly 0.0, and the masked sum
-        over tile-aligned zero rows reproduces ``ttnn.mean`` on the true rows bitwise (gated by
-        tests/test_bucketing.py)."""
+        (normalized-space) energy prediction."""
         ttnn = self.ttnn
-        if node_mask is None:
-            N = node_features.shape[0]
-            mean = ttnn.mean(node_features, dim=0, keepdim=True)
-        else:
-            N = n_true
-            mean = ttnn.multiply(
-                ttnn.sum(ttnn.multiply(node_features, node_mask), dim=0, keepdim=True), 1.0 / N)
+        N = node_features.shape[0]
+        mean = ttnn.mean(node_features, dim=0, keepdim=True)
         a0 = ttnn.linear(mean, self.w0, bias=self.b0, compute_kernel_config=self.kcfg)
         h = ttnn.silu(a0)
         self._cache_a0, self._cache_N = a0, N             # for orb_forces.energy_bw
-        self._cache_mask = node_mask                      # [N_bucket,1] or None
         return ttnn.linear(h, self.w1, bias=self.b1, compute_kernel_config=self.kcfg)
 
     def batch(self, node_features, seg_mean):
