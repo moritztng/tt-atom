@@ -25,13 +25,22 @@ import argparse
 import json
 import os
 import pathlib
+import pwd
 import subprocess
 import sys
 import time
 
-LEASES = pathlib.Path.home() / ".coworker" / "state" / "leases"
+
+def _real_home() -> pathlib.Path:
+    """The invoking user's home from the passwd database, NOT ``$HOME``: the sandbox-HOME legs
+    below override ``$HOME`` to control the kernel cache, and the fleet lease must still land in
+    the real ``~/.coworker/state/leases`` so we serialize with sibling fleet jobs."""
+    return pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
+
+
+LEASES = _real_home() / ".coworker" / "state" / "leases"
 HOLDER = os.environ.get("TT_BIO_LEASE_HOLDER", "tt-atom-benchmark")
-DEFAULT_WEIGHTS = pathlib.Path.home() / ".cache/tt_atom/orb_weights/conservative-inf-omat.npz"
+DEFAULT_WEIGHTS = _real_home() / ".cache/tt_atom/orb_weights/conservative-inf-omat.npz"
 
 SYSTEMS = [("A", (2, 2, 4), 0), ("B", (2, 2, 5), 0), ("C", (2, 3, 4), 0), ("D", (3, 3, 3), 0),
            ("E", (2, 4, 4), 0), ("F", (2, 4, 5), 0), ("G", (2, 2, 5), 1)]
