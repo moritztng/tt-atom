@@ -22,12 +22,22 @@ import argparse
 import json
 import os
 import pathlib
-import shutil
+import pwd
 import subprocess
 import sys
 import time
 
-LEASES = "/home/ttuser/.coworker/state/leases"
+
+def _real_home() -> pathlib.Path:
+    """The invoking user's home from the passwd database, NOT ``$HOME``: the sandbox-HOME legs
+    below override ``$HOME`` to control the kernel cache, and the fleet lease must still land in
+    the real ``~/.coworker/state/leases`` so we serialize with sibling fleet jobs."""
+    return pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
+
+
+LEASES = _real_home() / ".coworker" / "state" / "leases"
+HOLDER = os.environ.get("TT_BIO_LEASE_HOLDER", "tt-atom-benchmark")
+DEFAULT_WEIGHTS = _real_home() / ".cache/tt_atom/orb_weights/conservative-inf-omat.npz"
 
 
 def run_child(weights, systems, tag, card, bucketing):
@@ -37,12 +47,13 @@ def run_child(weights, systems, tag, card, bucketing):
     import torch
     from ase.build import bulk
 
-    lease_path = pathlib.Path(LEASES) / f"{socket.gethostname()}-card{card}.json"
+    LEASES.mkdir(parents=True, exist_ok=True)
+    lease_path = LEASES / f"{socket.gethostname()}-card{card}.json"
     lease_fd = os.open(lease_path, os.O_RDWR | os.O_CREAT)
     fcntl.flock(lease_fd, fcntl.LOCK_EX)
     with open(lease_path, "w") as f:
         json.dump({"host": socket.gethostname(), "card": str(card),
-                   "holder": "worker:tt-atom-edge-bucketing", "pid": os.getpid(),
+                   "holder": HOLDER, "pid": os.getpid(),
                    "acquired": time.time(), "released": None}, f)
 
     from tt_atom.bucketing import bucket_size
@@ -148,8 +159,7 @@ def screening_stream():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--weights",
-                    default="/home/ttuser/.cache/tt_atom/orb_weights/conservative-inf-omat.npz")
+    ap.add_argument("--weights", default=str(DEFAULT_WEIGHTS))
     ap.add_argument("--out", default=None)
     ap.add_argument("--card", type=int, default=0)
     ap.add_argument("--workdir", default="/tmp/ttatom_screening")

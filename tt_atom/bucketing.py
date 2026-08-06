@@ -1,5 +1,5 @@
-"""Shape bucketing for screening workloads: pad edges (and optionally nodes) to a small
-fixed ladder so compiled kernel shapes repeat across differently-sized systems.
+"""Shape bucketing for screening workloads: pad the edge set to a small fixed ladder so
+compiled kernel shapes repeat across differently-sized systems.
 
 Why this exists (measured by benchmarks/bench_compile_pain.py on qb1, orb-v3-conservative-
 inf-omat): ttnn compiles kernels per tile-padded shape, and a screening stream of
@@ -47,10 +47,10 @@ vs unpadded) rests on three constructions:
 The conservative force VJP slices the edge adjoints back to the true rows on device BEFORE
 the encoder backward (every op in between is rowwise, so slice-before == slice-after
 bitwise) -- no pad concat enters the host autograd graph at all. Host post-processing (ZBL
-energy/forces/stress, edge vectors, virial) always keeps the true, unpadded edge set. Node
-padding (when enabled) adds isolated zero-feature nodes: no edge references them, the energy
-head's mean is taken over a 0/1 mask so they contribute exactly nothing, and positions/forces
-are never padded at all.
+energy/forces/stress, edge vectors, virial) always keeps the true, unpadded edge set.
+
+Node-dim tensors are never padded: whether node-dim shape changes drive compiles of their own
+at a fixed edge bucket is an open question, measurable with benchmarks/probe_shapes.py.
 """
 from __future__ import annotations
 
@@ -61,15 +61,10 @@ import torch
 # Mean pad overhead ~23% (log-uniform).
 EDGE_BUCKETS = (256, 1024, 1584, 2464, 3808, 5920, 9152, 14208, 22016)
 
-# Node ladder: tile-multiples, ~1.5 ratio, 32..1216 atoms. Only used when node-dim shapes are
-# observed to drive compiles (see benchmarks/probe_shapes.py); edge-only bucketing is the default.
-NODE_BUCKETS = (32, 64, 128, 192, 320, 512, 768, 1216)
 
-
-def bucket_size(n: int, ladder=None) -> int:
+def bucket_size(n: int) -> int:
     """Smallest ladder rung >= n; n itself (unpadded) when above the top rung."""
-    ladder = EDGE_BUCKETS if ladder is None else ladder
-    for b in ladder:
+    for b in EDGE_BUCKETS:
         if n <= b:
             return b
     return n
@@ -117,17 +112,19 @@ def gather_kwargs(e_true: int, max_num_neighbors: int) -> dict:
     return dict(gather_edge_count=e_true, gather_width=max_num_neighbors)
 
 
-def pad_node_rows(t: torch.Tensor, n_bucket: int) -> torch.Tensor:
-    """Pad a [N, ...] host tensor with zero rows to n_bucket (no-op when already there)."""
-    n = t.shape[0]
-    pad = n_bucket - n
-    if pad <= 0:
-        return t
-    return torch.cat([t, torch.zeros(pad, *t.shape[1:], dtype=t.dtype)])
+def pad_graph(senders: torch.Tensor, receivers: torch.Tensor, cutoff: torch.Tensor, *,
+              max_num_neighbors: int):
+    """Host-side prep for one bucketed graph -- the whole pre-upload half of the construction
+    above, shared by every bucketing call site (``OrbCalculator.calculate``,
+    ``orb_forces.energy_and_forces``, ``batch._run_orb``).
 
-
-def node_mask(n_true: int, n_bucket: int) -> torch.Tensor:
-    """[n_bucket, 1] float mask: 1.0 on real node rows, 0.0 on padded rows."""
-    m = torch.zeros(n_bucket, 1)
-    m[:n_true] = 1.0
-    return m
+    Returns ``(senders, receivers, cutoff, graph_kwargs, e_bucket)``: the edge index and the
+    per-edge cutoff padded to the ladder rung, the ``OrbGraphContext`` kwargs that keep the
+    scatter tables on the true edges, and the rung itself (which the caller needs after the
+    encoder, for :func:`pad_device_rows`). The caller keeps its own TRUE ``senders``/
+    ``receivers``/``cutoff`` for host post-processing and autograd."""
+    e_true = senders.shape[0]
+    e_bucket = bucket_size(e_true)
+    senders, receivers = pad_edge_index(senders, receivers, e_bucket)
+    return (senders, receivers, pad_host_rows(cutoff, e_bucket),
+            gather_kwargs(e_true, max_num_neighbors), e_bucket)

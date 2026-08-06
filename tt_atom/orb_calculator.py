@@ -90,6 +90,7 @@ class OrbCalculator(DeviceCalculator):
         super().calculate(atoms, properties, system_changes)
         import ttnn
 
+        from .bucketing import pad_device_rows, pad_graph
         from .disjoint import _as_atoms_fields
         from .geometry import radius_graph
         from .orb_forces import energy_and_forces
@@ -149,15 +150,10 @@ class OrbCalculator(DeviceCalculator):
                                                          cell_shift, r_max=self.r_max,
                                                          num_bases=self.num_bases)
             vectors = pos[receivers] - pos[senders] + cell_shift   # true edges, for the ZBL adds
-            dev_senders, dev_receivers, gkw = senders, receivers, {}
-            e_bucket = 0
+            dev_senders, dev_receivers, gkw, e_bucket = senders, receivers, {}, 0
             if self.bucketing:
-                from .bucketing import bucket_size, gather_kwargs, pad_edge_index, pad_host_rows
-
-                e_bucket = bucket_size(senders.shape[0])
-                dev_senders, dev_receivers = pad_edge_index(senders, receivers, e_bucket)
-                cutoff = pad_host_rows(cutoff, e_bucket)
-                gkw = gather_kwargs(senders.shape[0], self.max_num_neighbors)
+                dev_senders, dev_receivers, cutoff, gkw, e_bucket = pad_graph(
+                    senders, receivers, cutoff, max_num_neighbors=self.max_num_neighbors)
             graph = OrbGraphContext(self.device, senders=dev_senders, receivers=dev_receivers,
                                     cutoff=cutoff.detach().float(), num_nodes=N,
                                     cond_nodes=cond_nodes, **gkw)
@@ -165,8 +161,6 @@ class OrbCalculator(DeviceCalculator):
             edge_dev = _to_dev(edge_feat.detach().float(), self.device, ttnn.bfloat16)
             nodes, edges = self.encoder(node_dev, edge_dev)
             if e_bucket:
-                from .bucketing import pad_device_rows
-
                 edges = pad_device_rows(ttnn, edges, e_bucket)
             for layer in self.layers:
                 nodes, edges = layer(nodes, edges, graph)
@@ -192,17 +186,12 @@ class OrbCalculator(DeviceCalculator):
                     offdiag_var=self._w["stress_head.offdiag_normalizer.bn.running_var"],
                 ).view(6)
         else:
-            edge_bucket = 0
-            if self.bucketing:
-                from .bucketing import bucket_size
-
-                edge_bucket = bucket_size(senders.shape[0])
             raw_e, F_raw, *rest = energy_and_forces(
                 self.encoder, self.layers, self.ehead, self.device, pos=pos, senders=senders,
                 receivers=receivers, atomic_numbers=Z, node_feat=node_feat,
                 cell_shift=cell_shift, r_max=self.r_max, num_bases=self.num_bases,
                 compute_stress=want_stress, cond_nodes=cond_nodes,
-                edge_bucket=edge_bucket, gather_width=self.max_num_neighbors)
+                bucketing=self.bucketing, max_num_neighbors=self.max_num_neighbors)
             E = host_energy_denormalize(
                 torch.tensor(raw_e, dtype=torch.float64), Z, N,
                 running_mean=self._w["energy_head.normalizer.bn.running_mean"],
