@@ -21,6 +21,16 @@ smoke (see `RELEASING.md`).
   autograd pass, matching the per-system path at short contact.
 
 ### Fixed
+- `tt-atom run a.xyz b.xyz --relax --devices 0` with two **different-composition** structures no
+  longer crashes the worker. The multicard worker builds one UMA `Calculator` per reduced
+  composition and used to call `open_device` once per `Calculator`, so a second composition opened
+  the same card a second time in one process (`TT_FATAL: No MetalContext instance for context_id N`).
+  The worker now opens its device once and reuses it across every `Calculator` it builds; the
+  `Calculator.close()` it owns never closes a device it didn't open.
+- `tt-atom run` (multicard) now exits non-zero when any structure fails. The worker has always
+  caught per-structure errors and returned the other structures' results, but the CLI used to
+  exit 0 regardless, so a failed structure silently dropped its output. It now reports which
+  structures failed and exits non-zero while still writing the ones that succeeded.
 - Built wheels now include both weight exporters, so automatic UMA and Orb cache misses work
   outside a source checkout.
 - Fresh UMA and Orb cache misses can download their checkpoints again; explicit

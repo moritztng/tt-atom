@@ -259,13 +259,16 @@ def _worker_sim(device_id, model, task, refenv, cache_dir, fast, trace, sim_para
 
     import numpy as np
 
+    from . import device as D
     from .auto import Calculator, _family
     from .simulate import relax_atoms, md_atoms
 
     mode = sim_params["mode"]
     calcs = {}        # (reduced_composition, charge, spin, task) -> Calculator (UMA); None for Orb
+    dev = None        # opened once on first use, reused across every Calculator this worker builds
 
     def get_calc(atoms):
+        nonlocal dev
         if _family(model) == "orb":
             key = None
         else:
@@ -274,8 +277,17 @@ def _worker_sim(device_id, model, task, refenv, cache_dir, fast, trace, sim_para
                    float(atoms.info.get("charge", 0.0)), float(atoms.info.get("spin", 0.0)),
                    task or infer_task(atoms))
         if key not in calcs:
+            if dev is None:
+                # Open the device ONCE per worker and reuse it. UMA builds one Calculator per
+                # reduced composition, and a second open_device() in the same process is a hard
+                # TT_FATAL ("No MetalContext instance for context_id N"); two different-composition
+                # structures in one worker used to hit that. Reusing one device across every
+                # bundle this worker owns is the fix — the Calculator's close() won't close a
+                # device it didn't open (device= passed, not device_id=). trace_region_size
+                # matches TTAtomCalculator's default so trace=True still gets a capture region.
+                dev = D.open_device(0, trace_region_size=400_000_000 if trace else 0)
             calcs[key] = Calculator(atoms, model, task=task, refenv=refenv, cache_dir=cache_dir,
-                                    device_id=0, fast=fast, trace=trace)
+                                    device=dev, fast=fast, trace=trace)
         return calcs[key]
 
     out_q.put(("ready", device_id))
@@ -314,9 +326,13 @@ def _worker_sim(device_id, model, task, refenv, cache_dir, fast, trace, sim_para
 
     for c in calcs.values():
         try:
-            c.close()
+            c.close()        # device= was passed, so this never closes the worker's shared device
         except Exception:
             pass
+    if dev is not None:
+        import ttnn
+
+        ttnn.close_device(dev)
 
 
 class MultiCardSim(_WorkerPool):

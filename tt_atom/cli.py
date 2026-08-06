@@ -247,7 +247,10 @@ def _run_multicard(args, structures, devices):
                       fast=args.fast, trace=args.trace, sim_params=sim_params) as pool:
         results = pool.run(structures)
     _report_and_write_batch(args, structures, results)
-    return 0
+    # A per-structure failure (the worker catches it and ships {ok: False, ...}) must not exit 0:
+    # the pool keeps the other structures' results, but a silent exit-0 on a partial failure used
+    # to drop/clobber output with no signal. Fail loudly so scripts and CI catch it.
+    return 1 if any(not r.get("ok") for r in results) else 0
 
 
 def _report_and_write_batch(args, structures, results):
@@ -292,6 +295,11 @@ def _report_and_write_batch(args, structures, results):
                                                forces=np.asarray(res["forces"], dtype=float))
             write(str(out_path), final)
             print(f"      wrote {out_path}")
+
+    n_fail = sum(1 for r in results if not r.get("ok"))
+    if n_fail:
+        print(f"  {n_fail}/{len(results)} structure(s) FAILED — output written for the rest; "
+              f"exiting non-zero.")
 
 
 def _force_max(forces):
