@@ -17,6 +17,8 @@ import math
 import torch
 import torch.nn.functional as F
 
+from . import quaternion
+
 EPS = 1e-7
 
 
@@ -173,7 +175,7 @@ def radial_mlp(x, w, p):
 
 class HostGeometry:
     def __init__(self, weights, cfg, to_m, gauss_offset, gauss_coeff, *, gamma=0.0,
-                 coefficient_index=None):
+                 coefficient_index=None, use_quaternion=True):
         self.w = weights
         self.cfg = cfg
         self.lmax = cfg["lmax"]
@@ -181,6 +183,11 @@ class HostGeometry:
         self.C = cfg["sphere_channels"]
         self.cutoff = cfg["cutoff"]
         self.gamma = gamma
+        # edge->+Y frame: fairchem's default smooth two-chart QUATERNION (non-singular everywhere)
+        # vs the legacy ZYZ-Euler (singular on the +-Y axis -> wrong forces at exact symmetry). The
+        # Euler path (Jd below) is kept only so the A/B harness can still exercise the old behaviour.
+        self.use_quaternion = use_quaternion
+        self.qkernels = quaternion.WignerKernels(self.lmax) if use_quaternion else None
         self.Jd = [weights[f"Jd_{l}"] for l in range(self.lmax + 1)]
         self.to_m = to_m
         # to_m is a permutation matrix (one 1 per row): the m-mapping einsums in _wigner are just a
@@ -207,7 +214,10 @@ class HostGeometry:
         self.rescale = 5.0                                 # edge_degree_embedding.rescale_factor
 
     def _wigner(self, edge_vec):
-        wig = _eulers_to_wigner(_euler_angles(edge_vec, self.gamma), self.lmax, self.Jd)
+        if self.use_quaternion:
+            wig = quaternion.wigner_from_edge(edge_vec, self.lmax, self.qkernels, self.gamma)
+        else:
+            wig = _eulers_to_wigner(_euler_angles(edge_vec, self.gamma), self.lmax, self.Jd)
         wig_inv = torch.transpose(wig, 1, 2).contiguous()
         # mmax<lmax: keep only the |m|<=mmax coefficient rows/cols before the m-mapping (exactly
         # fairchem's prepare_wigner). wig_M: [E, nred, nsph]; wig_M_inv: [E, nsph, nred].

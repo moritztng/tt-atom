@@ -15,6 +15,10 @@ benchmarks/results/
 !tests/data/
 !tests/data/*.npz
 
+# Vendored fairchem Wigner-D coefficient table is a needed source asset (not a checkpoint). Allow it:
+!tt_atom/assets/
+!tt_atom/assets/*.pt
+
 # ttnn runtime artifacts
 generated/
 
