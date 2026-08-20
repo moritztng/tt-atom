@@ -25,6 +25,9 @@ numbers on your card). Four regular legs run before each tag:
      ``--update-baseline --note "<why>"``. Seeds the baseline the first time a card type is
      run for a model. UMA's batched forward needs the ALWAYS-ON ``fused_rotate`` kernel
      absent from stock ttnn builds, so on such a host the UMA row reports GAP (env), not FAIL.
+     A baseline seeded on a different ttnn build is likewise GAP (not comparable), not FAIL —
+     only a real measured regression, or a run that used a different protocol than its own
+     baseline, is a FAIL.
   4. UX — the user-facing plumbing still works headlessly on a tiny input (H2O): CLI --help
      behaves and lists the core flags, a real single-point + relax + MD(--steps 5) write an
      --out geometry that parses under ase.io.read with finite energy/forces, and the CLI's
@@ -129,6 +132,13 @@ ACCURACY_SPECS = [
          module="tests/test_orb_calculator.py",
          golden="si_omat_orb.npz;si_short_contact_orb_direct20.npz;"
                 "molecule_omol_conservative.npz"),
+    # Host-only (torch + the vendored Wigner-D asset): no golden, no card, no oracle. Anchors the
+    # exact-symmetry wrong-force fix — the quaternion edge frame must stay finite/orthogonal and
+    # non-degenerate on the coordinate axes where the legacy Euler frame annihilated the azimuth
+    # gradient. The real-weight goldens are all off-axis geometries, so nothing else in this leg
+    # would notice the frame regressing.
+    dict(family="uma", checkpoint="(host-only)", regime="edge-frame symmetry (no card)",
+         module="tests/test_symmetry.py", golden=None),
 ]
 QUICK_ACCURACY = [
     "tests/test_orb_realweight.py",
@@ -262,6 +272,10 @@ def _version():
 
 
 def _golden_present(spec):
+    """True when every golden this spec needs is on disk. A spec with ``golden=None`` needs none
+    (a host-only module: no card, no real weights, no oracle), so it always runs."""
+    if not spec["golden"]:
+        return True
     return all((GOLDEN_DIR / g).exists() for g in spec["golden"].split(";"))
 
 
@@ -778,17 +792,33 @@ def _compare_perf(rows, card, threshold):
                      f"--update-baseline --note \"seed {card} baseline\"")
             continue
         baseline = bm[key]
-        protocol_fields = ("checkpoint", "k", "natoms_per_system", "ttnn_version")
-        mismatches = [
-            f"{field}={baseline.get(field)!r} (run {r.get(field)!r})"
-            for field in protocol_fields if baseline.get(field) != r.get(field)
-        ]
-        if mismatches:
-            r["verdict"] = "FAIL"
+        # What the run measured has to match what the baseline measured, or the delta is
+        # meaningless. Two kinds of mismatch, and they do NOT mean the same thing:
+        #   protocol — a different checkpoint/batch/system size. The harness is inconsistent with
+        #     its own committed baseline; that is a hard error (FAIL).
+        #   environment — a different ttnn build. The number is simply not comparable, which is
+        #     NOT evidence of a regression, so calling it FAIL asserts something the gate has not
+        #     measured. Report GAP (not verified), same as a missing golden or a missing baseline.
+        #     Still release-blocking in default mode, so this does not weaken the gate.
+        def _mismatch(fields):
+            return [f"{f}={baseline.get(f)!r} (run {r.get(f)!r})"
+                    for f in fields if baseline.get(f) != r.get(f)]
+
+        proto = _mismatch(("checkpoint", "k", "natoms_per_system"))
+        env_mismatch = _mismatch(("ttnn_version",))
+        if proto or env_mismatch:
             r["baseline"] = baseline.get("value")
             r["delta"] = "n/a"
-            r["note"] = "baseline protocol mismatch: " + ", ".join(mismatches)
-            overall_pass = False
+            if proto:
+                r["verdict"] = "FAIL"
+                r["note"] = "baseline protocol mismatch: " + ", ".join(proto + env_mismatch)
+                overall_pass = False
+            else:
+                r["verdict"] = "GAP"
+                any_gap = True
+                r["note"] = ("baseline measured on a different ttnn build, not comparable: "
+                             + ", ".join(env_mismatch) + " — re-seed with --update-baseline "
+                             "--note \"<why>\" to gate this row on this environment")
             continue
         base = float(baseline["value"])
         direction = baseline.get("direction", r["direction"])
