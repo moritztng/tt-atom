@@ -144,6 +144,7 @@ QUICK_ACCURACY = [
     "tests/test_orb_realweight.py",
     "tests/test_orb_direct_realweight.py",
     "tests/test_orb_forces_realweight.py",
+    "tests/test_symmetry.py",          # host-only, 0.02 s — free even in the quick smoke
 ]
 
 # ── leg 2: no-OOM sweep ─────────────────────────────────────────────────────
