@@ -272,6 +272,52 @@ def _version():
     return m.group(1) if m else "unknown"
 
 
+def _tt_metal_source_id():
+    """Identify the tt-metal source tree the loaded ``ttnn`` was built from, or ``None``.
+
+    ``version("ttnn")`` is a poor environment key for a source build: it is the git-describe
+    string frozen into the editable install's metadata, so it goes stale the moment the checkout
+    moves, and it says nothing about whether the tree still matches the pinned release commit.
+    Two builds of the identical tree can report different strings, which made the UMA perf row
+    report GAP against a baseline measured on the very same source (2026-08-08 through 08-21).
+
+    So key on the tree instead: when the working tree is content-identical to
+    ``PINNED_TT_METAL_COMMIT`` this returns that commit, whatever the checkout's HEAD or metadata
+    says. Otherwise it returns the actual HEAD (with ``-dirty`` when the tree is modified), so a
+    genuinely different build still reads as a different environment. A pip-wheel ``ttnn`` is not
+    in a git checkout and returns ``None``, which leaves the ``ttnn_version`` key in charge.
+    """
+    try:
+        import ttnn
+        root = pathlib.Path(ttnn.__file__).resolve()
+    except Exception:
+        return None
+    for cand in root.parents:
+        if (cand / ".git").exists():
+            break
+    else:
+        return None
+    # It has to be a tt-metal checkout whose own ``ttnn/`` tree is the module we just imported.
+    # Without this, an installed wheel under a venv that happens to live inside some unrelated
+    # git repo (``~/tt-bio/env/...``) would be reported as that repo's HEAD.
+    if not (cand / "tt_metal").is_dir() or not root.is_relative_to(cand / "ttnn"):
+        return None
+    def git(*a):
+        return subprocess.run(("git", "-C", str(cand)) + a, capture_output=True,
+                              text=True, timeout=60)
+    try:
+        if git("cat-file", "-e", PINNED_TT_METAL_COMMIT).returncode == 0 and \
+                git("diff", "--quiet", PINNED_TT_METAL_COMMIT).returncode == 0:
+            return PINNED_TT_METAL_COMMIT
+        head = git("rev-parse", "HEAD").stdout.strip()
+        if not head:
+            return None
+        return head + ("" if git("diff", "--quiet").returncode == 0 else "-dirty")
+    except Exception:
+        return None
+
+
+
 def _golden_present(spec):
     """True when every golden this spec needs is on disk. A spec with ``golden=None`` needs none
     (a host-only module: no card, no real weights, no oracle), so it always runs."""
@@ -635,6 +681,7 @@ def measure_perf(model, out_path, quick):
         times_s=[round(t, 4) for t in times],
         card_type=detect_card_type(), tt_atom_version=_version(),
         ttnn_version=version("ttnn"),
+        tt_metal_commit=_tt_metal_source_id(),
         date=date.today().isoformat(),
         input=f"{spec['mol']} ({spec['fixture']}, {natoms} atoms/system, K={spec['k']})",
         failed=False,
@@ -806,7 +853,14 @@ def _compare_perf(rows, card, threshold):
                     for f in fields if baseline.get(f) != r.get(f)]
 
         proto = _mismatch(("checkpoint", "k", "natoms_per_system"))
-        env_mismatch = _mismatch(("ttnn_version",))
+        # A source build knows exactly which tt-metal tree it came from, which is a far better
+        # environment key than the pip metadata's describe string (see _tt_metal_source_id).
+        # Fall back to ttnn_version whenever either side lacks it, so stock-wheel rows and
+        # baselines seeded before this field existed compare exactly as they did before.
+        if r.get("tt_metal_commit") and baseline.get("tt_metal_commit"):
+            env_mismatch = _mismatch(("tt_metal_commit",))
+        else:
+            env_mismatch = _mismatch(("ttnn_version",))
         if proto or env_mismatch:
             r["baseline"] = baseline.get("value")
             r["delta"] = "n/a"
@@ -858,6 +912,7 @@ def _update_perf_baselines(rows, card, note, threshold):
                            natoms_per_system=r["natoms_per_system"],
                            family=r["family"], fixture=r["fixture"], mol=r["mol"],
                            tt_atom_version=r["tt_atom_version"], ttnn_version=r["ttnn_version"],
+                           tt_metal_commit=r.get("tt_metal_commit"),
                            date=r["date"], note=note)
         entry.update(date=r["date"], tt_atom_version=r["tt_atom_version"], note=note)
     _save_baselines(data)

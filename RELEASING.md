@@ -20,8 +20,9 @@ Each device leg runs in a fresh process so its device state cannot leak into the
    processes and reports each completed ceiling.
 3. **Performance** compares warm throughput for UMA, Orb-v3, and OrbMol with the card-specific
    baselines in `docs/perf_baselines.json`. A missing baseline is a `GAP`; a regression beyond 15%
-   is a `FAIL`. Baselines are also `ttnn`-version-specific, so run this leg in the validated source
-   environment.
+   is a `FAIL`. Every baseline records the environment it was measured in, and a row only gates
+   when the run matches it, so **run each row in the environment its own baseline lives in**
+   (see "Performance runs in two environments" below).
 4. **UX** checks the CLI help, parses output geometries, rejects non-finite results, and verifies
    that relaxation and MD progress advances through the run.
 
@@ -35,6 +36,31 @@ TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py --leg accuracy
 TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py --leg perf --model orb-conservative-inf-omat-batch
 PYTHONPATH=. python3 scripts/release_gate.py --leg ux --cli-only
 ```
+
+### Performance runs in two environments
+
+Orb-v3 and OrbMol run on stock `ttnn` and their baselines are seeded there, because that is what
+Orb users install. UMA needs the source build, so its baseline is seeded on the pinned tt-metal
+commit. Orb is roughly twice as fast on stock `ttnn` as on the pinned source build, so running the
+Orb rows in the source environment measures a number that has no baseline to compare against. The
+other three legs need the source build, since only it can run UMA at all.
+
+```bash
+# UMA row, in the source-built environment
+TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py \
+  --leg perf --model uma-s-1-omol-batch
+
+# Orb rows, on stock ttnn
+TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py --leg perf \
+  --model orb-conservative-omol-batch --model orb-conservative-inf-omat-batch
+```
+
+A row whose environment does not match its baseline reports `GAP`, not `FAIL`: the number is not
+comparable, which is not evidence of a regression. For a source build the environment is keyed on
+the tt-metal tree `ttnn` was built from, not on the `ttnn` version string, because an editable
+install freezes that string at install time and it goes stale as soon as the checkout moves. A
+tree that still matches the pinned commit gates against the pinned baseline whatever its metadata
+says.
 
 Refresh a performance baseline only for an intentional, measured change:
 
