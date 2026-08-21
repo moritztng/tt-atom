@@ -10,6 +10,8 @@ import os
 
 import torch
 
+from .device import L1_NODE_BUDGET, l1_if_fits
+
 # RMSNormSH runs on 3D [N, nsph, C] whose tiny coefficient dim (nsph=9) tile-pads to 32 -- a ~3.5x
 # blowup on every reduction/elementwise. The whole norm is a scalar-per-node RMS + per-(coeff,chan)
 # affine, so it reformulates cleanly in flat [N, nsph*C]: the degree-balanced RMS folds into ONE
@@ -62,7 +64,6 @@ class RMSNormSH:
         N = x.shape[0]
         if self.flat:
             return self._call_flat(x)
-        from .device import l1_if_fits, L1_NODE_BUDGET
         # concat relocations only -> bit-identical (node PCC 1.0); keeps the norm's [N,nsph,C]
         # working set on-chip while it fits L1 (falls back to DRAM at large N). Use the tile-padded
         # width (nsph -> next mult of 32) since the 3D tensor pads the coeff dim.

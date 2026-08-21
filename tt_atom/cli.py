@@ -20,6 +20,7 @@ reference-env invocation.
 from __future__ import annotations
 
 import argparse
+import pathlib
 import sys
 
 import numpy as np
@@ -79,13 +80,35 @@ def _run_md(atoms, args, energy_before=None):
           f"E {energy_before:.5f} -> {res['energy']:.5f} eV")
 
 
-def _write_output(args, atoms):
+def _write_output(args, atoms, path=None):
     if not args.out:
         return
     from ase.io import write
 
-    write(args.out, atoms)
-    print(f"wrote {args.out}")
+    path = path if path is not None else args.out
+    write(str(path), atoms)
+    print(f"wrote {path}")
+
+
+def _batch_out(args, *, per_structure):
+    """``--out`` as a directory when a ``run`` writes one file per structure, else ``None``.
+
+    Several structures share one ``--out``, so each needs its own file or the last one wins:
+    ``--out`` becomes a directory (a file pattern degrades to its parent, its suffix picking the
+    format) and structure ``i`` lands in ``<stem>_<i><ext>``. ``None`` means the caller should
+    write to ``--out`` verbatim (the single-structure case)."""
+    if not args.out or not per_structure:
+        return None
+    out_dir = pathlib.Path(args.out)
+    if out_dir.suffix:
+        out_dir = out_dir.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
+def _batch_out_path(args, out_dir, i):
+    stem = pathlib.Path(args.structures[i]).stem
+    return out_dir / f"{stem}_{i}{pathlib.Path(args.out).suffix or '.xyz'}"
 
 
 def cmd_info(args):
@@ -164,6 +187,11 @@ def cmd_md(args):
     return 0
 
 
+def _mode(args):
+    """The simulation the ``run`` flags ask for."""
+    return "relax" if args.relax else ("md" if args.md else "energy")
+
+
 def _parse_devices(s):
     """Parse a ``--devices`` string (``"0,1,2"``) into a tuple of distinct ints; raise on
     garbage or a duplicate (two workers pinned to one card would contend for it)."""
@@ -212,7 +240,8 @@ def _run_single_card(args, structures):
     from . import bundle_cache as BC
     from .calculator import TTAtomCalculator
 
-    for atoms in structures:
+    out_dir = _batch_out(args, per_structure=len(structures) > 1)
+    for i, atoms in enumerate(structures):
         task = args.task or BC.infer_task(atoms)
         calc = TTAtomCalculator.from_uma(model="uma-s-1", task_name=task, atoms=atoms,
                                          charge=args.charge, spin=args.spin, refenv=args.refenv,
@@ -227,7 +256,8 @@ def _run_single_card(args, structures):
                 _run_relax(atoms, args, e0)
             elif args.md:
                 _run_md(atoms, args, e0)
-            _write_output(args, atoms)
+            _write_output(args, atoms,
+                          _batch_out_path(args, out_dir, i) if out_dir is not None else None)
         finally:
             calc.close()
     return 0
@@ -238,7 +268,7 @@ def _run_multicard(args, structures, devices):
     single-point energy default) for its shard."""
     from .batch import MultiCardSim
 
-    mode = "relax" if args.relax else ("md" if args.md else "energy")
+    mode = _mode(args)
     sim_params = dict(mode=mode, fmax=args.fmax, steps=args.steps, dt=args.dt,
                       temp=args.temp, seed=args.seed)
     print(f"multicard: {len(structures)} structure(s) across {len(devices)} card(s) "
@@ -246,29 +276,24 @@ def _run_multicard(args, structures, devices):
     with MultiCardSim("uma-s-1", device_ids=devices, task=args.task, refenv=args.refenv,
                       fast=args.fast, trace=args.trace, sim_params=sim_params) as pool:
         results = pool.run(structures)
-    _report_and_write_batch(args, structures, results)
+    n_fail = _report_and_write_batch(args, structures, results)
     # A per-structure failure (the worker catches it and ships {ok: False, ...}) must not exit 0:
     # the pool keeps the other structures' results, but a silent exit-0 on a partial failure used
     # to drop/clobber output with no signal. Fail loudly so scripts and CI catch it.
-    return 1 if any(not r.get("ok") for r in results) else 0
+    return 1 if n_fail else 0
 
 
 def _report_and_write_batch(args, structures, results):
-    """Print a per-structure summary and write final geometries when ``--out`` is given.
+    """Print a per-structure summary, write final geometries when ``--out`` is given, and return
+    the number of failed structures.
 
     With multiple structures, ``--out`` is treated as a directory (created if needed); each
     structure's final geometry is written as ``<stem>_<i>.<ext>`` (stem from the input file,
     ext from ``--out`` if it has one, else ``.xyz``) with its energy/forces attached."""
-    import pathlib
     from ase.io import write
 
-    mode = "relax" if args.relax else ("md" if args.md else "energy")
-    out_dir = pathlib.Path(args.out) if args.out else None
-    if out_dir is not None and out_dir.suffix:
-        # user passed a file pattern for a single structure in batch mode — treat parent as dir
-        out_dir = out_dir.parent
-    if out_dir is not None:
-        out_dir.mkdir(parents=True, exist_ok=True)
+    mode = _mode(args)
+    out_dir = _batch_out(args, per_structure=True)   # batch mode always writes per structure
     for i, (src, res) in enumerate(zip(structures, results)):
         if not res.get("ok"):
             print(f"  [{i}] FAILED: {res.get('error', '?')}")
@@ -284,9 +309,7 @@ def _report_and_write_batch(args, structures, results):
                 line += f", fmax={res['fmax']:.4f}, converged={res['converged']}"
         print(line)
         if out_dir is not None:
-            stem = pathlib.Path(args.structures[i]).stem
-            ext = pathlib.Path(args.out).suffix or ".xyz"
-            out_path = out_dir / f"{stem}_{i}{ext}"
+            out_path = _batch_out_path(args, out_dir, i)
             from ase import Atoms
             from ase.calculators.singlepoint import SinglePointCalculator
             final = Atoms(numbers=res["Z"], positions=res["pos"],
@@ -300,6 +323,7 @@ def _report_and_write_batch(args, structures, results):
     if n_fail:
         print(f"  {n_fail}/{len(results)} structure(s) FAILED — output written for the rest; "
               f"exiting non-zero.")
+    return n_fail
 
 
 def _force_max(forces):

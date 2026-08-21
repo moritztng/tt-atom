@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import torch
 
+from .device import L1_NODE_BUDGET, bf8_edge, l1_if_fits
+
 
 def _mm(ttnn, g, W, kcfg, memory_config=None):
     """grad wrt x of ``y = x @ W`` (W stored [in,out]): ``g @ W^T``. ``transpose_b`` folds the
@@ -231,8 +233,8 @@ def grid_bw(grid, g_out):
     ttnn = grid.ttnn
     kcfg = grid.kcfg
     N = g_out.shape[0]
-    from .device import l1_if_fits, L1_NODE_BUDGET   # BW-bound [N,npts,C] chain -> L1 while it fits
     _npts_pad = ((grid.npts + 31) // 32) * 32         # tile-padded point dim (3D tensor)
+    # bandwidth-bound [N,npts,C] chain: keep it on-chip while it fits the node budget
     L1 = l1_if_fits(ttnn, N, _npts_pad * g_out.shape[2], budget=L1_NODE_BUDGET)
     a1, a2 = grid._cache_a1, grid._cache_a2             # pre-silu activations [N,npts,H]
     # from_grid backward: o = transpose(gt @ fg); gt = transpose(g_mlp_out)
@@ -361,7 +363,6 @@ def edgewise_bw(ew, graph, g_out, acc):
     E = graph.E
     dev = ew.device
 
-    from .device import bf8_edge
     _b8 = bf8_edge()
     # scatter backward: g_m_back[e] = g_out[tgt[e]]  (gather by target), flat [E, nsph*C]
     gof = ttnn.to_layout(ttnn.reshape(g_out, (N, nsph * C)), ttnn.ROW_MAJOR_LAYOUT)

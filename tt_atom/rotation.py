@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import torch
 
+from .device import compute_kernel_config
+
 
 def _fused_op(ttnn):
     return ttnn._ttnn.operations.experimental.fused_rotate
@@ -229,7 +231,6 @@ def rotate_bw(ttnn, x_in_flat, g_out_flat, ij, coef, n_in, W, device, n_out=None
     autograd for the force."""
     n_out = n_in if n_out is None else n_out
     E = x_in_flat.shape[0]
-    from .device import compute_kernel_config
 
     deg, ks, is_ = _group(ij, n_in, "j")
     if not _kernel_ok(deg, n_in, n_out, len(ij), W):

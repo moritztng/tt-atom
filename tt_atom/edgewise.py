@@ -11,7 +11,7 @@ Reference: ``fairchem ... escn_md_block.py:Edgewise.forward_chunk``.
 """
 from __future__ import annotations
 
-from .device import compute_kernel_config
+from .device import bf8_edge, compute_kernel_config
 from .so2 import SO2Convolution
 from .activation import GateActivation
 
@@ -44,7 +44,6 @@ class Edgewise:
         envelope -> rotate back -> scatter-add to targets (one-hot matmul)."""
         ttnn = self.ttnn
         from . import rotation
-        from .device import bf8_edge
         N, nsph, C = x.shape[0], x.shape[1], self.C
         E = graph.E
         dev = self.device

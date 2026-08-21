@@ -1,10 +1,11 @@
 """TT-Atom — high-performance Tenstorrent inference for ML interatomic potentials: Meta's UMA
 (eSEN / eSCN-MD, equivariant) and Orbital Materials' Orb-v3 / OrbMol (non-equivariant).
 
-Public API is populated as modules land (model, calculator, orb_model, orb_calculator, ...).
-Submodules import ttnn lazily so that ``import tt_atom`` is cheap and never opens a device.
+Every public name resolves lazily through :data:`_EXPORTS`, so ``import tt_atom`` stays cheap and
+never imports ttnn or torch (and therefore never opens or probes a device).
 """
 
+from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version as _version
 
 try:
@@ -12,50 +13,28 @@ try:
 except PackageNotFoundError:  # running from a source tree, not an installed dist
     __version__ = "0+unknown"
 
-__all__ = ["Calculator", "TTAtomCalculator", "OrbCalculator", "WeightBundle", "Backbone",
-          "HostGeometry", "MultiCard", "MultiCardSim", "relax_atoms", "md_atoms"]
+_EXPORTS = {
+    "Calculator": "auto",
+    "TTAtomCalculator": "calculator",
+    "OrbCalculator": "orb_calculator",
+    "WeightBundle": "weights",
+    "Backbone": "model",
+    "HostGeometry": "geometry",
+    "MultiCard": "batch",
+    "MultiCardSim": "batch",
+    "relax_atoms": "simulate",
+    "md_atoms": "simulate",
+}
+
+__all__ = list(_EXPORTS)
 
 
 def __getattr__(name):
-    # lazy so that ``import tt_atom`` stays cheap and never imports ttnn/torch eagerly
-    if name == "Calculator":
-        from .auto import Calculator
+    module = _EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(import_module(f".{module}", __name__), name)
 
-        return Calculator
-    if name == "TTAtomCalculator":
-        from .calculator import TTAtomCalculator
 
-        return TTAtomCalculator
-    if name == "OrbCalculator":
-        from .orb_calculator import OrbCalculator
-
-        return OrbCalculator
-    if name == "WeightBundle":
-        from .weights import WeightBundle
-
-        return WeightBundle
-    if name == "Backbone":
-        from .model import Backbone
-
-        return Backbone
-    if name == "HostGeometry":
-        from .geometry import HostGeometry
-
-        return HostGeometry
-    if name == "MultiCard":
-        from .batch import MultiCard
-
-        return MultiCard
-    if name == "MultiCardSim":
-        from .batch import MultiCardSim
-
-        return MultiCardSim
-    if name == "relax_atoms":
-        from .simulate import relax_atoms
-
-        return relax_atoms
-    if name == "md_atoms":
-        from .simulate import md_atoms
-
-        return md_atoms
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+def __dir__():
+    return sorted([*__all__, "__version__"])

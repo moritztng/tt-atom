@@ -78,6 +78,14 @@ a real architectural difference from UMA, not a port discrepancy; the
 full non-equivariance analysis and the ZBL pair-repulsion correction live
 in `docs/orb-port.md`.
 
+The `uma` row predates the two UMA force corrections of 2026-08-18 (the
+quaternion edge frame and the fp32 radial-MLP backward), so its X column
+is not a measurement of the current code — it stands as the last recorded
+value until this table is regenerated with the command below. What has
+been re-verified since is the bar, not the figure: the gate runs of 08-20
+and 08-21 both put all three UMA accuracy modules at PASS on the source
+build. The Orb-v3 / OrbMol rows are untouched by those fixes.
+
 ¶ The periodic-supercell row verifies the radius-graph reconstruction
 matches `orb-models`' neighbour list exactly (1064 edges, symmetric
 difference 0) before running the backbone on the reconstructed graph

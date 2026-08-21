@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import os
 
+from .device import compute_kernel_config
+
 # Route the gate fwd/bw column-split glue (slice+silu+slice+multiply+concat) through the custom
 # ttnn.experimental.fused_gate kernel (one launch, no reduction). Needs source ttnn.
 _FUSED_GATE = os.environ.get("TT_ATOM_FUSED_GATE") == "1"
@@ -40,7 +42,6 @@ class GateActivation:
         # Expand [lmax*H, (nsph-1)*H] is a 0/1 selector (column-block c = I_H at row-block
         # expand_index[c]) -> replaces the lmax*(nsph-1) slice+concat gather (fwd) and its
         # segment-sum transpose (bw) with a single (transpose-)matmul. Bit-identical (0/1, fp32 acc).
-        from .device import compute_kernel_config
         self.kcfg = compute_kernel_config()
         H = num_channels
         ncol = len(self.expand_index)

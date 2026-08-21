@@ -13,7 +13,7 @@ Reference: ``fairchem ... escn_md_block.py:GridAtomwise`` + ``common/so3.py:SO3_
 """
 from __future__ import annotations
 
-from .device import compute_kernel_config
+from .device import L1_NODE_BUDGET, compute_kernel_config, l1_if_fits
 
 
 def _to_dev(t, device, dtype):
@@ -48,7 +48,6 @@ class GridAtomwise:
     def __call__(self, x):
         """x: ttnn ``[N, nsph, C]`` -> ``[N, nsph, C]``."""
         ttnn = self.ttnn
-        from .device import l1_if_fits, L1_NODE_BUDGET
         # gate residency on the grid tensor [N, npts, C] fitting L1 (else DRAM at large N). Use the
         # tile-padded npts (42 -> next mult of 32) since the 3D grid tensor pads the point dim.
         _npts_pad = ((self.npts + 31) // 32) * 32

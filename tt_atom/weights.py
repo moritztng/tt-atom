@@ -4,7 +4,7 @@ TT-Atom is the *implementation*; users bring their own fairchem checkpoint. Beca
 (numpy<2) and fairchem (numpy>=2) cannot share a process, real weights are *exported* once in a
 fairchem environment (``tools/export_weights.py``) into a numpy bundle that this loader reads in
 the ttnn environment. The bundle carries both the learned ``state_dict`` and the fixed geometric
-buffers (Jd, to_m, SO3 grid matrices, gaussian basis) that are not all in a bare ``state_dict``.
+buffers (to_m, SO3 grid matrices, gaussian basis) that are not all in a bare ``state_dict``.
 
 The bundle format is exactly the one the parity goldens already use, so tests and the calculator
 share a single code path. ``WeightBundle.verify_coverage`` checks a real checkpoint is a drop-in
@@ -99,7 +99,6 @@ class WeightBundle(NpzBundle):
             keys += ["charge_embedding.rand_emb.weight", "spin_embedding.rand_emb.weight"]
         else:
             keys += ["charge_embedding.W", "spin_embedding.W"]
-        keys += [f"Jd_{l}" for l in range(cfg["lmax"] + 1)]
         # edge-degree radial MLP
         for i in (0, 1, 3, 4, 6):
             keys.append(f"edge_degree_embedding.rad_func.net.{i}.weight")

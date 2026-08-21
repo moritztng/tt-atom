@@ -4,8 +4,8 @@ These are the per-edge geometric terms (Wigner rotation, radial edge embedding, 
 edge-degree node init) that the device backbone consumes as fixed inputs. They are <1% of the
 compute, so we keep them on host where ``torch.autograd`` supplies the cheap geometric Jacobian
 ``d(terms)/dpos`` for the analytic force. Nothing here imports fairchem (it must coexist with
-ttnn / numpy<2); the pure-torch rotation helpers are vendored from fairchem (MIT) with the
-e3nn 0.4.0 Wigner-D construction they themselves borrow.
+ttnn / numpy<2); the edge->+Y frame itself lives in :mod:`tt_atom.quaternion` (vendored from
+fairchem, MIT).
 
 The roll angle ``gamma`` is a gauge the architecture is invariant to; we fix it (default 0) so
 the geometry — and therefore the forward and the force — is deterministic.
@@ -18,8 +18,7 @@ import torch
 import torch.nn.functional as F
 
 from . import quaternion
-
-EPS = 1e-7
+from .device import device_ede
 
 
 def csd_embedding(w, charge, spin, sphere_channels, dataset="omat"):
@@ -83,80 +82,6 @@ def radius_graph(pos, cutoff, cell=None, pbc=None):
     return torch.stack([j, i], dim=0), shifts[c]
 
 
-# ----------------------------------------------------------- rotation (vendored, MIT/e3nn 0.4)
-
-
-class _Safeacos(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, x):
-        ctx.save_for_backward(x.clamp(-1 + EPS, 1 - EPS))
-        return torch.acos(x)
-
-    @staticmethod
-    def backward(ctx, g):
-        (xc,) = ctx.saved_tensors
-        return -g / torch.sqrt(1 - xc.pow(2)).clamp(min=EPS)
-
-
-class _Safeatan2(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, y, x):
-        ctx.save_for_backward(y, x)
-        return torch.atan2(y, x)
-
-    @staticmethod
-    def backward(ctx, g):
-        y, x = ctx.saved_tensors
-        denom = (x.pow(2) + y.pow(2)).clamp(min=EPS)
-        return g * x / denom, -g * y / denom
-
-
-def _euler_angles(edge_vec, gamma_val):
-    xyz = F.normalize(edge_vec).clamp(-1.0, 1.0)
-    x, y, z = torch.split(xyz, 1, dim=1)
-    beta = _Safeacos.apply(y.squeeze(-1))
-    alpha = _Safeatan2.apply(x.squeeze(-1), z.squeeze(-1))
-    gamma = torch.full_like(alpha, gamma_val)
-    return -gamma, -beta, -alpha          # intrinsic -> extrinsic
-
-
-_ZROT_FREQS: dict = {}
-
-
-def _z_rot_mat(angle, lv):
-    """Wigner z-rotation block: cos on the diagonal, sin on the anti-diagonal (frequency order
-    ``l .. -l``). Built functionally (``diag_embed`` + column-flip) instead of a Python loop of
-    per-element in-place writes — the matrix is identical (diagonal and anti-diagonal overlap only
-    at the centre, where ``cos(0) + sin(0) = 1``) but the autograd graph has far fewer nodes, so
-    the analytic-force VJP through the Wigner build is ~2x cheaper. Forward is bit-exact vs the
-    loop; the gradient differs only by float reduction order (~1e-6)."""
-    freqs = _ZROT_FREQS.get((lv, angle.dtype))
-    if freqs is None:
-        freqs = torch.arange(lv, -lv - 1, -1, dtype=angle.dtype)
-        _ZROT_FREQS[(lv, angle.dtype)] = freqs
-    fa = freqs * angle[..., None]
-    return torch.diag_embed(torch.cos(fa)) + torch.diag_embed(torch.sin(fa)).flip(-1)
-
-
-def _wigner_D(lv, alpha, beta, gamma, Jd):
-    alpha, beta, gamma = torch.broadcast_tensors(alpha, beta, gamma)
-    J = Jd[lv]
-    return _z_rot_mat(alpha, lv) @ J @ _z_rot_mat(beta, lv) @ J @ _z_rot_mat(gamma, lv)
-
-
-def _eulers_to_wigner(eulers, lmax, Jd):
-    alpha, beta, gamma = eulers
-    size = (lmax + 1) ** 2
-    wigner = torch.zeros(len(alpha), size, size, dtype=alpha.dtype)
-    start = 0
-    for lv in range(lmax + 1):
-        blk = _wigner_D(lv, alpha, beta, gamma, Jd)
-        end = start + blk.shape[1]
-        wigner[:, start:end, start:end] = blk
-        start = end
-    return wigner
-
-
 # --------------------------------------------------------------------------- radial MLP (host)
 
 
@@ -175,7 +100,7 @@ def radial_mlp(x, w, p):
 
 class HostGeometry:
     def __init__(self, weights, cfg, to_m, gauss_offset, gauss_coeff, *, gamma=0.0,
-                 coefficient_index=None, use_quaternion=True):
+                 coefficient_index=None):
         self.w = weights
         self.cfg = cfg
         self.lmax = cfg["lmax"]
@@ -183,12 +108,7 @@ class HostGeometry:
         self.C = cfg["sphere_channels"]
         self.cutoff = cfg["cutoff"]
         self.gamma = gamma
-        # edge->+Y frame: fairchem's default smooth two-chart QUATERNION (non-singular everywhere)
-        # vs the legacy ZYZ-Euler (singular on the +-Y axis -> wrong forces at exact symmetry). The
-        # Euler path (Jd below) is kept only so the A/B harness can still exercise the old behaviour.
-        self.use_quaternion = use_quaternion
-        self.qkernels = quaternion.WignerKernels(self.lmax) if use_quaternion else None
-        self.Jd = [weights[f"Jd_{l}"] for l in range(self.lmax + 1)]
+        self.qkernels = quaternion.WignerKernels(self.lmax)
         self.to_m = to_m
         # to_m is a permutation matrix (one 1 per row): the m-mapping einsums in _wigner are just a
         # coefficient reorder. Precompute the permutation so we can index_select instead of a dense
@@ -214,10 +134,7 @@ class HostGeometry:
         self.rescale = 5.0                                 # edge_degree_embedding.rescale_factor
 
     def _wigner(self, edge_vec):
-        if self.use_quaternion:
-            wig = quaternion.wigner_from_edge(edge_vec, self.lmax, self.qkernels, self.gamma)
-        else:
-            wig = _eulers_to_wigner(_euler_angles(edge_vec, self.gamma), self.lmax, self.Jd)
+        wig = quaternion.wigner_from_edge(edge_vec, self.lmax, self.qkernels, self.gamma)
         wig_inv = torch.transpose(wig, 1, 2).contiguous()
         # mmax<lmax: keep only the |m|<=mmax coefficient rows/cols before the m-mapping (exactly
         # fairchem's prepare_wigner). wig_M: [E, nred, nsph]; wig_M_inv: [E, nsph, nred].
@@ -267,7 +184,6 @@ class HostGeometry:
         l0 = F.embedding(atomic_numbers, w["sphere_embedding.weight"]) + sys_node_embedding
         l0 = F.pad(l0.unsqueeze(1), (0, 0, 0, nsph - 1))   # [N,9,C] with only l0 set
 
-        from .device import device_ede
         if device_ede():
             # the full node init (radial MLP -> rotate-back -> envelope -> scatter) runs on device
             # inside the trace; host only supplies the constant l0 and the geometric terms below.

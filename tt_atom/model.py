@@ -14,7 +14,7 @@ import os
 
 import torch
 
-from .device import compute_kernel_config
+from .device import bf8_edge, compute_kernel_config, device_ede
 from .norm import RMSNormSH
 from .edgewise import Edgewise
 from .grid import GridAtomwise
@@ -85,7 +85,6 @@ class GraphContext:
         # per-edge matrices to their structural nonzeros. bf8 coefficients run faster and stay
         # PCC-safe (the rotation is an orthogonal basis change) -> use in --fast.
         from . import rotation
-        from .device import bf8_edge
         # wigner (wig_M) is [E, nred, nsph], its inverse [E, nsph, nred]. nred is the reduced
         # m-space (|m|<=mmax); nred == nsph when mmax==lmax (uma-s), nred < nsph for uma-m.
         self.nred, self.nsph = wigner.shape[1], wigner.shape[2]
@@ -194,7 +193,6 @@ class Backbone:
         # cost (radial-MLP fwd+bw over E edges) onto the device inside the trace. When enabled the
         # ``x_init`` operand passed to node_embedding is instead the CONSTANT l0 init and the full
         # node init is computed on device from the graph's geometric terms. See tt_atom/edge_degree.
-        from .device import device_ede
         if device_ede():
             from .edge_degree import EdgeDegreeEmbedding
             self.edge_degree = EdgeDegreeEmbedding(weights, device, cfg,

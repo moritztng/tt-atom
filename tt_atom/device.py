@@ -111,11 +111,6 @@ def orb_fused_silu_bw() -> bool:
     return _flag("TT_ATOM_ORB_FUSED_SILU_BW", default_on=True, cap=_cap("fused_gate"))
 
 
-def edge_dtype(ttnn):
-    """bfloat8_b when bf8_edge() else bfloat16 — the working dtype of the edgewise E-sized flow."""
-    return ttnn.bfloat8_b if bf8_edge() else ttnn.bfloat16
-
-
 # Budgets (bytes) for a single L1-resident intermediate. The L1-residency perf wins (grid, so2,
 # norm chains) keep intermediates on-chip, but L1 is small (~1.4 MB/bank x 130) and op circular
 # buffers grow with problem size, so at large N/E they consume nearly all L1 and an L1-resident

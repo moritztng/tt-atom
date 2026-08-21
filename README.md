@@ -54,7 +54,7 @@ pip install ./tt_atom-0.2.1-py3-none-any.whl    # numpy<2, torch (CPU), ase (not
 python -c "import ttnn; e=ttnn._ttnn.operations.experimental; print(hasattr(e,'fused_rotate'), hasattr(e,'fused_rotate_gc'))"   # -> True True
 ```
 
-`uma-s-1` is the validated UMA target; other checkpoints (e.g. `uma-m`) raise a clear error.
+`uma-s-1` is the validated UMA target; see [Model coverage](#model-coverage) for the rest.
 
 ## Quickstart
 

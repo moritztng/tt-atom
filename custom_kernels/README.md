@@ -36,13 +36,14 @@ must fit the fp32 DST register file (`dst_full_sync_en` -> 8 slots) and the per-
 L1 (~1.5 MB). uma-s (square 9x9, W=128/256) fits; uma-m (rectangular 19x25, W=256) overflows and is
 unsupported — `rotation.rotate` raises rather than falling back.
 
-## UMA performance flags
+## Performance flags
 
-Three perf levers sit on top of the four kernels above, all UMA-only (Orb has no equivariant representation, so none of this applies; see `docs/orb-port.md`). They need the source `ttnn` build and no-op safely on stock `ttnn`.
+Four perf levers sit on top of the kernels above. All of them need the source `ttnn` build and no-op safely on stock `ttnn`, where the capability probe drops each back to its ordinary path. The first three are UMA-only (Orb has no equivariant representation; see `docs/orb-port.md`).
 
-- **`fused_lnbw`** — fuses the radial-LayerNorm backward into one kernel. Pure fuse, no accuracy trade, defaults ON.
+- **`fused_lnbw`** — fuses the radial-LayerNorm backward into one kernel, defaults ON. The kernel is bf16-only while the unfused default runs the radial backward in fp32, so this one *does* trade a little force accuracy on out-of-distribution compressed cells for the fuse; `TT_ATOM_FUSED_LNBW=0` takes the fp32 path.
 - **`TT_ATOM_DEVICE_EDE=1`** — on-device edge-degree computation (off the host dispatch path).
 - **`TT_ATOM_BF8_EDGE=1`** — the edge-activation dataflow through `fused_rotate`/`fused_gate` in bf8. This is where UMA's real bf8 bandwidth win comes from, not weight dtype: bf8 weights alone measure 1.00x (the forward is dispatch-bound, not DRAM-bandwidth-bound), so `fast=` is threaded through for reproducibility only.
+- **`orb_fused_silu_bw`** — Orb's edge-MLP SiLU VJP through `fused_gate`, replacing six DRAM-backed elementwise programs with one fused device program. Defaults ON; `TT_ATOM_ORB_FUSED_SILU_BW=0` overrides.
 
 `device_ede`/`bf8_edge` are manual opt-ins: ~2x on a traced MD step at large systems (512 atoms: 389 -> 194 ms; 216 atoms: 158 -> 85 ms, force PCC 0.9997), but they regress small molecules (~0.85x at 9 atoms), so they are not global defaults.
 

@@ -19,8 +19,9 @@ caches it under `~/.cache/tt_atom/orb_weights`.
 
 Orb is a scalar attention message-passing network, not an equivariant tensor network. Its
 spherical harmonics are fixed edge features; they are not rotated or carried as hidden tensor
-representations. UMA's custom Wigner rotation and SO(3) kernels therefore do not apply. Orb runs
-on stock `ttnn` operations.
+representations. UMA's custom Wigner rotation therefore does not apply and Orb runs on stock
+`ttnn` operations; the one custom kernel it does reuse when the source build supplies it is
+`fused_gate`, for the edge-MLP SiLU VJP (`custom_kernels/README.md`).
 
 The device path implements the encoder, five interaction layers, energy head, direct force/stress
 heads, and the analytic reverse pass used by conservative checkpoints. Geometry, cutoff features,
