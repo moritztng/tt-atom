@@ -21,6 +21,19 @@ smoke (see `RELEASING.md`).
   autograd pass, matching the per-system path at short contact.
 
 ### Fixed
+- **UMA forces at exactly-symmetric geometries.** The edge->+Y frame is now fairchem's smooth
+  two-chart quaternion instead of a ZYZ-Euler frame. The Euler azimuth `atan2(x, z)` is singular
+  on the ±Y axis, and at a symmetric geometry every edge sits on that singular set, so
+  `d(wigner)/dpos` — and therefore the analytic force — came out wrong while the energy stayed
+  correct. Molecules are additionally evaluated in a fixed generic orientation and the force
+  rotated back (exact, the model is equivariant), which moves every edge off the frame's
+  bf16-sensitive directions. The vendored Wigner-D coefficient table ships in the wheel.
+  From external PR #1 by Jan Weinreich; `tests/test_symmetry.py` anchors it, host-only.
+- **UMA analytic forces on out-of-distribution compressed cells.** The on-device radial-MLP
+  LayerNorm backward now runs in fp32 by default. In bf16 it mis-directed the force on
+  compressed heavy cells (2-atom compressed β-Sn: force PCC 0.729, MAE 230 meV/Å against the
+  fp64 oracle) while the forward stayed correct. Forward is unchanged; the opt-in `fused_ln_bw`
+  kernel path is bf16-only and keeps bf16, a documented tradeoff. Also from PR #1.
 - `tt-atom run a.xyz b.xyz --relax --devices 0` with two **different-composition** structures no
   longer crashes the worker. The multicard worker builds one UMA `Calculator` per reduced
   composition and used to call `open_device` once per `Calculator`, so a second composition opened
@@ -50,6 +63,14 @@ smoke (see `RELEASING.md`).
   exported from one checkpoint from being silently reused for another.
 
 ### Changed
+- The release gate covers the edge-frame symmetry regression (`tests/test_symmetry.py`, host-only,
+  0.02 s, also in `--quick`). Every real-weight golden is an off-axis geometry, so no other
+  accuracy row would notice that frame regressing.
+- A performance baseline seeded on a different `ttnn` build now reports `GAP` (not comparable,
+  re-seed to gate it) instead of `FAIL`. A different measurement protocol (checkpoint / batch /
+  system size) is still a `FAIL`. `GAP` remains release-blocking, so the gate is no weaker.
+- The UMA edge frame is no longer switchable: the Euler path and the per-bundle `Jd_l` buffers it
+  read are gone.
 - Accuracy coverage now includes all periodic UMA tasks, both families' batch-vs-separate parity,
   Orb's bf8 fast mode, and short-contact ZBL stress.
 - Performance baselines now cover UMA and record the `ttnn` version that produced them.
