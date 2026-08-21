@@ -382,14 +382,14 @@ class MultiCardSim(_WorkerPool):
 
 def _to_system_dict(system, idx):
     """Normalize an ASE ``Atoms`` / ``(pos, Z)`` tuple / dict to the worker message."""
+    import numpy as np
+
     if isinstance(system, dict) and "pos" in system and "Z" in system:
         return idx, system
     if isinstance(system, tuple) and len(system) == 2:        # (positions, atomic_numbers)
-        import numpy as np
         return idx, dict(pos=np.asarray(system[0], dtype=np.float32),
                          Z=np.asarray(system[1], dtype=np.int64))
     # ASE Atoms (duck-typed)
-    import numpy as np
     cell = system.get_cell()
     pbc = system.get_pbc()
     return idx, dict(

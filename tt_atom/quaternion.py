@@ -175,8 +175,8 @@ class WignerKernels:
         # the quaternion->Wigner kernels are provided up to l=4 (uma-s lmax=2, uma-m lmax=4); a
         # higher-lmax checkpoint would be silently zero-filled for l>=5, so fail loudly instead.
         if lmax > 4:
-            raise ValueError(f"quaternion edge frame supports lmax<=4, got lmax={lmax}; "
-                             "use the Euler path (use_quaternion=False) for higher lmax")
+            raise ValueError(f"the edge frame supports lmax<=4 (uma-s lmax=2, uma-m lmax=4), got "
+                             f"lmax={lmax}: the vendored Wigner-D kernels stop at l=4")
         self.lmax = lmax
         self.C_l2 = dec(2)
         if lmax >= 3:

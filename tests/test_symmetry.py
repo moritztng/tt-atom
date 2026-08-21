@@ -1,23 +1,18 @@
 """Regression for the exact-symmetry wrong-force bug (host-only, no device).
 
-The legacy ZYZ-Euler edge frame (``geometry._euler_angles``) has a coordinate singularity on the
-+-Y axis: ``alpha = atan2(x, z)`` with ``x, z -> 0`` there. ``_Safeatan2``'s ``clamp(min=EPS)``
-backward then *annihilates* the azimuth's position-gradient (denominator clamped, numerator ->0),
-so ``d(alpha)/dpos -> 0`` — a degenerate frame derivative. At an exactly-symmetric geometry every
-edge sits on that set, so the analytic force (which needs ``d(wigner)/dpos``) was wrong while the
-energy (roll-gauge invariant) stayed fine. Fix 1 swaps the frame for fairchem's smooth two-chart
-quaternion (``quaternion.wigner_from_edge``), which is finite, orthogonal and non-degenerate on the
-axes.
+The edge->+Y frame feeds ``d(wigner)/dpos``, so a degenerate frame derivative corrupts the analytic
+force while leaving the energy (roll-gauge invariant) correct. The ZYZ-Euler frame this port
+originally used had exactly that defect: its azimuth ``atan2(x, z)`` is singular on the +-Y axis, and
+at an exactly-symmetric geometry every edge sits on that singular set. ``quaternion.wigner_from_edge``
+(fairchem's smooth two-chart quaternion, now the only frame) is finite, orthogonal and
+non-degenerate everywhere, which is what this pins.
 
-These are host-only (torch + the coefficient asset — no card, no fairchem, no weight bundle), so the
-symmetry gap that the ethanol-only goldens miss is covered in fast CI. Force-level correctness at
-symmetry (vs fairchem) is validated end-to-end by the A/B harness (its ``symF`` metric evaluates the
-exact-equilibrium geometry) and by the passing device parity suite.
+Host-only (torch + the vendored coefficient asset: no card, no fairchem, no weight bundle), so the
+symmetry gap that the off-axis real-weight goldens all miss is covered in fast CI.
 """
 import torch
 
 from tt_atom import quaternion
-from tt_atom.geometry import _euler_angles
 
 AXES = torch.tensor([[1.0, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]],
                     dtype=torch.float64)
@@ -37,12 +32,19 @@ def test_quaternion_wigner_finite_orthogonal_at_axes():
         assert (W @ W.transpose(1, 2) - eye).abs().max() < 1e-10, "wigner not orthogonal on axes"
 
 
-def test_euler_frame_degenerate_at_pole():
-    """Guard the ROOT CAUSE: on the +-Y axis the old Euler azimuth gradient is ANNIHILATED
-    (``clamp`` denominator, vanishing numerator) -> ``d(alpha)/dpos ~= 0``. A degenerate frame
-    derivative is what corrupted forces at exact symmetry; the quaternion frame (above) is
-    non-degenerate there instead."""
-    pole = torch.tensor([[0.0, 1.0, 0.0], [0.0, -1.0, 0.0]], dtype=torch.float64, requires_grad=True)
-    _, _, alpha = _euler_angles(pole, 0.0)
-    g, = torch.autograd.grad(alpha.sum(), pole)
-    assert g.abs().max() < 1e-9, "expected the Euler azimuth gradient to be annihilated at the pole"
+def test_quaternion_wigner_jacobian_nondegenerate_at_pole():
+    """The +-Y pole is where the Euler azimuth gradient was ANNIHILATED (clamped denominator,
+    vanishing numerator) — a degenerate ``d(wigner)/dpos`` is what corrupted forces at exact
+    symmetry. The quaternion frame's Jacobian there must stay the same order of magnitude as at a
+    generic direction (measured: 1.73 at the pole vs 1.49 off-axis, lmax=2)."""
+    kern = quaternion.WignerKernels(2)
+
+    def frame(e):
+        return quaternion.wigner_from_edge(e, 2, kern, gamma=0.0)
+
+    poles = torch.tensor([[0.0, 1.0, 0.0], [0.0, -1.0, 0.0]], dtype=torch.float64)
+    generic = torch.nn.functional.normalize(torch.tensor([[0.3, 0.5, 0.81]], dtype=torch.float64))
+    J_pole = torch.autograd.functional.jacobian(frame, poles)
+    J_generic = torch.autograd.functional.jacobian(frame, generic)
+    assert J_pole.abs().max() > 0.5 * J_generic.abs().max(), \
+        "quaternion frame Jacobian is degenerate at the +-Y pole"

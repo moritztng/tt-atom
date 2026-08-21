@@ -2,7 +2,7 @@
 
 Run in the *fairchem* environment (fairchem-core, numpy>=2) — NOT the ttnn env — because it
 instantiates the reference ``eSCNMDBackbone`` to obtain both the learned ``state_dict`` and the
-fixed geometric buffers (Jd, to_m, SO3 grid matrices, gaussian basis) that a bare checkpoint
+fixed geometric buffers (to_m, SO3 grid matrices, gaussian basis) that a bare checkpoint
 does not contain. The resulting ``.npz`` is loaded by ``tt_atom.weights.WeightBundle`` in the
 ttnn env. This two-step export is what lets the two incompatible numpy worlds coexist.
 

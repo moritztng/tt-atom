@@ -50,21 +50,18 @@ def md_atoms(atoms, *, steps=100, dt=1.0, temp=300.0, logfile=None, seed=None):
         # same structure in separate processes diverge after step 1 — not a numerics bug, an
         # ASE API gap (Langevin exposes no rng= kwarg on this version). The CLI leaves seed
         # None (real MD is stochastic); the parity harness / reproducible runs pin it.
-        import numpy as _np
-        _np.random.seed(seed)
-        rng = _np.random.default_rng(seed)
+        np.random.seed(seed)
+        rng = np.random.default_rng(seed)
         MaxwellBoltzmannDistribution(atoms, temperature_K=temp, rng=rng)
     else:
         MaxwellBoltzmannDistribution(atoms, temperature_K=temp)
     dyn = Langevin(atoms, timestep=dt * units.fs, temperature_K=temp, friction=0.01 / units.fs,
                   logfile=logfile)
     if logfile is not None:
-        from ase import units as _u
-
         def _log():
             ekin = atoms.get_kinetic_energy()
             print(f"  step {dyn.nsteps:4d}  E={atoms.get_potential_energy():.5f}  "
-                  f"T={ekin / (1.5 * _u.kB * len(atoms)):.1f} K")
+                  f"T={ekin / (1.5 * units.kB * len(atoms)):.1f} K")
 
         dyn.attach(_log, interval=max(1, steps // 10))
     dyn.run(steps)

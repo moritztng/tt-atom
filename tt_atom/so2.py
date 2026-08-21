@@ -16,7 +16,7 @@ import os
 
 import torch
 
-from .device import compute_kernel_config
+from .device import bf8_edge, compute_kernel_config, fused_lnbw
 
 # The whole SO(2) convolution (m=0 dense linear + every m>0 real/imag mixing) is ONE linear map
 # from the post-radial input [E, nsph*Cin] to [extra | out]. The m>0 cross terms
@@ -165,7 +165,6 @@ class RadialMLP:
         for the fused kernel)."""
         ttnn = self.ttnn
         from .forces import silu_bw, _mm
-        from .device import fused_lnbw
         a0, n1, a3, n4 = self._cache
         if fused_lnbw():
             g_s2 = _mm(ttnn, g_out, self.w6, self.kcfg)        # [E, hidden] (bf16 fused-kernel path)
@@ -199,7 +198,6 @@ class SO2Convolution:
         self.lmax, self.mmax = lmax, mmax
         self.extra = extra_m0_output_channels
         self.kcfg = compute_kernel_config()
-        from .device import bf8_edge
         self.bf8_edge = bf8_edge()
         # bf8-edge: weights bf8 too (both matmul operands bf8 -> full bandwidth win) and the edge
         # activations/outputs run bf8; the edt output dtype keeps the flow bf8 for the next op.
