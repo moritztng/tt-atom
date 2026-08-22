@@ -38,12 +38,27 @@ unsupported — `rotation.rotate` raises rather than falling back.
 
 ## Performance flags
 
-Four perf levers sit on top of the kernels above. All of them need the source `ttnn` build and no-op safely on stock `ttnn`, where the capability probe drops each back to its ordinary path. The first three are UMA-only (Orb has no equivariant representation; see `docs/orb-port.md`).
+Every boolean knob in TT-Atom reads the same way: `=1` on, `=0` off, unset or anything else the
+documented default (`tt_atom/device.py:flag`).
+
+These five sit on top of the kernels above, so they need the source `ttnn` build. They no-op
+safely on stock `ttnn`, where the capability probe drops each back to its ordinary path. The
+first four are UMA-only (Orb has no equivariant representation; see `docs/orb-port.md`).
 
 - **`fused_lnbw`** — fuses the radial-LayerNorm backward into one kernel, defaults ON. The kernel is bf16-only while the unfused default runs the radial backward in fp32, so this one *does* trade a little force accuracy on out-of-distribution compressed cells for the fuse; `TT_ATOM_FUSED_LNBW=0` takes the fp32 path.
 - **`TT_ATOM_DEVICE_EDE=1`** — on-device edge-degree computation (off the host dispatch path).
 - **`TT_ATOM_BF8_EDGE=1`** — the edge-activation dataflow through `fused_rotate`/`fused_gate` in bf8. This is where UMA's real bf8 bandwidth win comes from, not weight dtype: bf8 weights alone measure 1.00x (the forward is dispatch-bound, not DRAM-bandwidth-bound), so `fast=` is threaded through for reproducibility only.
 - **`orb_fused_silu_bw`** — Orb's edge-MLP SiLU VJP through `fused_gate`, replacing six DRAM-backed elementwise programs with one fused device program. Defaults ON; `TT_ATOM_ORB_FUSED_SILU_BW=0` overrides.
+- **`TT_ATOM_FUSED_GATE=1`** — UMA's gate fwd/bw column-split glue (slice+silu+slice+multiply+concat) through `fused_gate`, one launch instead of five ops. Default OFF: it is not bit-identical to the ordinary path (force PCC 0.99996 when it landed).
+
+Five more A/B knobs gate device paths that need no custom kernel, so they work on stock `ttnn` too.
+All five default ON and exist so the pre-optimization path stays reachable for comparison.
+
+- **`TT_ATOM_SO2_FUSED=0`** — restores the per-m SO(2) convolution (~27 slice/matmul/combine ops) instead of the one fused `ttnn.linear` per m. UMA only.
+- **`TT_ATOM_SPECTRAL_FUSED=0`** — restores the per-degree batched matmul in `SpectralAtomwise`, whose tiny coefficient dim tile-pads to 32. UMA only.
+- **`TT_ATOM_NORM_FLAT=0`** — restores the 3D `[N, nsph, C]` `RMSNormSH` instead of the flat `[N, nsph*C]` reformulation. UMA only.
+- **`TT_ATOM_ORB_SCATTER_RM=0`** — restores the tile-layout concat in `segment_sum` instead of row-major. Bit-exact either way (same reduction order). Orb only.
+- **`TT_ATOM_ORB_MINIMAL_MATMUL=0`** — routes Orb's large edge MLPs through `ttnn.linear` instead of `ttnn.experimental.minimal_matmul`. Orb only.
 
 `device_ede`/`bf8_edge` are manual opt-ins: ~2x on a traced MD step at large systems (512 atoms: 389 -> 194 ms; 216 atoms: 158 -> 85 ms, force PCC 0.9997), but they regress small molecules (~0.85x at 9 atoms), so they are not global defaults.
 

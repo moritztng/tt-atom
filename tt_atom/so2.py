@@ -12,11 +12,9 @@ features by m directly.
 """
 from __future__ import annotations
 
-import os
-
 import torch
 
-from .device import bf8_edge, compute_kernel_config, fused_lnbw
+from .device import bf8_edge, compute_kernel_config, flag, fused_lnbw
 
 # The whole SO(2) convolution (m=0 dense linear + every m>0 real/imag mixing) is ONE linear map
 # from the post-radial input [E, nsph*Cin] to [extra | out]. The m>0 cross terms
@@ -26,7 +24,7 @@ from .device import bf8_edge, compute_kernel_config, fused_lnbw
 # compute floor is ~5 ms/step), so the ~3x extra MACs from the block-diagonal zeros are cheap
 # relative to the eliminated intermediate traffic. Bit-compatible column ordering; gated so the
 # per-m path stays available for A/B.
-_SO2_FUSED = os.environ.get("TT_ATOM_SO2_FUSED", "1") == "1"
+#
 # Route the radial-MLP LayerNorm backward (_ln_bw) through the custom fused reduction kernel
 # (ttnn.experimental.fused_ln_bw): one kernel launch computes mean/rstd + dx with W L1-resident,
 # vs ~15 ttnn ops. Biggest single fuseable glue (~14 ms/step, x~10 calls). Default ON when the
@@ -221,7 +219,8 @@ class SO2Convolution:
         # Only for the fused path (its backward relies on the dup weight summing repeated rows); the
         # non-fused A/B path keeps the plain [E, sum rad_sizes] output + slice/concat mult build.
         dup_index = None
-        self._rad_dup = _SO2_FUSED and self.has_radial
+        self.fused = flag("TT_ATOM_SO2_FUSED", default_on=True)
+        self._rad_dup = self.fused and self.has_radial
         if self._rad_dup:
             off, dup_index = 0, list(range(self.rad_sizes[0]))
             off = self.rad_sizes[0]
@@ -246,7 +245,7 @@ class SO2Convolution:
         # output column ordering is bit-identical to the per-m path: [extra | m0coeffs | m1r | m1i
         # | ... ]. self.fused_extra_out is the extra-gating width sliced off the front.
         self.fused_w = None
-        if _SO2_FUSED:
+        if self.fused:
             self._build_fused(weights, prefix, wdtype)
 
     def _build_fused(self, weights, prefix, wdtype):

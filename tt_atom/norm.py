@@ -6,17 +6,14 @@ per-degree affine weight, and add an l=0 bias. All reductions/elementwise -- no 
 """
 from __future__ import annotations
 
-import os
-
 import torch
 
-from .device import L1_NODE_BUDGET, l1_if_fits
+from .device import L1_NODE_BUDGET, flag, l1_if_fits
 
 # RMSNormSH runs on 3D [N, nsph, C] whose tiny coefficient dim (nsph=9) tile-pads to 32 -- a ~3.5x
 # blowup on every reduction/elementwise. The whole norm is a scalar-per-node RMS + per-(coeff,chan)
 # affine, so it reformulates cleanly in flat [N, nsph*C]: the degree-balanced RMS folds into ONE
 # weighted sum (wvec = bdw[coeff]/C) and the affine into flat multiplies -- no pad. Gated for A/B.
-_NORM_FLAT = os.environ.get("TT_ATOM_NORM_FLAT", "1") == "1"
 
 
 def _l_of_coeff(lmax):
@@ -47,7 +44,7 @@ class RMSNormSH:
 
         # flat-layout constants (see module docstring): wvec[j] = bdw[coeff(j)]/C, awvec = aw flat,
         # abf = affine bias as [1,C]. All [1, nsph*C] (or [1,C]) for broadcast against flat [N,nsph*C].
-        self.flat = _NORM_FLAT
+        self.flat = flag("TT_ATOM_NORM_FLAT", default_on=True)
         if self.flat:
             wvec = torch.tensor([1.0 / (2 * l + 1) / (lmax + 1) for l in lc]).view(self.nsph, 1)
             wvec = (wvec.expand(self.nsph, self.C).reshape(1, self.nsph * self.C) / self.C)

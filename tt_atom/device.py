@@ -69,6 +69,15 @@ def _flag(env: str, *, default_on: bool, cap: bool) -> bool:
     return cap if default_on else False
 
 
+def flag(env: str, *, default_on: bool) -> bool:
+    """``=1`` on, ``=0`` off, unset or unrecognised -> ``default_on``.
+
+    The one truth predicate for TT-Atom's boolean env gates; ``_flag`` is this plus a capability
+    probe. Use it for gates whose path needs no custom kernel.
+    """
+    return _flag(env, default_on=default_on, cap=True)
+
+
 def device_ede() -> bool:
     """Whether the edge-degree embedding (node init) is computed on device inside the trace.
 
