@@ -13,18 +13,14 @@ Requires the real ``orb-v3-conservative-inf-omat`` weight cache (built once via 
 see ``tools/export_orb_weights.py``); auto-skips if absent or if fewer than 2 cards are available.
 """
 import glob
-import os
-import pathlib
 
 import numpy as np
 import pytest
 from ase.build import molecule
 
 from tt_atom.batch import MultiCard
+from tt_atom.orb_weight_cache import CACHE_DIR
 
-CACHE_DIR = pathlib.Path(
-    os.environ.get("TT_ATOM_CACHE", pathlib.Path.home() / ".cache" / "tt_atom")
-) / "orb_weights"
 WEIGHTS = CACHE_DIR / "conservative-inf-omat.npz"
 
 

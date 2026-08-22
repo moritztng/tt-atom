@@ -16,14 +16,14 @@ Auto-skips whichever checkpoint cache / golden is missing.
 """
 from __future__ import annotations
 
-import os
 import pathlib
 
 import numpy as np
 import pytest
 
+from tt_atom.orb_weight_cache import CACHE_DIR
+
 GOLDEN_DIR = pathlib.Path.home() / ".ttatom_run/goldens_real"
-CACHE_DIR = pathlib.Path(os.environ.get("TT_ATOM_CACHE", pathlib.Path.home() / ".cache" / "tt_atom")) / "orb_weights"
 
 
 def _have(checkpoint, golden):

@@ -95,8 +95,9 @@ class TTAtomCalculator(DeviceCalculator):
         calculator back — but hides the two frictions inherent to running UMA on ttnn:
 
           * MoLE routing bakes one merged bundle per *(reduced composition, charge, spin, task)*,
-            so we hash those into a cache key under ``~/.cache/tt_atom/bundles`` (override with
-            ``$TT_ATOM_CACHE`` or ``cache_dir``).
+            so we hash those into a cache key under ``~/.cache/tt_atom/bundles``.
+            ``$TT_ATOM_CACHE`` relocates the cache root; ``cache_dir`` overrides this
+            directory outright.
           * ttnn (numpy<2) and fairchem (numpy>=2) cannot share a process, so the *build* runs the
             reference env as a subprocess. Resolution order: ``refenv`` arg > ``$TT_ATOM_REFENV`` >
             ``~/.ttatom_run/refenv/bin/python``. A **cache hit needs no fairchem/refenv at all** —
