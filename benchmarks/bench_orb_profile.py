@@ -8,7 +8,6 @@ conservative-inf-omat). Falls back gracefully (skips) if a golden is missing.
 """
 from __future__ import annotations
 
-import os
 import pathlib
 import time
 
@@ -72,7 +71,10 @@ def main():
     from tt_atom.device import open_device
     import ttnn
 
-    device = open_device(int(os.environ.get("TT_VISIBLE_DEVICES", "0")))
+    # TT_VISIBLE_DEVICES selects which physical cards are visible; the visible set is then
+    # re-indexed from zero, so the logical id is always 0 (see tt_atom/batch.py:29 and
+    # scripts/release_gate.py:211). Pick the card in the environment, not here.
+    device = open_device(0)
     try:
         cases = [
             ("toy (4-atom bulk)", GOLDENS / "si_omat_orb.npz"),
