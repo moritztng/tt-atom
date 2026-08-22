@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import pathlib
+import sys
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
@@ -30,6 +32,11 @@ from fairchem.core import FAIRChemCalculator
 from fairchem.core.datasets import data_list_collater
 from fairchem.core.units.mlip_unit import load_predict_unit
 from fairchem.core.units.mlip_unit.api.inference import InferenceSettings
+
+# tools/ carries the one atomic .npz writer; these scripts run in the reference env,
+# where tt_atom is not installed.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
+from npz_atomic import savez_atomic  # noqa: E402
 
 
 def conformers(k, seed0=10):
@@ -102,7 +109,7 @@ def main():
         "forces": np.concatenate(F_batched).astype(np.float32),  # [Ntot,3]
     }
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    np.savez(args.out, **saved)
+    savez_atomic(args.out, **saved)
     print(f"wrote {args.out}: K={args.k} |E|={np.abs(Ebt).mean():.2f} eV  "
           f"|F|max={np.abs(Fbt_all).max():.3f}")
 

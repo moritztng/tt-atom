@@ -20,6 +20,8 @@ import argparse
 import json
 import math
 import os
+import pathlib
+import sys
 
 import numpy as np
 import torch
@@ -27,6 +29,11 @@ from ase.build import bulk
 
 from orb_models.forcefield import pretrained
 from orb_models.forcefield.atomic_system import ase_atoms_to_atom_graphs
+
+# tools/ carries the one atomic .npz writer; these scripts run in the reference env,
+# where tt_atom is not installed.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
+from npz_atomic import savez_atomic  # noqa: E402
 
 
 def npy(t):
@@ -238,7 +245,7 @@ def main():
             saved[f"w@conditioner.{k}"] = npy(v)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-    np.savez(args.out, **saved)
+    savez_atomic(args.out, **saved)
     print(f"wrote {args.out}")
     print(f"  config: {cfg}")
     print(f"  natoms={graph.senders.new_tensor(graph.node_features['atomic_numbers'].shape[0]).item()} "

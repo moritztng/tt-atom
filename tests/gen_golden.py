@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import pathlib
+import sys
 
 import numpy as np
 import torch
@@ -31,6 +33,11 @@ import torch
 from ase.build import molecule, bulk
 from fairchem.core.datasets.atomic_data import AtomicData
 from fairchem.core.models.uma.escn_md import eSCNMDBackbone
+
+# tools/ carries the one atomic .npz writer; these scripts run in the reference env,
+# where tt_atom is not installed.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
+from npz_atomic import savez_atomic  # noqa: E402
 
 
 TINY = dict(
@@ -203,7 +210,7 @@ def main():
     for k, v in acts.items():
         saved[f"a@{k}"] = v
 
-    np.savez(args.out, **saved)
+    savez_atomic(args.out, **saved)
     print(f"wrote {args.out}")
     print(f"  config: {cfg}")
     print(f"  natoms={int(data['natoms'].sum())} nedges={data['edge_index'].shape[1]} "

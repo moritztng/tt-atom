@@ -20,6 +20,8 @@ import os
 import numpy as np
 import torch
 
+from npz_atomic import savez_atomic
+
 from orb_models.forcefield import pretrained
 
 CKPTS = {
@@ -82,7 +84,7 @@ def main():
             saved[f"w@conditioner.{k}"] = npy(v)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
-    np.savez(args.out, **saved)
+    savez_atomic(args.out, **saved)
     print(f"wrote {args.out}  (config={cfg})")
     print(f"  n weight tensors={sum(1 for k in saved if k.startswith('w@'))}")
 
