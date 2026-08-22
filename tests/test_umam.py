@@ -18,16 +18,14 @@ Golden (gated, uncommitted; the checkpoint is 11 GB so the generator loads a sin
 from __future__ import annotations
 
 import json
-import os
-import pathlib
 
 import numpy as np
 import pytest
 import torch
 
-GOLDEN_DIR = pathlib.Path(os.environ.get(
-    "TTATOM_GOLDEN_DIR", str(pathlib.Path.home() / ".ttatom_run/goldens_real")))
-GOLDEN = GOLDEN_DIR / "ethanol_omol_umam.npz"
+from util import real_golden
+
+GOLDEN = real_golden("ethanol_omol_umam.npz")
 
 
 def _pcc(a, b):

@@ -18,18 +18,15 @@ reorder), so the gate's per-degree expansion is the plain ``[0]*3 + [1]*5`` map 
 """
 from __future__ import annotations
 
-import os
-
 import torch
 
-from .device import compute_kernel_config
+from .device import compute_kernel_config, flag
 
 # SO3_Linear shares one [cin,cout] weight per degree l across that degree's 2l+1 coefficients.
 # The per-degree path slices x into 3D [N, 2l+1, cin] blocks and runs a batched matmul -- but the
 # tiny coefficient dim (1/3/5) tile-pads to 32, a ~6-32x row blowup that makes this tiny-N module
 # cost ~100 ms/step. Folding it into ONE flat 2D matmul with a block-diagonal-by-coefficient
 # weight [nsph*cin, nsph*cout] kills the padding entirely (bit-compatible ordering). Gated for A/B.
-_SPECTRAL_FUSED = os.environ.get("TT_ATOM_SPECTRAL_FUSED", "1") == "1"
 
 
 def _to_dev(t, device, dtype):
@@ -69,7 +66,8 @@ class SpectralAtomwise:
 
         # fused block-diagonal-by-coefficient weights (see module docstring). One flat 2D matmul.
         self.l1_wf = self.l1_bf = self.l2_wf = self.l2_bf = self.gate_exp_w = None
-        if _SPECTRAL_FUSED:
+        self.fused = flag("TT_ATOM_SPECTRAL_FUSED", default_on=True)
+        if self.fused:
             self.l1_wf, self.l1_bf = self._build_so3_fused("so3_linear_1", weights, prefix,
                                                            self.C, self.H, wdtype)
             self.l2_wf, self.l2_bf = self._build_so3_fused("so3_linear_2", weights, prefix,

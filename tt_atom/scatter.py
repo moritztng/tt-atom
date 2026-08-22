@@ -19,17 +19,17 @@ of ~46 O(1) terms matches to well within the force parity tolerance (PCC ~ 1.0).
 """
 from __future__ import annotations
 
-import os
-
 import numpy as np
 import torch
+
+from .device import flag
 
 
 def _scatter_rm_layout() -> bool:
     """Row-major concat + reduction in :func:`segment_sum` (avoids the tile-repacking concat of
     the E-sized message). Bit-exact vs the prior tile-concat path (same reduction order).
     ``TT_ATOM_ORB_SCATTER_RM=0`` restores the prior path for A/B; default on."""
-    return os.environ.get("TT_ATOM_ORB_SCATTER_RM", "1") != "0"
+    return flag("TT_ATOM_ORB_SCATTER_RM", default_on=True)
 
 
 def build_gather(idx: torch.Tensor, num_nodes: int, E: int, sentinel=None, min_width: int = 0):

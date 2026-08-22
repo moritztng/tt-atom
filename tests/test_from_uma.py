@@ -23,9 +23,9 @@ import pytest
 
 from tt_atom import bundle_cache as BC
 
-REAL_GOLDEN = pathlib.Path(
-    os.environ.get("TTATOM_REAL_GOLDEN", pathlib.Path.home() / ".ttatom_run/goldens_real/ethanol_omol.npz")
-)
+from util import real_golden
+
+REAL_GOLDEN = real_golden("ethanol_omol.npz", "TTATOM_REAL_GOLDEN")
 HF_CKPT = next(iter(glob.glob(str(pathlib.Path.home() / ".cache/huggingface/**/uma-s-1.pt"),
                               recursive=True)), None)
 

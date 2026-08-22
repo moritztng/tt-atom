@@ -95,8 +95,8 @@ def main():
         try:
             atoms0 = bulk(args.element, "diamond", a=args.a, cubic=True) * (nx, ny, nz)
             N = len(atoms0)
-            calc = OrbDeviceCalculator(args.weights, device_id=int(
-                os.environ.get("TT_VISIBLE_DEVICES", "0")), fast=args.fast)
+            # device_id 0: TT_VISIBLE_DEVICES re-indexes the visible set from zero.
+            calc = OrbDeviceCalculator(args.weights, device_id=0, fast=args.fast)
             atoms = atoms0.copy()
             atoms.calc = calc
 

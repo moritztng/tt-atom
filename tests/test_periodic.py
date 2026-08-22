@@ -29,15 +29,12 @@ What is checked per task:
 from __future__ import annotations
 
 import json
-import os
-import pathlib
 
 import numpy as np
 import pytest
 import torch
 
-GOLDEN_DIR = pathlib.Path(os.environ.get(
-    "TTATOM_GOLDEN_DIR", str(pathlib.Path.home() / ".ttatom_run/goldens_real")))
+from util import GOLDEN_DIR
 
 # (task label, bundle filename) — parametrized; each case skips if its bundle is absent.
 # omat/omc/odac are fully periodic and include stress; oc20 is mixed-PBC, where stress is undefined.

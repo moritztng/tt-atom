@@ -22,11 +22,10 @@ Reference: ``orb_models.forcefield.gns.py`` (``Encoder`` / ``AttentionInteractio
 from __future__ import annotations
 
 import math
-import os
 
 import torch
 
-from .device import compute_kernel_config
+from .device import compute_kernel_config, flag
 
 
 def host_charge_spin_embedding(weights, charge: float, spin: float, n_node: int,
@@ -118,7 +117,7 @@ def _orb_minimal_matmul_enabled(ttnn) -> bool:
     The old path remains available for A/B and installations without the experimental op.
     """
     return (
-        os.environ.get("TT_ATOM_ORB_MINIMAL_MATMUL", "1") != "0"
+        flag("TT_ATOM_ORB_MINIMAL_MATMUL", default_on=True)
         and hasattr(ttnn, "experimental")
         and hasattr(ttnn.experimental, "minimal_matmul")
     )

@@ -26,19 +26,15 @@ Absent the golden bundle the whole module auto-skips.
 """
 from __future__ import annotations
 
-import os
-import pathlib
-
 import numpy as np
 import pytest
 
-REAL_GOLDEN = os.environ.get(
-    "TTATOM_ORB_MGO_GOLDEN",
-    str(pathlib.Path.home() / ".ttatom_run/goldens_real/mgo_omat_orb.npz"),
-)
+from util import real_golden
+
+REAL_GOLDEN = real_golden("mgo_omat_orb.npz", "TTATOM_ORB_MGO_GOLDEN")
 
 pytestmark = pytest.mark.skipif(
-    not pathlib.Path(REAL_GOLDEN).exists(),
+    not REAL_GOLDEN.exists(),
     reason=f"Orb MgO golden bundle not found at {REAL_GOLDEN}",
 )
 

@@ -18,12 +18,11 @@ Each system/checkpoint pair auto-skips if its golden is absent.
 """
 from __future__ import annotations
 
-import pathlib
-
 import numpy as np
 import pytest
 
-GOLDEN_DIR = pathlib.Path.home() / ".ttatom_run/goldens_real"
+from util import GOLDEN_DIR
+
 SYSTEMS = ["molecule", "molecule_charged", "molecule_openshell"]
 CKPT_TAGS = ["conservative", "direct"]
 

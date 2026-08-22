@@ -29,6 +29,8 @@ import json
 import numpy as np
 import torch
 
+from npz_atomic import savez_atomic
+
 from fairchem.core.models.uma.escn_md import eSCNMDBackbone
 
 TINY = dict(sphere_channels=32, lmax=2, mmax=2, num_layers=2, hidden_channels=32,
@@ -106,7 +108,7 @@ def export_uma_s_1(args):
     saved["ref@cell"] = npy(torch.as_tensor(atoms.get_cell().array))
     saved["ref@pbc"] = np.asarray(atoms.get_pbc(), dtype=bool)
 
-    np.savez(args.out, **saved)
+    savez_atomic(args.out, **saved)
     print(f"wrote {args.out}  ({sum(1 for k in saved if k.startswith('w@'))} weight tensors, "
           f"uma-s-1 merged for {args.xyz or args.molecule} charge={args.charge} spin={args.spin} task={args.task})")
 
@@ -156,7 +158,7 @@ def main():
     saved["host@gauss_offset"] = npy(bb.distance_expansion.offset)
     saved["host@gauss_coeff"] = np.array([bb.distance_expansion.coeff], dtype=np.float32)
 
-    np.savez(args.out, **saved)
+    savez_atomic(args.out, **saved)
     print(f"wrote {args.out}  ({sum(1 for k in saved if k.startswith('w@'))} weight tensors)")
 
 

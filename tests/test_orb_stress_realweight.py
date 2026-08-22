@@ -20,19 +20,13 @@ Absent the golden bundle(s) each test auto-skips independently.
 """
 from __future__ import annotations
 
-import os
-import pathlib
-
 import numpy as np
 import pytest
 
-CONSERVATIVE_GOLDEN = os.environ.get(
-    "TTATOM_ORB_GOLDEN", str(pathlib.Path.home() / ".ttatom_run/goldens_real/si_omat_orb.npz")
-)
-DIRECT_GOLDEN = os.environ.get(
-    "TTATOM_ORB_DIRECT_GOLDEN",
-    str(pathlib.Path.home() / ".ttatom_run/goldens_real/si_omat_orb_direct20.npz"),
-)
+from util import real_golden
+
+CONSERVATIVE_GOLDEN = real_golden("si_omat_orb.npz", "TTATOM_ORB_GOLDEN")
+DIRECT_GOLDEN = real_golden("si_omat_orb_direct20.npz", "TTATOM_ORB_DIRECT_GOLDEN")
 
 
 def _pcc(a, b):
@@ -44,7 +38,7 @@ def _pcc(a, b):
 
 
 
-@pytest.mark.skipif(not pathlib.Path(CONSERVATIVE_GOLDEN).exists(),
+@pytest.mark.skipif(not CONSERVATIVE_GOLDEN.exists(),
                     reason=f"Orb golden bundle not found at {CONSERVATIVE_GOLDEN}")
 def test_conservative_stress(device):
     from tt_atom.orb_weights import OrbWeights
@@ -91,7 +85,7 @@ def test_conservative_stress(device):
     assert err < 5e-3, err
 
 
-@pytest.mark.skipif(not pathlib.Path(DIRECT_GOLDEN).exists(),
+@pytest.mark.skipif(not DIRECT_GOLDEN.exists(),
                     reason=f"Orb direct-20 golden bundle not found at {DIRECT_GOLDEN}")
 def test_direct_stress_head(device):
     from tt_atom.orb_weights import OrbWeights

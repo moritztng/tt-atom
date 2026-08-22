@@ -9,13 +9,7 @@ Reference: ``fairchem ... nn/activation.py:GateActivation`` (``m_prime=True``).
 """
 from __future__ import annotations
 
-import os
-
-from .device import compute_kernel_config
-
-# Route the gate fwd/bw column-split glue (slice+silu+slice+multiply+concat) through the custom
-# ttnn.experimental.fused_gate kernel (one launch, no reduction). Needs source ttnn.
-_FUSED_GATE = os.environ.get("TT_ATOM_FUSED_GATE") == "1"
+from .device import compute_kernel_config, uma_fused_gate
 
 
 def _expand_index_m_prime(lmax, mmax):
@@ -62,7 +56,7 @@ class GateActivation:
         # expand the gate rows per vector coefficient as ONE matmul (0/1 selector); see __init__
         gate = ttnn.matmul(g, self.expand_w, dtype=edt, compute_kernel_config=self.kcfg)  # [E,(nsph-1)*H]
         self._cache_gate = gate                                  # expanded gate for the VJP (fewer bw ops)
-        if _FUSED_GATE and x.shape[1] % 32 == 0 and gate.shape[1] % 32 == 0:
+        if uma_fused_gate() and x.shape[1] % 32 == 0 and gate.shape[1] % 32 == 0:
             # one kernel: out = [silu(x[:, :H]) | x[:, H:] * gate]
             op = ttnn._ttnn.operations.experimental.fused_gate
             return op(x, gate, x, x.shape[1] // 32, gate.shape[1] // 32, H // 32, 0)

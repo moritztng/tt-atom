@@ -23,9 +23,11 @@ import tempfile
 from collections import Counter
 from functools import reduce
 
+# TT_ATOM_CACHE is the cache ROOT, shared with orb_weight_cache.CACHE_DIR: one override
+# relocates every per-model subdirectory under it.
 CACHE_DIR = pathlib.Path(
-    os.environ.get("TT_ATOM_CACHE", pathlib.Path.home() / ".cache" / "tt_atom" / "bundles")
-)
+    os.environ.get("TT_ATOM_CACHE", pathlib.Path.home() / ".cache" / "tt_atom")
+) / "bundles"
 
 
 def exporter_path(name):

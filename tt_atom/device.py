@@ -69,6 +69,15 @@ def _flag(env: str, *, default_on: bool, cap: bool) -> bool:
     return cap if default_on else False
 
 
+def flag(env: str, *, default_on: bool) -> bool:
+    """``=1`` on, ``=0`` off, unset or unrecognised -> ``default_on``.
+
+    The one truth predicate for TT-Atom's boolean env gates; ``_flag`` is this plus a capability
+    probe. Use it for gates whose path needs no custom kernel.
+    """
+    return _flag(env, default_on=default_on, cap=True)
+
+
 def device_ede() -> bool:
     """Whether the edge-degree embedding (node init) is computed on device inside the trace.
 
@@ -109,6 +118,16 @@ def orb_fused_silu_bw() -> bool:
     keep the ordinary ttnn path. ``TT_ATOM_ORB_FUSED_SILU_BW=0/1`` overrides.
     """
     return _flag("TT_ATOM_ORB_FUSED_SILU_BW", default_on=True, cap=_cap("fused_gate"))
+
+
+def uma_fused_gate() -> bool:
+    """Use ``fused_gate`` for UMA's gate fwd/bw column-split glue.
+
+    Replaces the slice+silu+slice+multiply+concat chain with one device launch. Default OFF because
+    it is not bit-identical to the host path (force PCC 0.99996 when it landed in 1e81bef);
+    ``TT_ATOM_FUSED_GATE=1`` opts in, honored only where the kernel is present.
+    """
+    return _flag("TT_ATOM_FUSED_GATE", default_on=False, cap=_cap("fused_gate"))
 
 
 # Budgets (bytes) for a single L1-resident intermediate. The L1-residency perf wins (grid, so2,

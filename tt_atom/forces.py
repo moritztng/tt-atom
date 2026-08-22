@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import torch
 
-from .device import L1_NODE_BUDGET, bf8_edge, l1_if_fits
+from .device import L1_NODE_BUDGET, bf8_edge, l1_if_fits, uma_fused_gate
 
 
 def _mm(ttnn, g, W, kcfg, memory_config=None):
@@ -111,8 +111,7 @@ def gate_bw(gate, g_out):
     gate_exp = gate._cache_gate                         # expanded sigmoid gate [E,(nsph-1)*H] (cached fwd)
     E, H = x.shape[0], gate.H
 
-    from .activation import _FUSED_GATE
-    if _FUSED_GATE and x.shape[1] % 32 == 0 and gate_exp.shape[1] % 32 == 0:
+    if uma_fused_gate() and x.shape[1] % 32 == 0 and gate_exp.shape[1] % 32 == 0:
         # one kernel: g_x = [g_out[:,:H]*silu'(x[:,:H]) | g_out[:,H:]*gate_exp]
         op = ttnn._ttnn.operations.experimental.fused_gate
         g_x = op(g_out, gate_exp, x, x.shape[1] // 32, gate_exp.shape[1] // 32, H // 32, 1)
