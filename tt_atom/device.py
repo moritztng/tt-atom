@@ -111,6 +111,16 @@ def orb_fused_silu_bw() -> bool:
     return _flag("TT_ATOM_ORB_FUSED_SILU_BW", default_on=True, cap=_cap("fused_gate"))
 
 
+def uma_fused_gate() -> bool:
+    """Use ``fused_gate`` for UMA's gate fwd/bw column-split glue.
+
+    Replaces the slice+silu+slice+multiply+concat chain with one device launch. Default OFF because
+    it is not bit-identical to the host path (force PCC 0.99996 when it landed in 1e81bef);
+    ``TT_ATOM_FUSED_GATE=1`` opts in, honored only where the kernel is present.
+    """
+    return _flag("TT_ATOM_FUSED_GATE", default_on=False, cap=_cap("fused_gate"))
+
+
 # Budgets (bytes) for a single L1-resident intermediate. The L1-residency perf wins (grid, so2,
 # norm chains) keep intermediates on-chip, but L1 is small (~1.4 MB/bank x 130) and op circular
 # buffers grow with problem size, so at large N/E they consume nearly all L1 and an L1-resident
