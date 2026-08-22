@@ -80,7 +80,10 @@ import xml.etree.ElementTree as ET
 from datetime import date
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-GOLDEN_DIR = pathlib.Path.home() / ".ttatom_run" / "goldens_real"
+# Same resolution as tests/util.py:GOLDEN_DIR — the gate's presence check and the tests it
+# runs must look in the same place, or a relocated golden set reads as a GAP.
+GOLDEN_DIR = pathlib.Path(os.environ.get(
+    "TTATOM_GOLDEN_DIR", pathlib.Path.home() / ".ttatom_run" / "goldens_real"))
 BASELINE_FILE = REPO_ROOT / "docs" / "perf_baselines.json"
 
 # ── leg 1: accuracy parity ─────────────────────────────────────────────────

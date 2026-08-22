@@ -16,14 +16,11 @@ values; auto-skips whichever it's missing.
 """
 from __future__ import annotations
 
-import pathlib
-
 import numpy as np
 import pytest
 
 from tt_atom.orb_weight_cache import CACHE_DIR
-
-GOLDEN_DIR = pathlib.Path.home() / ".ttatom_run/goldens_real"
+from util import GOLDEN_DIR
 
 
 def _build_si():

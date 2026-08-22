@@ -17,13 +17,11 @@ import torch
 from tt_atom.model import Backbone
 from tt_atom.geometry import HostGeometry, radius_graph
 from tt_atom import forces, disjoint
-from util import pcc
+from util import pcc, real_golden
 
 # real-weight batched parity (skipped unless the merged bundle + fairchem batched golden exist)
 BUNDLE = os.environ.get("TTATOM_BUNDLE", str(pathlib.Path.home() / ".ttatom_run/uma_s_ethanol.npz"))
-BATCH_GOLDEN = os.environ.get(
-    "TTATOM_BATCH_GOLDEN",
-    str(pathlib.Path.home() / ".ttatom_run/goldens_real/batch_ethanol_omol.npz"))
+BATCH_GOLDEN = real_golden("batch_ethanol_omol.npz", "TTATOM_BATCH_GOLDEN")
 
 
 def _build(golden, device):
@@ -171,7 +169,7 @@ def test_traced_batch_matches_eager(golden, device):
     assert torch.equal(E_cap, E_replay) and torch.equal(F_cap, F_replay), "replay not deterministic"
 
 
-@pytest.mark.skipif(not (pathlib.Path(BUNDLE).exists() and pathlib.Path(BATCH_GOLDEN).exists()),
+@pytest.mark.skipif(not (pathlib.Path(BUNDLE).exists() and BATCH_GOLDEN.exists()),
                     reason="real merged bundle or fairchem batched golden not present")
 def test_batched_vs_fairchem(device):
     """Real uma-s-1: TT-Atom disjoint-union batched E+F vs fairchem's OWN batched merged inference
