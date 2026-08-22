@@ -788,8 +788,13 @@ def _load_baselines():
 
 
 def _save_baselines(data):
+    # Sidecar + os.replace: _load_baselines() gates on .exists() then json.loads, so a truncated
+    # write here would make every later gate run die on a JSONDecodeError. Same shape as
+    # tt_atom/bundle_cache.py:run_export and tools/npz_atomic.py.
     BASELINE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    BASELINE_FILE.write_text(json.dumps(data, indent=2) + "\n")
+    tmp = BASELINE_FILE.with_name(f".{BASELINE_FILE.name}.tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    os.replace(tmp, BASELINE_FILE)
 
 
 def _card_baselines(data, card_type):
