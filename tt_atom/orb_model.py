@@ -28,6 +28,13 @@ import torch
 from .device import compute_kernel_config, flag
 
 
+# Width of every MLPNorm hidden layer. Orb's exported config does not carry it (the exporter
+# derives latent_dim from a weight shape and stops there); all four public checkpoints have it at
+# 1024, verified from `_encoder._node_fn.mlp.NN-0.weight`. A checkpoint that differed would fail
+# loudly on a shape mismatch at construction, not silently.
+MLP_HIDDEN_DIM = 1024
+
+
 def host_charge_spin_embedding(weights, charge: float, spin: float, n_node: int,
                                latent_dim: int) -> torch.Tensor:
     """OrbMol's ``nn_util.ChargeSpinConditioner`` (``sin_emb`` type, the only embedding type any
