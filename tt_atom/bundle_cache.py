@@ -117,7 +117,11 @@ def run_export(out_path, make_cmd, *, error_hint=""):
     with atomic_npz(out_path) as tmp_out:
         cmd = make_cmd(tmp_out)
         try:
-            subprocess.run(cmd, check=True)
+            # Pass the environment explicitly: the child must see the parent's, unmodified. We
+            # neither inject HF_HUB_OFFLINE (that would break first-use download) nor strip a
+            # user's own setting. Inheriting implicitly would do the same thing but leaves the
+            # decision unstated and untestable.
+            subprocess.run(cmd, check=True, env=dict(os.environ))
         except subprocess.CalledProcessError as e:
             raise RuntimeError(
                 f"reference-env export failed (exit {e.returncode}). Command:\n  "
