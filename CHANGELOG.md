@@ -5,6 +5,36 @@ releases are cut only from a commit that has passed the on-hardware release gate
 parity, no OOM across the supported size range, no perf or UX regression, and a clean install
 smoke (see `RELEASING.md`).
 
+## [Unreleased]
+
+Behaviour changes are all in the knobs and the caches, not in the models: every numeric path is
+byte-identical to 0.3.0.
+
+### Fixed
+- `TT_ATOM_FUSED_GATE=1` on a stock `ttnn` wheel now falls back to the ordinary path instead of
+  crashing mid-forward with `AttributeError: ... has no attribute 'fused_gate'`. The flag is
+  capability-probed like every other custom-kernel knob; it stays off by default.
+- An interrupted weight export or golden generation can no longer leave a truncated `.npz` at the
+  final name, which the consumers read as a present-but-corrupt fixture. All seven exporters and
+  the gate's own performance baselines write a sidecar and rename it on success.
+- `TTATOM_GOLDEN_DIR` now relocates every real-weight golden. It used to move two of them, and
+  four test modules hardcoded the default with no override at all.
+- Three Orb benchmarks passed `TT_VISIBLE_DEVICES` straight through as a logical device id.
+  The visible set is re-indexed from zero, so anything but `0` asked for a card that was not
+  there.
+
+### Changed
+- `TT_ATOM_CACHE` means the cache root everywhere. `TT_ATOM_CACHE=/data/c` now gives
+  `/data/c/bundles` and `/data/c/orb_weights`; the UMA half used to treat the override as the
+  bundles directory itself. Default paths are unchanged.
+- Every boolean `TT_ATOM_*` knob reads the same way: `=1` on, `=0` off, anything else the
+  documented default. Three mutually inconsistent readings were in use, so `TT_ATOM_NORM_FLAT=true`
+  silently turned a default-on path off while `TT_ATOM_ORB_SCATTER_RM=false` silently left one on.
+  All ten knobs are documented in `custom_kernels/README.md`.
+- Internal consolidation: one implementation each for the cache root, the atomic `.npz` write,
+  Orb's per-atom neighbour cap, Orb's reverse pass, the gate's subprocess environment, and the
+  golden directory the gate and its tests share.
+
 ## [0.3.0] - 2026-08-21
 
 Multi-card data-parallel fan-out is the new capability: `tt-atom run --devices 0,1,...` shards a
