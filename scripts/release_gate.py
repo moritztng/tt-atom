@@ -80,11 +80,29 @@ import xml.etree.ElementTree as ET
 from datetime import date
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-# Same resolution as tests/util.py:GOLDEN_DIR — the gate's presence check and the tests it
-# runs must look in the same place, or a relocated golden set reads as a GAP.
-GOLDEN_DIR = pathlib.Path(os.environ.get(
-    "TTATOM_GOLDEN_DIR", pathlib.Path.home() / ".ttatom_run" / "goldens_real"))
+sys.path.insert(0, str(REPO_ROOT))
+# One golden-dir resolution for the gate and for the tests it runs: they must look in the same
+# place, or a relocated golden set reads as a GAP while the tests happily find their fixtures.
+from tests.util import GOLDEN_DIR    # noqa: E402
+
 BASELINE_FILE = REPO_ROOT / "docs" / "perf_baselines.json"
+
+
+def _child_env():
+    """Environment for a gate subprocess: the repo importable, one visible card, quiet tt-metal."""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"]
+                                          if env.get("PYTHONPATH") else "")
+    env.setdefault("TT_VISIBLE_DEVICES", "0")
+    env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
+    return env
+
+
+def _visible_card():
+    """The physical card ``TT_VISIBLE_DEVICES`` selects, as a string — the id tt-smi wants. Inside
+    a child that card is always logical device 0 (``LOGICAL_DEVICE_ID``)."""
+    return os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0].strip() or "0"
+
 
 # ── leg 1: accuracy parity ─────────────────────────────────────────────────
 # Each spec is one real-weight parity module + the golden(s) it needs. A module auto-skips if
@@ -245,7 +263,7 @@ def _sysfs_subsystem_device(device_id):
 
 def detect_card_type():
     """Canonical board-type key ('p150a', 'p300c', ...). No device opened; safe in the parent."""
-    visible = (os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0].strip() or "0")
+    visible = _visible_card()
     tt_smi = _resolve_tt_smi()
     if tt_smi is not None:
         try:
@@ -356,11 +374,7 @@ def _run_pytest_module(spec):
     xml_path = xml_dir / "junit.xml"
     cmd = [sys.executable, "-m", "pytest", mod, "-q", "-p", "no:cacheprovider",
            f"--junit-xml={xml_path}"]
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"]
-                                          if env.get("PYTHONPATH") else "")
-    env.setdefault("TT_VISIBLE_DEVICES", "0")
-    env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
+    env = _child_env()
     print(f"\n[accuracy] pytest {mod}", flush=True)
     t0 = time.monotonic()
     proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env)
@@ -528,11 +542,7 @@ def _run_oom_family(family, quick):
            "--measure-oom", family, "--out", str(out)]
     if quick:
         cmd.append("--quick")
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"]
-                                          if env.get("PYTHONPATH") else "")
-    env.setdefault("TT_VISIBLE_DEVICES", "0")
-    env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
+    env = _child_env()
     proc = subprocess.Popen(cmd, cwd=REPO_ROOT, env=env, start_new_session=True)
     try:
         returncode = proc.wait(timeout=OOM_MEASURE_TIMEOUT_S)
@@ -728,7 +738,7 @@ def _stop_child_and_reset(proc):
     tt_smi = _resolve_tt_smi()
     if tt_smi is None:
         return "tt-smi not found"
-    visible = (os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0].strip() or "0")
+    visible = _visible_card()
     try:
         reset = subprocess.run([tt_smi, "-r", visible], timeout=120,
                                capture_output=True, text=True, check=False)
@@ -748,11 +758,7 @@ def _run_measure_perf(model, quick):
            "--measure-perf", model, "--out", str(out)]
     if quick:
         cmd.append("--quick")
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"]
-                                          if env.get("PYTHONPATH") else "")
-    env.setdefault("TT_VISIBLE_DEVICES", "0")
-    env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
+    env = _child_env()
     proc = subprocess.Popen(cmd, cwd=REPO_ROOT, env=env, start_new_session=True)
     try:
         returncode = proc.wait(timeout=PERF_MEASURE_TIMEOUT_S)
@@ -992,11 +998,7 @@ def run_ux(cli_only):
     cmd = [sys.executable, str(UX_SCRIPT)]
     if cli_only:
         cmd.append("--cli-only")
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"]
-                                          if env.get("PYTHONPATH") else "")
-    env.setdefault("TT_VISIBLE_DEVICES", "0")
-    env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
+    env = _child_env()
     print(f"\n[ux] {' '.join(cmd[1:])}", flush=True)
     t0 = time.monotonic()
     try:
@@ -1275,11 +1277,7 @@ def _run_install():
     out = pathlib.Path(td) / "result.json"
     cmd = [sys.executable, str(pathlib.Path(__file__).resolve()),
            "--measure-install", "--out", str(out)]
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"]
-                                          if env.get("PYTHONPATH") else "")
-    env.setdefault("TT_VISIBLE_DEVICES", "0")
-    env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
+    env = _child_env()
     proc = subprocess.Popen(cmd, cwd=REPO_ROOT, env=env, start_new_session=True)
     try:
         returncode = proc.wait(timeout=INSTALL_TIMEOUT_S)

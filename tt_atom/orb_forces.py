@@ -172,22 +172,11 @@ def energy_bw(ehead):
     return ttnn.matmul(ehead._bw_onesN1, g_mean, compute_kernel_config=kcfg)  # [N, C], every row identical
 
 
-def backbone_bw(encoder, layers, ehead, graph, e_true=None):
-    """Full reverse pass: energy head -> all interaction layers (reversed) -> encoder's edge MLP.
-    Returns ``(g_edge_feat, g_cutoff)``, the device adjoints at the two pos-dependent uploaded
-    inputs. ``node_feat`` has no ``pos`` dependence (atomic-number embedding only), so its
-    adjoint is discarded -- the encoder's node path is never differentiated further.
-
-    ``e_true`` (edge bucketing) slices the edge adjoints back to the true rows BEFORE the
-    encoder backward: every op in between is rowwise, so slice-before == slice-after
-    bitwise, and the encoder's narrow-K backward matmuls then run at the true edge count
-    (they are not M-shape-stable -- see tt_atom.bucketing).
-
-    The zero-seed edge gradient is cached on ``ehead`` (guarded by ``(E, C)``) for the same
-    trace-capture-allocation reason as ``energy_bw``'s cached constants."""
+def _layers_bw(encoder, layers, ehead, graph, g_nodes, *, e_true=None):
+    """Reverse pass from an energy-head seed through the interaction layers to the encoder's edge
+    MLP. The single-system and batched backwards differ only in that seed, so they share this."""
     ttnn = ehead.ttnn
 
-    g_nodes = energy_bw(ehead)
     E, C = graph.E, layers[0].C
     if getattr(ehead, "_bw_edges_zero", None) is None or tuple(ehead._bw_edges_zero.shape) != (E, C):
         ehead._bw_edges_zero = ttnn.zeros((E, C), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
@@ -202,6 +191,22 @@ def backbone_bw(encoder, layers, ehead, graph, e_true=None):
         g_edges = ttnn.slice(g_edges, [0, 0], [e_true, g_edges.shape[1]])
     g_edge_feat = mlpnorm_bw(encoder.edge_fn, g_edges)        # encoder's edge_fn input adjoint
     return g_edge_feat, g_cutoff
+
+
+def backbone_bw(encoder, layers, ehead, graph, e_true=None):
+    """Full reverse pass: energy head -> all interaction layers (reversed) -> encoder's edge MLP.
+    Returns ``(g_edge_feat, g_cutoff)``, the device adjoints at the two pos-dependent uploaded
+    inputs. ``node_feat`` has no ``pos`` dependence (atomic-number embedding only), so its
+    adjoint is discarded -- the encoder's node path is never differentiated further.
+
+    ``e_true`` (edge bucketing) slices the edge adjoints back to the true rows BEFORE the
+    encoder backward: every op in between is rowwise, so slice-before == slice-after
+    bitwise, and the encoder's narrow-K backward matmuls then run at the true edge count
+    (they are not M-shape-stable -- see tt_atom.bucketing).
+
+    The zero-seed edge gradient is cached on ``ehead`` (guarded by ``(E, C)``) for the same
+    trace-capture-allocation reason as ``energy_bw``'s cached constants."""
+    return _layers_bw(encoder, layers, ehead, graph, energy_bw(ehead), e_true=e_true)
 
 
 def energy_bw_batch(ehead, seg_mean_T):
@@ -237,21 +242,7 @@ def backbone_bw_batch(encoder, layers, ehead, graph, seg_mean_T):
     ``(g_edge_feat, g_cutoff)`` -- the device adjoints at the two pos-dependent uploaded inputs of
     the *whole* batch -- which the host ``torch.autograd.grad`` finish turns into per-atom forces
     (block-diagonal => ``dE_total/dpos[n] = dE_{system(n)}/dpos[n]``)."""
-    ttnn = ehead.ttnn
-
-    g_nodes = energy_bw_batch(ehead, seg_mean_T)
-    E, C = graph.E, layers[0].C
-    if getattr(ehead, "_bw_edges_zero", None) is None or tuple(ehead._bw_edges_zero.shape) != (E, C):
-        ehead._bw_edges_zero = ttnn.zeros((E, C), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT,
-                                          device=ehead.device)
-    g_edges = ehead._bw_edges_zero
-    g_cutoff = None
-    for layer in reversed(layers):
-        g_nodes, g_edges, g_c = attn_layer_bw(layer, graph, g_nodes, g_edges)
-        g_cutoff = g_c if g_cutoff is None else ttnn.add(g_cutoff, g_c)
-
-    g_edge_feat = mlpnorm_bw(encoder.edge_fn, g_edges)
-    return g_edge_feat, g_cutoff
+    return _layers_bw(encoder, layers, ehead, graph, energy_bw_batch(ehead, seg_mean_T))
 
 
 def energy_and_forces_batch(encoder, layers, ehead, device, *, pos, senders, receivers,

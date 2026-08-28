@@ -94,7 +94,7 @@ class OrbCalculator(DeviceCalculator):
         from .disjoint import _as_atoms_fields
         from .geometry import radius_graph
         from .orb_forces import energy_and_forces
-        from .orb_geometry import host_edge_features
+        from .orb_geometry import check_max_neighbors, host_edge_features
         from .orb_model import (OrbGraphContext, _to_dev, host_charge_spin_embedding,
                                 host_conservative_force_denormalize, host_conservative_stress,
                                 host_energy_denormalize, host_force_denormalize,
@@ -109,26 +109,16 @@ class OrbCalculator(DeviceCalculator):
         src, tgt = edge_index
         senders, receivers = tgt, src  # Orb's edge convention is the opposite of UMA/fairchem's
 
-        # This port reuses UMA's brute-force radius_graph (no per-atom neighbour cap); Orb's own
-        # reference truncates to the closest max_num_neighbors per atom. Rather than silently
-        # diverge from the reference on a denser structure, refuse with a clear error (same
-        # philosophy as the uma-m shape-mismatch error in tt_atom/model.py).
-        max_deg = max(int(torch.bincount(senders, minlength=N).max()),
-                     int(torch.bincount(receivers, minlength=N).max()))
-        if max_deg > self.max_num_neighbors:
-            raise ValueError(
-                f"an atom has {max_deg} neighbours within the {self.r_max} A cutoff, exceeding "
-                f"this checkpoint's max_num_neighbors={self.max_num_neighbors}. Orb's own "
-                "reference truncates to the closest max_num_neighbors per atom; this port does "
-                "not implement that truncation (unverified against the reference), so it refuses "
-                "rather than silently return a different graph than Orb's own inference would use."
-            )
+        check_max_neighbors(senders, receivers, N, max_num_neighbors=self.max_num_neighbors,
+                            r_max=self.r_max)
 
         node_feat = host_node_features(self._w, Z)
         cond_nodes = None
         if self.has_cond:
             cond_nodes = host_charge_spin_embedding(self._w, float(charge), float(spin), N,
                                                     self.cfg["latent_dim"])
+
+        vectors = pos[receivers] - pos[senders] + cell_shift   # true edges, for the ZBL adds
 
         explicit_stress = "stress" in properties
         want_stress = cell is not None and (explicit_stress or bool(pbc.all()))
@@ -149,7 +139,6 @@ class OrbCalculator(DeviceCalculator):
             edge_feat, cutoff, _vec = host_edge_features(pos, senders, receivers,
                                                          cell_shift, r_max=self.r_max,
                                                          num_bases=self.num_bases)
-            vectors = pos[receivers] - pos[senders] + cell_shift   # true edges, for the ZBL adds
             dev_senders, dev_receivers, gkw, e_bucket = senders, receivers, {}, 0
             if self.bucketing:
                 dev_senders, dev_receivers, cutoff, gkw, e_bucket = pad_graph(
@@ -199,7 +188,6 @@ class OrbCalculator(DeviceCalculator):
                 ref_weight=self._w["energy_head.reference.linear.weight"].view(-1))
             F = host_conservative_force_denormalize(
                 F_raw, N, running_var=self._w["energy_head.normalizer.bn.running_var"])
-            vectors = pos[receivers] - pos[senders] + cell_shift
             F = F + host_zbl_forces(
                 Z, senders, receivers, pos, cell_shift, node_aggregation=zbl_aggregation)
             stress = None

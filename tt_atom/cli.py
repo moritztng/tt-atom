@@ -61,9 +61,11 @@ def _calc(args, bundle):
                             trace=getattr(args, "trace", False))
 
 
-def _run_relax(atoms, args, energy_before):
+def _run_relax(atoms, args, energy_before=None):
     from .simulate import relax_atoms
 
+    if energy_before is None:
+        energy_before = atoms.get_potential_energy()
     res = relax_atoms(atoms, fmax=args.fmax, steps=args.steps, logfile="-")
     print(f"relax: E {energy_before:.6f} -> {res['energy']:.6f} eV; "
           f"fmax={res['fmax']:.4f} (target {args.fmax}); "
@@ -158,33 +160,28 @@ def cmd_verify(args):
     return 0 if ok else 1
 
 
-def cmd_relax(args):
+def _cmd_bundle_sim(args, run):
+    """``relax``/``md`` on an explicit bundle: build the calculator, run ``run``, write ``--out``,
+    always close the device."""
     from .weights import WeightBundle
     bundle = WeightBundle.load(args.bundle) if isinstance(args.bundle, str) else args.bundle
     atoms = _atoms(args, bundle)
     calc = _calc(args, bundle)
     atoms.calc = calc
     try:
-        e0 = atoms.get_potential_energy()
-        _run_relax(atoms, args, e0)
+        run(atoms, args)
         _write_output(args, atoms)
     finally:
         calc.close()
     return 0
+
+
+def cmd_relax(args):
+    return _cmd_bundle_sim(args, _run_relax)
 
 
 def cmd_md(args):
-    from .weights import WeightBundle
-    bundle = WeightBundle.load(args.bundle) if isinstance(args.bundle, str) else args.bundle
-    atoms = _atoms(args, bundle)
-    calc = _calc(args, bundle)
-    atoms.calc = calc
-    try:
-        _run_md(atoms, args)
-        _write_output(args, atoms)
-    finally:
-        calc.close()
-    return 0
+    return _cmd_bundle_sim(args, _run_md)
 
 
 def _mode(args):

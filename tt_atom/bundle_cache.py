@@ -23,11 +23,13 @@ import tempfile
 from collections import Counter
 from functools import reduce
 
-# TT_ATOM_CACHE is the cache ROOT, shared with orb_weight_cache.CACHE_DIR: one override
-# relocates every per-model subdirectory under it.
-CACHE_DIR = pathlib.Path(
-    os.environ.get("TT_ATOM_CACHE", pathlib.Path.home() / ".cache" / "tt_atom")
-) / "bundles"
+from tools.npz_atomic import atomic_npz, npz_path
+
+# TT_ATOM_CACHE is the cache ROOT: one override relocates every per-model subdirectory under it.
+# orb_weight_cache derives its own directory from CACHE_ROOT, so the two cannot drift.
+CACHE_ROOT = pathlib.Path(os.environ.get("TT_ATOM_CACHE",
+                                         pathlib.Path.home() / ".cache" / "tt_atom"))
+CACHE_DIR = CACHE_ROOT / "bundles"
 
 
 def exporter_path(name):
@@ -106,35 +108,22 @@ def resolve_refenv(refenv=None):
 
 
 def run_export(out_path, make_cmd, *, error_hint=""):
-    """Run a reference-env export that writes a sidecar, then atomically move it into place.
+    """Run a reference-env export into a sidecar, which is renamed onto ``out_path`` on success.
 
-    ``make_cmd(tmp_out)`` returns the argv list that writes ``tmp_out``. Writing to a sidecar
-    and ``os.replace``-ing only on success means an interrupted or failed build can never leave a
-    half-written file that later looks like a cache hit. Each export gets its own sidecar so
-    concurrent first-use processes cannot overwrite each other. Shared by the UMA bundle build
-    and the Orb per-checkpoint export (``orb_weight_cache``)."""
-    out_path = pathlib.Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    # The suffix stays .npz so np.savez does not append a second extension.
-    with tempfile.NamedTemporaryFile(
-        dir=out_path.parent, prefix=f".{out_path.name}.", suffix=".npz", delete=False
-    ) as sidecar:
-        tmp_out = pathlib.Path(sidecar.name)
-    cmd = make_cmd(tmp_out)
-    env = dict(os.environ)
-    try:
-        subprocess.run(cmd, check=True, env=env)
-    except subprocess.CalledProcessError as e:
-        tmp_out.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"reference-env export failed (exit {e.returncode}). Command:\n  "
-            + " ".join(str(c) for c in cmd) + error_hint
-        ) from e
-    except Exception:
-        tmp_out.unlink(missing_ok=True)
-        raise
-    os.replace(tmp_out, out_path)
-    return out_path
+    ``make_cmd(tmp_out)`` returns the argv list that writes ``tmp_out``. The sidecar mechanics are
+    ``tools.npz_atomic``'s, the same ones the in-process exporters use, so an interrupted or failed
+    build can never leave a half-written file that later looks like a cache hit. Shared by the UMA
+    bundle build and the Orb per-checkpoint export (``orb_weight_cache``)."""
+    with atomic_npz(out_path) as tmp_out:
+        cmd = make_cmd(tmp_out)
+        try:
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"reference-env export failed (exit {e.returncode}). Command:\n  "
+                + " ".join(str(c) for c in cmd) + error_hint
+            ) from e
+    return npz_path(out_path)
 
 
 def build_bundle(atoms, out_path, *, model="uma-s-1", task="omol", charge=0, spin=1,
