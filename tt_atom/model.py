@@ -20,15 +20,13 @@ from .edgewise import Edgewise
 from .grid import GridAtomwise
 from .spectral import SpectralAtomwise
 
-# Above this node count the dense one-hot scatter matmul S[N,E]@m (O(N^2)) is replaced by the
-# linear O(E) gather+reduce scatter (tt_atom/scatter.py). Small systems keep the dense path
-# (one fat matmul, bit-identical to the golden mirror tests). Override with $TT_ATOM_SCATTER_THRESHOLD
-# (set to 0 to force the linear path everywhere — used by the scatter parity test).
-# The dense one-hot matmul scatter S[N,E]@m is the golden (bit-identical) path AND measured ~5x
-# faster than the linear gather+reduce at N<=~1728 (segment_sum's RM-pad + gather dominate; the
-# matmul is one fat bf16 op). The O(N*E) one-hot (92 MB @N=1000, 546 MB @N=1728) fits DRAM easily
-# at MD sizes, so use it up to ~2048 nodes; only truly-large scale runs fall back to the linear
-# O(E) path (scatter.py) to bound the O(N^2) memory. Was 384 (linear kicked in far too early).
+# Above this node count the dense one-hot scatter matmul S[N,E]@m is replaced by the linear O(E)
+# gather+reduce scatter (tt_atom/scatter.py). The dense matmul is the golden (bit-identical) path
+# and measured ~5x faster at N<=~1728 (segment_sum's RM-pad + gather dominate; the matmul is one
+# fat bf16 op), and its O(N*E) one-hot (92 MB @N=1000, 546 MB @N=1728) still fits DRAM at MD
+# sizes. Only truly-large runs fall back to the linear path, to bound the O(N^2) memory.
+# Override with $TT_ATOM_SCATTER_THRESHOLD; 0 forces the linear path everywhere (the scatter
+# parity test does exactly that).
 SCATTER_LINEAR_THRESHOLD = int(os.environ.get("TT_ATOM_SCATTER_THRESHOLD", "2048"))
 
 

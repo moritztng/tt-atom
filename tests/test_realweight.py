@@ -22,29 +22,19 @@ What is checked (all numbers measured on the p150, real uma-s-1, ethanol/omol):
 from __future__ import annotations
 
 import json
-import os
-import pathlib
 
 import numpy as np
 import pytest
 import torch
 
-REAL_GOLDEN = os.environ.get(
-    "TTATOM_REAL_GOLDEN", str(pathlib.Path.home() / ".ttatom_run/goldens_real/ethanol_omol.npz")
-)
+from util import pcc as _pcc, real_golden
+
+REAL_GOLDEN = real_golden("ethanol_omol.npz", "TTATOM_REAL_GOLDEN")
 
 pytestmark = pytest.mark.skipif(
-    not pathlib.Path(REAL_GOLDEN).exists(),
+    not REAL_GOLDEN.exists(),
     reason=f"real-weight golden bundle not found at {REAL_GOLDEN} (UMA checkpoint not available)",
 )
-
-
-def _pcc(a, b):
-    a = np.asarray(a, dtype=np.float64).ravel()
-    b = np.asarray(b, dtype=np.float64).ravel()
-    if a.std() == 0 and b.std() == 0:
-        return 1.0
-    return float(np.corrcoef(a, b)[0, 1])
 
 
 @pytest.fixture(scope="module")

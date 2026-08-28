@@ -31,6 +31,7 @@ import numpy as np
 import torch
 
 from .geometry import csd_embedding, radius_graph
+from .orb_geometry import check_max_neighbors
 
 
 def _as_atoms_fields(system):
@@ -185,16 +186,8 @@ def assemble_orb(systems, r_max, max_num_neighbors):
             raise ValueError(f"system {k} has no edges within cutoff — too sparse for this model")
         src, tgt = ei
         senders, receivers = tgt, src           # Orb's edge convention (opposite of fairchem/UMA)
-        max_deg = max(int(torch.bincount(senders, minlength=n).max()),
-                     int(torch.bincount(receivers, minlength=n).max()))
-        if max_deg > max_num_neighbors:
-            raise ValueError(
-                f"system {k} has an atom with {max_deg} neighbours within the {r_max} A cutoff, "
-                f"exceeding this checkpoint's max_num_neighbors={max_num_neighbors}. Orb's own "
-                "reference truncates to the closest max_num_neighbors per atom; this port does "
-                "not implement that truncation (unverified against the reference), so it refuses "
-                "rather than silently return a different graph than Orb's own inference would use."
-            )
+        check_max_neighbors(senders, receivers, n, max_num_neighbors=max_num_neighbors,
+                            r_max=r_max, system=k)
         pos_all.append(pos)
         Z_all.append(Z)
         send_all.append(senders + node_off)

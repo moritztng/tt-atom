@@ -45,7 +45,7 @@ See [`docs/install.md`](docs/install.md) for source-build and device-open troubl
 into the same venv:**
 
 ```bash
-pip install ./tt_atom-0.2.1-py3-none-any.whl    # numpy<2, torch (CPU), ase (not ttnn)
+pip install ./tt_atom-0.3.0-py3-none-any.whl    # numpy<2, torch (CPU), ase (not ttnn)
 ```
 
 **4. For UMA, verify the op is loaded:**

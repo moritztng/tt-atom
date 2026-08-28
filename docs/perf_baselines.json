@@ -53,6 +53,7 @@
           "mol": "CH3CH2OH",
           "tt_atom_version": "0.2.1",
           "ttnn_version": "0.65.1rc17.dev5884+g8d759240fdd",
+          "tt_metal_commit": "8d759240fdd763a38e3abdc8344076f584dc4f4d",
           "date": "2026-07-21",
           "note": "seed baselines on the pinned tt-metal 8d759240 release environment"
         }

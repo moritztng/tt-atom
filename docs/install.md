@@ -28,6 +28,9 @@ inherit it.
 `Calculator(atoms)` exports and caches the required model weights on first use. UMA caches one
 bundle per reduced composition, charge, spin, and task. Orb caches one bundle per checkpoint.
 
+Both land under `~/.cache/tt_atom` (`bundles/` for UMA, `orb_weights/` for Orb). `TT_ATOM_CACHE`
+relocates that root; `cache_dir=` overrides one calculator's directory outright.
+
 The exporters use a separate reference environment because fairchem requires `numpy>=2` while
 the validated `ttnn` environment uses `numpy<2`:
 

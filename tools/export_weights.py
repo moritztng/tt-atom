@@ -29,6 +29,8 @@ import json
 import numpy as np
 import torch
 
+from npz_atomic import savez_atomic
+
 from fairchem.core.models.uma.escn_md import eSCNMDBackbone
 
 TINY = dict(sphere_channels=32, lmax=2, mmax=2, num_layers=2, hidden_channels=32,
@@ -43,6 +45,23 @@ COMMON = dict(max_num_elements=100, cutoff=5.0, max_neighbors=300, otf_graph=Fal
 
 def npy(t):
     return t.detach().to(torch.float32).cpu().numpy()
+
+
+def bundle_arrays(cfg, backbone, energy_block):
+    """The config + weight + fixed-buffer arrays every bundle carries. Shared by the random-init
+    export and the MoLE-merged uma-s-1 export, which differ only in what they add on top."""
+    sg = backbone.SO3_grid["lmax_lmax"]
+    saved = {"config": np.frombuffer(json.dumps(cfg).encode(), dtype=np.uint8)}
+    for k, v in backbone.state_dict().items():
+        saved[f"w@{k}"] = npy(v)
+    for k, v in energy_block.state_dict().items():
+        saved[f"w@energy_block.{k}"] = npy(v)
+    saved["host@to_m"] = npy(backbone.mappingReduced.to_m)
+    saved["host@to_grid_mat"] = npy(sg.to_grid_mat)
+    saved["host@from_grid_mat"] = npy(sg.from_grid_mat)
+    saved["host@gauss_offset"] = npy(backbone.distance_expansion.offset)
+    saved["host@gauss_coeff"] = np.array([backbone.distance_expansion.coeff], dtype=np.float32)
+    return saved
 
 
 def export_uma_s_1(args):
@@ -80,17 +99,7 @@ def export_uma_s_1(args):
                cutoff=float(bb.cutoff), ff_type="spectral", act_type="gate",
                norm_type="rms_norm_sh", chg_spin_emb_type=bb.chg_spin_emb_type, task=args.task)
 
-    saved = {"config": np.frombuffer(json.dumps(cfg).encode(), dtype=np.uint8)}
-    for k, v in bb.state_dict().items():
-        saved[f"w@{k}"] = npy(v)
-    for k, v in energy_block.state_dict().items():
-        saved[f"w@energy_block.{k}"] = npy(v)
-    sg = bb.SO3_grid["lmax_lmax"]
-    saved["host@to_m"] = npy(bb.mappingReduced.to_m)
-    saved["host@to_grid_mat"] = npy(sg.to_grid_mat)
-    saved["host@from_grid_mat"] = npy(sg.from_grid_mat)
-    saved["host@gauss_offset"] = npy(bb.distance_expansion.offset)
-    saved["host@gauss_coeff"] = np.array([bb.distance_expansion.coeff], dtype=np.float32)
+    saved = bundle_arrays(cfg, bb, energy_block)
     saved["scale@rmsd"] = np.array([float(etask.normalizer.rmsd)], dtype=np.float64)
     saved["scale@mean"] = np.array([float(etask.normalizer.mean)], dtype=np.float64)
     saved["scale@elem_refs"] = etask.element_references.element_references.detach().cpu().numpy().astype(np.float64)
@@ -106,7 +115,7 @@ def export_uma_s_1(args):
     saved["ref@cell"] = npy(torch.as_tensor(atoms.get_cell().array))
     saved["ref@pbc"] = np.asarray(atoms.get_pbc(), dtype=bool)
 
-    np.savez(args.out, **saved)
+    savez_atomic(args.out, **saved)
     print(f"wrote {args.out}  ({sum(1 for k in saved if k.startswith('w@'))} weight tensors, "
           f"uma-s-1 merged for {args.xyz or args.molecule} charge={args.charge} spin={args.spin} task={args.task})")
 
@@ -144,19 +153,9 @@ def main():
     energy = torch.nn.Sequential(torch.nn.Linear(sc, hc), torch.nn.SiLU(),
                                  torch.nn.Linear(hc, hc), torch.nn.SiLU(), torch.nn.Linear(hc, 1))
 
-    saved = {"config": np.frombuffer(json.dumps(cfg).encode(), dtype=np.uint8)}
-    for k, v in bb.state_dict().items():
-        saved[f"w@{k}"] = npy(v)
-    for k, v in energy.state_dict().items():
-        saved[f"w@energy_block.{k}"] = npy(v)
-    sg = bb.SO3_grid["lmax_lmax"]
-    saved["host@to_m"] = npy(bb.mappingReduced.to_m)
-    saved["host@to_grid_mat"] = npy(sg.to_grid_mat)
-    saved["host@from_grid_mat"] = npy(sg.from_grid_mat)
-    saved["host@gauss_offset"] = npy(bb.distance_expansion.offset)
-    saved["host@gauss_coeff"] = np.array([bb.distance_expansion.coeff], dtype=np.float32)
+    saved = bundle_arrays(cfg, bb, energy)
 
-    np.savez(args.out, **saved)
+    savez_atomic(args.out, **saved)
     print(f"wrote {args.out}  ({sum(1 for k in saved if k.startswith('w@'))} weight tensors)")
 
 

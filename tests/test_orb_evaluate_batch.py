@@ -16,14 +16,11 @@ Auto-skips whichever checkpoint cache / golden is missing.
 """
 from __future__ import annotations
 
-import os
-import pathlib
-
 import numpy as np
 import pytest
 
-GOLDEN_DIR = pathlib.Path.home() / ".ttatom_run/goldens_real"
-CACHE_DIR = pathlib.Path(os.environ.get("TT_ATOM_CACHE", pathlib.Path.home() / ".cache" / "tt_atom")) / "orb_weights"
+from tt_atom.orb_weight_cache import CACHE_DIR
+from util import GOLDEN_DIR, pcc as _pcc
 
 
 def _have(checkpoint, golden):
@@ -69,14 +66,6 @@ def _water_systems(k, jitter):
             a.rattle(stdev=jitter, seed=100 + i)
         out.append(a)
     return out
-
-
-def _pcc(a, b):
-    a = np.asarray(a, dtype=np.float64).ravel()
-    b = np.asarray(b, dtype=np.float64).ravel()
-    if a.std() == 0 and b.std() == 0:
-        return 1.0
-    return float(np.corrcoef(a, b)[0, 1])
 
 
 def _check_evaluate_batch_vs_loop(calc, systems):

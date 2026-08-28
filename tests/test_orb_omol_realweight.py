@@ -18,27 +18,17 @@ Each system/checkpoint pair auto-skips if its golden is absent.
 """
 from __future__ import annotations
 
-import pathlib
-
 import numpy as np
 import pytest
 
-GOLDEN_DIR = pathlib.Path.home() / ".ttatom_run/goldens_real"
+from util import GOLDEN_DIR, pcc as _pcc
+
 SYSTEMS = ["molecule", "molecule_charged", "molecule_openshell"]
 CKPT_TAGS = ["conservative", "direct"]
 
 
 def _golden_path(system, tag):
     return GOLDEN_DIR / f"{system}_omol_{tag}.npz"
-
-
-def _pcc(a, b):
-    a = np.asarray(a, dtype=np.float64).ravel()
-    b = np.asarray(b, dtype=np.float64).ravel()
-    if a.std() == 0 and b.std() == 0:
-        return 1.0
-    return float(np.corrcoef(a, b)[0, 1])
-
 
 
 def _load(system, tag):

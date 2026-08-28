@@ -80,8 +80,29 @@ import xml.etree.ElementTree as ET
 from datetime import date
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-GOLDEN_DIR = pathlib.Path.home() / ".ttatom_run" / "goldens_real"
+sys.path.insert(0, str(REPO_ROOT))
+# One golden-dir resolution for the gate and for the tests it runs: they must look in the same
+# place, or a relocated golden set reads as a GAP while the tests happily find their fixtures.
+from tests.util import GOLDEN_DIR    # noqa: E402
+
 BASELINE_FILE = REPO_ROOT / "docs" / "perf_baselines.json"
+
+
+def _child_env():
+    """Environment for a gate subprocess: the repo importable, one visible card, quiet tt-metal."""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"]
+                                          if env.get("PYTHONPATH") else "")
+    env.setdefault("TT_VISIBLE_DEVICES", "0")
+    env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
+    return env
+
+
+def _visible_card():
+    """The physical card ``TT_VISIBLE_DEVICES`` selects, as a string — the id tt-smi wants. Inside
+    a child that card is always logical device 0 (``LOGICAL_DEVICE_ID``)."""
+    return os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0].strip() or "0"
+
 
 # ── leg 1: accuracy parity ─────────────────────────────────────────────────
 # Each spec is one real-weight parity module + the golden(s) it needs. A module auto-skips if
@@ -242,7 +263,7 @@ def _sysfs_subsystem_device(device_id):
 
 def detect_card_type():
     """Canonical board-type key ('p150a', 'p300c', ...). No device opened; safe in the parent."""
-    visible = (os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0].strip() or "0")
+    visible = _visible_card()
     tt_smi = _resolve_tt_smi()
     if tt_smi is not None:
         try:
@@ -270,6 +291,52 @@ def _version():
     txt = (REPO_ROOT / "pyproject.toml").read_text()
     m = re.search(r'^version\s*=\s*"([^"]+)"', txt, re.M)
     return m.group(1) if m else "unknown"
+
+
+def _tt_metal_source_id():
+    """Identify the tt-metal source tree the loaded ``ttnn`` was built from, or ``None``.
+
+    ``version("ttnn")`` is a poor environment key for a source build: it is the git-describe
+    string frozen into the editable install's metadata, so it goes stale the moment the checkout
+    moves, and it says nothing about whether the tree still matches the pinned release commit.
+    Two builds of the identical tree can report different strings, which made the UMA perf row
+    report GAP against a baseline measured on the very same source (2026-08-08 through 08-21).
+
+    So key on the tree instead: when the working tree is content-identical to
+    ``PINNED_TT_METAL_COMMIT`` this returns that commit, whatever the checkout's HEAD or metadata
+    says. Otherwise it returns the actual HEAD (with ``-dirty`` when the tree is modified), so a
+    genuinely different build still reads as a different environment. A pip-wheel ``ttnn`` is not
+    in a git checkout and returns ``None``, which leaves the ``ttnn_version`` key in charge.
+    """
+    try:
+        import ttnn
+        root = pathlib.Path(ttnn.__file__).resolve()
+    except Exception:
+        return None
+    for cand in root.parents:
+        if (cand / ".git").exists():
+            break
+    else:
+        return None
+    # It has to be a tt-metal checkout whose own ``ttnn/`` tree is the module we just imported.
+    # Without this, an installed wheel under a venv that happens to live inside some unrelated
+    # git repo (``~/tt-bio/env/...``) would be reported as that repo's HEAD.
+    if not (cand / "tt_metal").is_dir() or not root.is_relative_to(cand / "ttnn"):
+        return None
+    def git(*a):
+        return subprocess.run(("git", "-C", str(cand)) + a, capture_output=True,
+                              text=True, timeout=60)
+    try:
+        if git("cat-file", "-e", PINNED_TT_METAL_COMMIT).returncode == 0 and \
+                git("diff", "--quiet", PINNED_TT_METAL_COMMIT).returncode == 0:
+            return PINNED_TT_METAL_COMMIT
+        head = git("rev-parse", "HEAD").stdout.strip()
+        if not head:
+            return None
+        return head + ("" if git("diff", "--quiet").returncode == 0 else "-dirty")
+    except Exception:
+        return None
+
 
 
 def _golden_present(spec):
@@ -307,11 +374,7 @@ def _run_pytest_module(spec):
     xml_path = xml_dir / "junit.xml"
     cmd = [sys.executable, "-m", "pytest", mod, "-q", "-p", "no:cacheprovider",
            f"--junit-xml={xml_path}"]
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"]
-                                          if env.get("PYTHONPATH") else "")
-    env.setdefault("TT_VISIBLE_DEVICES", "0")
-    env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
+    env = _child_env()
     print(f"\n[accuracy] pytest {mod}", flush=True)
     t0 = time.monotonic()
     proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env)
@@ -479,11 +542,7 @@ def _run_oom_family(family, quick):
            "--measure-oom", family, "--out", str(out)]
     if quick:
         cmd.append("--quick")
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"]
-                                          if env.get("PYTHONPATH") else "")
-    env.setdefault("TT_VISIBLE_DEVICES", "0")
-    env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
+    env = _child_env()
     proc = subprocess.Popen(cmd, cwd=REPO_ROOT, env=env, start_new_session=True)
     try:
         returncode = proc.wait(timeout=OOM_MEASURE_TIMEOUT_S)
@@ -635,6 +694,7 @@ def measure_perf(model, out_path, quick):
         times_s=[round(t, 4) for t in times],
         card_type=detect_card_type(), tt_atom_version=_version(),
         ttnn_version=version("ttnn"),
+        tt_metal_commit=_tt_metal_source_id(),
         date=date.today().isoformat(),
         input=f"{spec['mol']} ({spec['fixture']}, {natoms} atoms/system, K={spec['k']})",
         failed=False,
@@ -678,7 +738,7 @@ def _stop_child_and_reset(proc):
     tt_smi = _resolve_tt_smi()
     if tt_smi is None:
         return "tt-smi not found"
-    visible = (os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0].strip() or "0")
+    visible = _visible_card()
     try:
         reset = subprocess.run([tt_smi, "-r", visible], timeout=120,
                                capture_output=True, text=True, check=False)
@@ -698,11 +758,7 @@ def _run_measure_perf(model, quick):
            "--measure-perf", model, "--out", str(out)]
     if quick:
         cmd.append("--quick")
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"]
-                                          if env.get("PYTHONPATH") else "")
-    env.setdefault("TT_VISIBLE_DEVICES", "0")
-    env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
+    env = _child_env()
     proc = subprocess.Popen(cmd, cwd=REPO_ROOT, env=env, start_new_session=True)
     try:
         returncode = proc.wait(timeout=PERF_MEASURE_TIMEOUT_S)
@@ -738,8 +794,13 @@ def _load_baselines():
 
 
 def _save_baselines(data):
+    # Sidecar + os.replace: _load_baselines() gates on .exists() then json.loads, so a truncated
+    # write here would make every later gate run die on a JSONDecodeError. Same shape as
+    # tt_atom/bundle_cache.py:run_export and tools/npz_atomic.py.
     BASELINE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    BASELINE_FILE.write_text(json.dumps(data, indent=2) + "\n")
+    tmp = BASELINE_FILE.with_name(f".{BASELINE_FILE.name}.tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    os.replace(tmp, BASELINE_FILE)
 
 
 def _card_baselines(data, card_type):
@@ -806,7 +867,14 @@ def _compare_perf(rows, card, threshold):
                     for f in fields if baseline.get(f) != r.get(f)]
 
         proto = _mismatch(("checkpoint", "k", "natoms_per_system"))
-        env_mismatch = _mismatch(("ttnn_version",))
+        # A source build knows exactly which tt-metal tree it came from, which is a far better
+        # environment key than the pip metadata's describe string (see _tt_metal_source_id).
+        # Fall back to ttnn_version whenever either side lacks it, so stock-wheel rows and
+        # baselines seeded before this field existed compare exactly as they did before.
+        if r.get("tt_metal_commit") and baseline.get("tt_metal_commit"):
+            env_mismatch = _mismatch(("tt_metal_commit",))
+        else:
+            env_mismatch = _mismatch(("ttnn_version",))
         if proto or env_mismatch:
             r["baseline"] = baseline.get("value")
             r["delta"] = "n/a"
@@ -858,6 +926,7 @@ def _update_perf_baselines(rows, card, note, threshold):
                            natoms_per_system=r["natoms_per_system"],
                            family=r["family"], fixture=r["fixture"], mol=r["mol"],
                            tt_atom_version=r["tt_atom_version"], ttnn_version=r["ttnn_version"],
+                           tt_metal_commit=r.get("tt_metal_commit"),
                            date=r["date"], note=note)
         entry.update(date=r["date"], tt_atom_version=r["tt_atom_version"], note=note)
     _save_baselines(data)
@@ -929,11 +998,7 @@ def run_ux(cli_only):
     cmd = [sys.executable, str(UX_SCRIPT)]
     if cli_only:
         cmd.append("--cli-only")
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"]
-                                          if env.get("PYTHONPATH") else "")
-    env.setdefault("TT_VISIBLE_DEVICES", "0")
-    env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
+    env = _child_env()
     print(f"\n[ux] {' '.join(cmd[1:])}", flush=True)
     t0 = time.monotonic()
     try:
@@ -1212,11 +1277,7 @@ def _run_install():
     out = pathlib.Path(td) / "result.json"
     cmd = [sys.executable, str(pathlib.Path(__file__).resolve()),
            "--measure-install", "--out", str(out)]
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"]
-                                          if env.get("PYTHONPATH") else "")
-    env.setdefault("TT_VISIBLE_DEVICES", "0")
-    env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
+    env = _child_env()
     proc = subprocess.Popen(cmd, cwd=REPO_ROOT, env=env, start_new_session=True)
     try:
         returncode = proc.wait(timeout=INSTALL_TIMEOUT_S)

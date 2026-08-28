@@ -139,10 +139,10 @@ def _run_orb(b, cfg, fast, device_id, in_q, out_q, bucketing=False):
     from .bucketing import pad_device_rows, pad_graph
     from .device import open_device
     from .geometry import radius_graph
-    from .orb_geometry import host_edge_features
-    from .orb_model import (AttentionInteractionLayer, Encoder, EnergyHead, OrbGraphContext,
-                            _to_dev, host_charge_spin_embedding, host_energy_denormalize,
-                            host_node_features, host_zbl_energy)
+    from .orb_geometry import check_max_neighbors, host_edge_features
+    from .orb_model import (MLP_HIDDEN_DIM, AttentionInteractionLayer, Encoder, EnergyHead,
+                            OrbGraphContext, _to_dev, host_charge_spin_embedding,
+                            host_energy_denormalize, host_node_features, host_zbl_energy)
     import ttnn
 
     w = b.weights
@@ -150,7 +150,7 @@ def _run_orb(b, cfg, fast, device_id, in_q, out_q, bucketing=False):
     num_bases = cfg["num_bases"]
     max_num_neighbors = cfg["max_num_neighbors"]
     L = cfg["num_message_passing_steps"]
-    latent_dim, hidden_dim = cfg["latent_dim"], 1024
+    latent_dim, hidden_dim = cfg["latent_dim"], MLP_HIDDEN_DIM
     has_cond = "conditioner.charge_embedding.W" in w
     zbl_aggregation = "sum" if "forces_head.mlp.NN-0.weight" in w else "mean"
     dev = open_device(0)
@@ -175,14 +175,8 @@ def _run_orb(b, cfg, fast, device_id, in_q, out_q, bucketing=False):
         src, tgt = edge_index
         senders, receivers = tgt, src          # Orb's edge convention is the opposite of UMA's
         N = Z.shape[0]
-        max_deg = max(int(torch.bincount(senders, minlength=N).max()),
-                     int(torch.bincount(receivers, minlength=N).max()))
-        if max_deg > max_num_neighbors:
-            raise ValueError(
-                f"an atom has {max_deg} neighbours within the {r_max} A cutoff, exceeding this "
-                f"checkpoint's max_num_neighbors={max_num_neighbors}. Orb's own reference truncates "
-                "to the closest max_num_neighbors per atom; this port does not implement that "
-                "truncation, so it refuses rather than silently return a different graph.")
+        check_max_neighbors(senders, receivers, N, max_num_neighbors=max_num_neighbors,
+                            r_max=r_max)
         node_feat = host_node_features(w, Z)
         cond_nodes = (host_charge_spin_embedding(w, 0.0, 0.0, N, latent_dim)
                       if has_cond else None)

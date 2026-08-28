@@ -12,12 +12,11 @@ Any individual golden absent -> that case auto-skips (module-level goldens are i
 """
 from __future__ import annotations
 
-import pathlib
-
 import pytest
 import torch
 
-GOLDENS = pathlib.Path.home() / ".ttatom_run" / "goldens_real"
+from util import GOLDEN_DIR as GOLDENS
+
 CONSERVATIVE = {
     "toy": GOLDENS / "si_omat_orb.npz",
     "supercell": GOLDENS / "si_supercell_orb.npz",

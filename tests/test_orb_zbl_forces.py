@@ -21,30 +21,18 @@ Absent the golden bundle the whole module auto-skips.
 """
 from __future__ import annotations
 
-import os
-import pathlib
-
 import numpy as np
 import pytest
 import torch
 
-REAL_GOLDEN = os.environ.get(
-    "TTATOM_ORB_SHORT_CONTACT_GOLDEN",
-    str(pathlib.Path.home() / ".ttatom_run/goldens_real/si_short_contact_orb_direct20.npz"),
-)
+from util import pcc as _pcc, real_golden
+
+REAL_GOLDEN = real_golden("si_short_contact_orb_direct20.npz", "TTATOM_ORB_SHORT_CONTACT_GOLDEN")
 
 pytestmark = pytest.mark.skipif(
-    not pathlib.Path(REAL_GOLDEN).exists(),
+    not REAL_GOLDEN.exists(),
     reason=f"Orb short-contact golden bundle not found at {REAL_GOLDEN}",
 )
-
-
-def _pcc(a, b):
-    a = np.asarray(a, dtype=np.float64).ravel()
-    b = np.asarray(b, dtype=np.float64).ravel()
-    if a.std() == 0 and b.std() == 0:
-        return 1.0
-    return float(np.corrcoef(a, b)[0, 1])
 
 
 @pytest.fixture(scope="module")

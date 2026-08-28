@@ -62,6 +62,31 @@ def spherical_harmonics_l3(unit_vec: torch.Tensor) -> torch.Tensor:
     return sh * mult
 
 
+def check_max_neighbors(senders, receivers, num_nodes, *, max_num_neighbors, r_max, system=None):
+    """Refuse a structure denser than the checkpoint's per-atom neighbour cap.
+
+    This port reuses UMA's brute-force ``radius_graph`` (no per-atom cap); Orb's own reference
+    truncates to the closest ``max_num_neighbors``. That truncation is unverified against the
+    reference, so a denser structure raises here rather than silently being evaluated on a
+    different graph than Orb's own inference would use. ``system`` names the batch index when the
+    caller is assembling several structures.
+
+    The one implementation for all three callers (single structure, disjoint-union batch,
+    multi-card worker); it only raises, so it changes no numerics.
+    """
+    max_deg = max(int(torch.bincount(senders, minlength=num_nodes).max()),
+                  int(torch.bincount(receivers, minlength=num_nodes).max()))
+    if max_deg <= max_num_neighbors:
+        return
+    where = f"system {system} has an atom" if system is not None else "an atom"
+    raise ValueError(
+        f"{where} with {max_deg} neighbours within the {r_max} A cutoff, exceeding this "
+        f"checkpoint's max_num_neighbors={max_num_neighbors}. Orb's own reference truncates to "
+        "the closest max_num_neighbors per atom; this port does not implement that truncation "
+        "(unverified against the reference), so it refuses rather than silently return a "
+        "different graph than Orb's own inference would use.")
+
+
 def host_edge_features(pos: torch.Tensor, senders: torch.Tensor, receivers: torch.Tensor,
                        cell_shift: torch.Tensor | None, *, r_max: float = 6.0, num_bases: int = 8,
                        strain: torch.Tensor | None = None):

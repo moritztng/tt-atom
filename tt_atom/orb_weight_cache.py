@@ -1,24 +1,21 @@
 """Per-checkpoint weight cache — the machinery behind ``Calculator(atoms, "orb-...")``.
 
 Orb has no MoLE or other expert routing baked at merge time (see ``docs/orb-port.md``): the raw
-checkpoint weights are valid for *any* composition/charge/spin, so
-unlike ``tt_atom.bundle_cache`` (one merged bundle per *(composition, charge, spin, task)*, a
-subprocess rebuild per system) this only ever needs one export per *checkpoint name*, ever. A
-cache hit is a plain ``np.load``, exactly like ``bundle_cache``'s. The refenv resolution and the
-atomic subprocess-export mechanics are shared with ``bundle_cache`` (``resolve_refenv`` /
-``run_export``); only the export command is Orb-specific.
+checkpoint weights are valid for *any* composition/charge/spin, so unlike
+``tt_atom.bundle_cache`` (one merged bundle per *(composition, charge, spin, task)*, a subprocess
+rebuild per system) this only ever needs one export per *checkpoint name*, ever. A cache hit is a
+plain ``np.load``, exactly like ``bundle_cache``'s. The cache root, the refenv resolution and the
+atomic subprocess-export mechanics all come from ``bundle_cache`` (``CACHE_ROOT`` /
+``resolve_refenv`` / ``run_export``); only the export command is Orb-specific.
 """
 from __future__ import annotations
 
-import os
 import pathlib
 import sys
 
-from .bundle_cache import exporter_path, resolve_refenv, run_export
+from .bundle_cache import CACHE_ROOT, exporter_path, resolve_refenv, run_export
 
-CACHE_DIR = pathlib.Path(
-    os.environ.get("TT_ATOM_CACHE", pathlib.Path.home() / ".cache" / "tt_atom")
-) / "orb_weights"
+CACHE_DIR = CACHE_ROOT / "orb_weights"
 
 CHECKPOINTS = ("orb-v3-conservative-inf-omat", "orb-v3-direct-20-omat",
               "orb-v3-conservative-omol", "orb-v3-direct-omol")
