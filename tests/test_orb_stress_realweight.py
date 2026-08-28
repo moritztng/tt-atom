@@ -20,22 +20,12 @@ Absent the golden bundle(s) each test auto-skips independently.
 """
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
-from util import real_golden
+from util import pcc as _pcc, real_golden
 
 CONSERVATIVE_GOLDEN = real_golden("si_omat_orb.npz", "TTATOM_ORB_GOLDEN")
 DIRECT_GOLDEN = real_golden("si_omat_orb_direct20.npz", "TTATOM_ORB_DIRECT_GOLDEN")
-
-
-def _pcc(a, b):
-    a = np.asarray(a, dtype=np.float64).ravel()
-    b = np.asarray(b, dtype=np.float64).ravel()
-    if a.std() == 0 and b.std() == 0:
-        return 1.0
-    return float(np.corrcoef(a, b)[0, 1])
-
 
 
 @pytest.mark.skipif(not CONSERVATIVE_GOLDEN.exists(),

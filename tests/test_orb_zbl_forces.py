@@ -25,7 +25,7 @@ import numpy as np
 import pytest
 import torch
 
-from util import real_golden
+from util import pcc as _pcc, real_golden
 
 REAL_GOLDEN = real_golden("si_short_contact_orb_direct20.npz", "TTATOM_ORB_SHORT_CONTACT_GOLDEN")
 
@@ -33,14 +33,6 @@ pytestmark = pytest.mark.skipif(
     not REAL_GOLDEN.exists(),
     reason=f"Orb short-contact golden bundle not found at {REAL_GOLDEN}",
 )
-
-
-def _pcc(a, b):
-    a = np.asarray(a, dtype=np.float64).ravel()
-    b = np.asarray(b, dtype=np.float64).ravel()
-    if a.std() == 0 and b.std() == 0:
-        return 1.0
-    return float(np.corrcoef(a, b)[0, 1])
 
 
 @pytest.fixture(scope="module")

@@ -34,21 +34,13 @@ import numpy as np
 import pytest
 import torch
 
-from util import GOLDEN_DIR
+from util import GOLDEN_DIR, pcc as _pcc
 
 # (task label, bundle filename) — parametrized; each case skips if its bundle is absent.
 # omat/omc/odac are fully periodic and include stress; oc20 is mixed-PBC, where stress is undefined.
 PERIODIC_CASES = [("omat", "si_omat.npz"), ("oc20", "cuh_oc20.npz"),
                   ("odac", "mgo_odac.npz"), ("omc", "co2_omc.npz")]
 STRESS_CASES = [case for case in PERIODIC_CASES if case[0] != "oc20"]
-
-
-def _pcc(a, b):
-    a = np.asarray(a, dtype=np.float64).ravel()
-    b = np.asarray(b, dtype=np.float64).ravel()
-    if a.std() == 0 and b.std() == 0:
-        return 1.0
-    return float(np.corrcoef(a, b)[0, 1])
 
 
 def _load(fname):

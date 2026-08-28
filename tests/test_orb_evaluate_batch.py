@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 from tt_atom.orb_weight_cache import CACHE_DIR
-from util import GOLDEN_DIR
+from util import GOLDEN_DIR, pcc as _pcc
 
 
 def _have(checkpoint, golden):
@@ -66,14 +66,6 @@ def _water_systems(k, jitter):
             a.rattle(stdev=jitter, seed=100 + i)
         out.append(a)
     return out
-
-
-def _pcc(a, b):
-    a = np.asarray(a, dtype=np.float64).ravel()
-    b = np.asarray(b, dtype=np.float64).ravel()
-    if a.std() == 0 and b.std() == 0:
-        return 1.0
-    return float(np.corrcoef(a, b)[0, 1])
 
 
 def _check_evaluate_batch_vs_loop(calc, systems):
