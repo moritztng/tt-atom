@@ -14,7 +14,7 @@ bucketing suffices. This probe answers that with a cold-cache single leg, bucket
   F (2,4,5) N=80  -> E bucket 3808, N_tiles=3   N-tile crossing 2->3 at fixed edge bucket
   G (2,2,5) N=40 seed 1 -> warm control: same shapes as B, new geometry -> ~0.1-0.3s expected
 
-Same fleet discipline as bench_compile_pain.py: sandboxed HOME controls the tt-metal kernel
+Fleet discipline is ``benchmarks/_harness.py``'s: sandboxed HOME controls the tt-metal kernel
 cache, the child holds the device-lease flock, and the parent waits for a quiet host window.
 
 Run (qb1):  .venv/bin/python benchmarks/probe_shapes.py --card 0
@@ -25,42 +25,21 @@ import argparse
 import json
 import os
 import pathlib
-import pwd
 import subprocess
 import sys
 import time
 
-
-def _real_home() -> pathlib.Path:
-    """The invoking user's home from the passwd database, NOT ``$HOME``: the sandbox-HOME legs
-    below override ``$HOME`` to control the kernel cache, and the fleet lease must still land in
-    the real ``~/.coworker/state/leases`` so we serialize with sibling fleet jobs."""
-    return pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
-
-
-LEASES = _real_home() / ".coworker" / "state" / "leases"
-HOLDER = os.environ.get("TT_BIO_LEASE_HOLDER", "tt-atom-benchmark")
-DEFAULT_WEIGHTS = _real_home() / ".cache/tt_atom/orb_weights/conservative-inf-omat.npz"
+from _harness import cache_stats, orb_weights, sandbox_env, take_lease, wait_for_quiet
 
 SYSTEMS = [("A", (2, 2, 4), 0), ("B", (2, 2, 5), 0), ("C", (2, 3, 4), 0), ("D", (3, 3, 3), 0),
            ("E", (2, 4, 4), 0), ("F", (2, 4, 5), 0), ("G", (2, 2, 5), 1)]
 
 
 def run_child(weights, card):
-    import fcntl
-    import socket
-
     import torch
     from ase.build import bulk
 
-    LEASES.mkdir(parents=True, exist_ok=True)
-    lease_path = LEASES / f"{socket.gethostname()}-card{card}.json"
-    lease_fd = os.open(lease_path, os.O_RDWR | os.O_CREAT)
-    fcntl.flock(lease_fd, fcntl.LOCK_EX)
-    with open(lease_path, "w") as f:
-        json.dump({"host": socket.gethostname(), "card": str(card),
-                   "holder": HOLDER, "pid": os.getpid(),
-                   "acquired": time.time(), "released": None}, f)
+    take_lease(card)
 
     from tt_atom.bucketing import bucket_size
     from tt_atom.geometry import radius_graph
@@ -91,42 +70,9 @@ def run_child(weights, card):
     os._exit(0)          # skip the C++ atexit teardown abort (see bench_compile_pain.py)
 
 
-def cache_stats(home):
-    root = pathlib.Path(home) / ".cache"
-    n = 0
-    for p in root.rglob("*"):
-        if p.is_file():
-            n += 1
-    return n
-
-
-def host_quiet():
-    out = subprocess.run(["ps", "-eo", "cmd"], capture_output=True, text=True).stdout
-    for line in out.splitlines():
-        if "tt_bio" in line or "tt-bio-dev/env" in line:
-            return False
-        if "mcscale" in line and ".sh" in line:
-            return False
-    return True
-
-
-def wait_for_quiet(poll_s=15, settle_s=10, max_wait_s=2400):
-    t0 = time.time()
-    quiet_since = None
-    while time.time() - t0 < max_wait_s:
-        if host_quiet():
-            quiet_since = quiet_since or time.time()
-            if time.time() - quiet_since >= settle_s:
-                return True
-        else:
-            quiet_since = None
-        time.sleep(poll_s)
-    return False
-
-
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--weights", default=str(DEFAULT_WEIGHTS))
+    ap.add_argument("--weights", default=str(orb_weights()))
     ap.add_argument("--card", type=int, default=0)
     ap.add_argument("--workdir", default=None,
                     help="default: unique per launch — a stale orphan child from an earlier "
@@ -145,11 +91,7 @@ def main():
     workdir = pathlib.Path(args.workdir or f"/tmp/ttatom_probe_shapes_{os.getpid()}")
     home = workdir / "home_cold"
     home.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ)
-    env["HOME"] = str(home)
-    env["XDG_CACHE_HOME"] = str(home / ".cache")
-    env["TT_VISIBLE_DEVICES"] = str(args.card)
-    env.setdefault("OMP_NUM_THREADS", "4")
+    env = sandbox_env(home, args.card)
     t0 = time.perf_counter()
     proc = subprocess.run([sys.executable, __file__, "--child", "--weights", args.weights,
                            "--card", str(args.card)], env=env, capture_output=True, text=True,
@@ -160,7 +102,8 @@ def main():
         print(proc.stderr[-3000:], file=sys.stderr)
         raise RuntimeError(f"probe child failed (rc={proc.returncode})")
     print(proc.stdout, end="")
-    print(f"wall={wall:.1f}s cache_files={cache_stats(home)}")
+    files, _ = cache_stats(home)
+    print(f"wall={wall:.1f}s cache_files={files}")
 
 
 if __name__ == "__main__":

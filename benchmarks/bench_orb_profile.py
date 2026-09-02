@@ -8,23 +8,10 @@ conservative-inf-omat). Falls back gracefully (skips) if a golden is missing.
 """
 from __future__ import annotations
 
-import pathlib
-import time
+from _harness import golden_dir, median_ms
 
-import numpy as np
-
-GOLDENS = pathlib.Path.home() / ".ttatom_run" / "goldens_real"
-
-
-def _median_ms(fn, n=30, warm=5):
-    for _ in range(warm):
-        fn()
-    ts = []
-    for _ in range(n):
-        t = time.perf_counter()
-        fn()
-        ts.append((time.perf_counter() - t) * 1000)
-    return float(np.median(ts))
+GOLDENS = golden_dir()
+SAMPLES, WARMUP = 30, 5
 
 
 def _build_and_time(golden_path, device, *, fast=False):
@@ -63,7 +50,7 @@ def _build_and_time(golden_path, device, *, fast=False):
         ttnn.synchronize_device(device)
         return nodes
 
-    ms = _median_ms(fwd)
+    ms = median_ms(fwd, SAMPLES, WARMUP)
     return N, E, ms
 
 

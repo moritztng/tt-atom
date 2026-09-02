@@ -12,24 +12,12 @@ conservative-inf-omat). Falls back gracefully (skips) if a golden is missing.
 """
 from __future__ import annotations
 
-import pathlib
-import time
-
-import numpy as np
 import torch
 
-GOLDENS = pathlib.Path.home() / ".ttatom_run" / "goldens_real"
+from _harness import golden_dir, median_ms
 
-
-def _median_ms(fn, n=20, warm=5):
-    for _ in range(warm):
-        fn()
-    ts = []
-    for _ in range(n):
-        t = time.perf_counter()
-        fn()
-        ts.append((time.perf_counter() - t) * 1000)
-    return float(np.median(ts))
+GOLDENS = golden_dir()
+SAMPLES, WARMUP = 20, 5
 
 
 def _device_only_ms(device, encoder, layers, ehead, graph, node_dev, edge_dev):
@@ -47,7 +35,7 @@ def _device_only_ms(device, encoder, layers, ehead, graph, node_dev, edge_dev):
         backbone_bw(encoder, layers, ehead, graph)
         ttnn.synchronize_device(device)
 
-    return _median_ms(fwd_bw)
+    return median_ms(fwd_bw, SAMPLES, WARMUP)
 
 
 def _bench_one(label, path, device):
@@ -90,7 +78,7 @@ def _bench_one(label, path, device):
                                  node_feat=node_feat, cell_shift=cell_shift)
 
     it = iter(jitters * 2)
-    eager_ms = _median_ms(eager_step)
+    eager_ms = median_ms(eager_step, SAMPLES, WARMUP)
     E_e, F_e = eager_step()
 
     eng = OrbTracedEngine(encoder, layers, device, senders=senders, receivers=receivers,
@@ -102,7 +90,7 @@ def _bench_one(label, path, device):
     def traced_step():
         return eng(next(it2))
 
-    traced_ms = _median_ms(traced_step)
+    traced_ms = median_ms(traced_step, SAMPLES, WARMUP)
     E_t, F_t = traced_step()
 
     # device-only slice: fixed edge_feat/cutoff (no per-step host geometry/refresh/autograd) --
@@ -113,7 +101,8 @@ def _bench_one(label, path, device):
     graph0 = OrbGraphContext(device, senders=senders, receivers=receivers,
                              cutoff=cutoff0.detach().float(), num_nodes=N)
     eager_dev_ms = _device_only_ms(device, encoder, layers, ehead, graph0, node_dev0, edge_dev0)
-    replay_ms = _median_ms(lambda: ttnn.execute_trace(device, eng.tid, cq_id=0, blocking=True))
+    replay_ms = median_ms(lambda: ttnn.execute_trace(device, eng.tid, cq_id=0, blocking=True),
+                          SAMPLES, WARMUP)
     eng.close()
 
     f_err = (F_t - F_e).abs().max().item()

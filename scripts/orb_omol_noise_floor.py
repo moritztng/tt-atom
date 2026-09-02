@@ -23,24 +23,21 @@ Run on card 0 with the ttnn env:
 from __future__ import annotations
 
 import pathlib
+import sys
+
 import numpy as np
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+# The goldens this reads are the parity tests' own, so the directory (and TTATOM_GOLDEN_DIR)
+# has to resolve to the same place theirs does.
+from tests.util import GOLDEN_DIR, pcc as _pcc    # noqa: E402
 
-GOLDEN_DIR = pathlib.Path.home() / ".ttatom_run/goldens_real"
 SYSTEMS = ["molecule", "molecule_charged", "molecule_openshell"]
 CKPT_TAGS = ["conservative", "direct"]
 
 
 def _golden_path(system, tag):
     return GOLDEN_DIR / f"{system}_omol_{tag}.npz"
-
-
-def _pcc(a, b):
-    a = np.asarray(a, dtype=np.float64).ravel()
-    b = np.asarray(b, dtype=np.float64).ravel()
-    if a.std() == 0 and b.std() == 0:
-        return 1.0
-    return float(np.corrcoef(a, b)[0, 1])
 
 
 def _load(system, tag):

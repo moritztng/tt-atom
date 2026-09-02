@@ -17,8 +17,9 @@ byte-identical to 0.3.0.
 - An interrupted weight export or golden generation can no longer leave a truncated `.npz` at the
   final name, which the consumers read as a present-but-corrupt fixture. All seven exporters and
   the gate's own performance baselines write a sidecar and rename it on success.
-- `TTATOM_GOLDEN_DIR` now relocates every real-weight golden. It used to move two of them, and
-  four test modules hardcoded the default with no override at all.
+- `TTATOM_GOLDEN_DIR` now relocates every real-weight golden, for the benchmarks and the
+  noise-floor diagnostic as well as the tests and the gate. It used to move two of them, and four
+  test modules plus three dev scripts hardcoded the default with no override at all.
 - Three Orb benchmarks passed `TT_VISIBLE_DEVICES` straight through as a logical device id.
   The visible set is re-indexed from zero, so anything but `0` asked for a card that was not
   there.
@@ -26,14 +27,19 @@ byte-identical to 0.3.0.
 ### Changed
 - `TT_ATOM_CACHE` means the cache root everywhere. `TT_ATOM_CACHE=/data/c` now gives
   `/data/c/bundles` and `/data/c/orb_weights`; the UMA half used to treat the override as the
-  bundles directory itself. Default paths are unchanged.
+  bundles directory itself, and the bucketing parity module and three benchmarks read the default
+  root whatever the override said — so a relocated cache silently skipped the bit-exactness
+  module. Default paths are unchanged.
 - Every boolean `TT_ATOM_*` knob reads the same way: `=1` on, `=0` off, anything else the
   documented default. Three mutually inconsistent readings were in use, so `TT_ATOM_NORM_FLAT=true`
   silently turned a default-on path off while `TT_ATOM_ORB_SCATTER_RM=false` silently left one on.
   All ten knobs are documented in `custom_kernels/README.md`.
 - Internal consolidation: one implementation each for the cache root, the atomic `.npz` write,
   Orb's per-atom neighbour cap, Orb's reverse pass, the gate's subprocess environment, and the
-  golden directory the gate and its tests share.
+  golden directory the gate and its tests share. `benchmarks/_harness.py` is now the one home for
+  the benchmark-side concerns: median timing, fixture and weight locations, and the fleet
+  discipline (lease flock, quiet-host wait, sandbox child environment) that three subprocess
+  benchmarks each carried a drifting copy of.
 
 ## [0.3.0] - 2026-08-21
 

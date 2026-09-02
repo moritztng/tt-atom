@@ -11,7 +11,7 @@ run experience) with the ``*_warm`` legs as the warm-cache-fairness control.
 
 Legs interleave cold/warm per mode so thermal drift hits both modes symmetrically; each cold
 leg gets a fresh sandbox HOME (its cache then serves as that mode's warm HOME). Fleet
-discipline identical to bench_compile_pain.py: child holds the device-lease flock, parent
+discipline is ``benchmarks/_harness.py``'s: the child holds the device-lease flock, the parent
 waits for a quiet host window unless --no-wait.
 
 Run (qb1):  .venv/bin/python benchmarks/bench_screening.py --card 0
@@ -22,39 +22,18 @@ import argparse
 import json
 import os
 import pathlib
-import pwd
 import subprocess
 import sys
 import time
 
-
-def _real_home() -> pathlib.Path:
-    """The invoking user's home from the passwd database, NOT ``$HOME``: the sandbox-HOME legs
-    below override ``$HOME`` to control the kernel cache, and the fleet lease must still land in
-    the real ``~/.coworker/state/leases`` so we serialize with sibling fleet jobs."""
-    return pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
-
-
-LEASES = _real_home() / ".coworker" / "state" / "leases"
-HOLDER = os.environ.get("TT_BIO_LEASE_HOLDER", "tt-atom-benchmark")
-DEFAULT_WEIGHTS = _real_home() / ".cache/tt_atom/orb_weights/conservative-inf-omat.npz"
+from _harness import cache_stats, orb_weights, sandbox_env, take_lease, wait_for_quiet
 
 
 def run_child(weights, systems, tag, card, bucketing):
-    import fcntl
-    import socket
-
     import torch
     from ase.build import bulk
 
-    LEASES.mkdir(parents=True, exist_ok=True)
-    lease_path = LEASES / f"{socket.gethostname()}-card{card}.json"
-    lease_fd = os.open(lease_path, os.O_RDWR | os.O_CREAT)
-    fcntl.flock(lease_fd, fcntl.LOCK_EX)
-    with open(lease_path, "w") as f:
-        json.dump({"host": socket.gethostname(), "card": str(card),
-                   "holder": HOLDER, "pid": os.getpid(),
-                   "acquired": time.time(), "released": None}, f)
+    take_lease(card)
 
     from tt_atom.bucketing import bucket_size
     from tt_atom.geometry import radius_graph
@@ -85,22 +64,8 @@ def run_child(weights, systems, tag, card, bucketing):
     os._exit(0)          # skip the C++ atexit teardown abort (see bench_compile_pain.py)
 
 
-def cache_stats(home):
-    root = pathlib.Path(home) / ".cache"
-    n, b = 0, 0
-    for p in root.rglob("*"):
-        if p.is_file():
-            n += 1
-            b += p.stat().st_size
-    return n, b
-
-
 def run_leg(weights, systems, home, tag, card, bucketing):
-    env = dict(os.environ)
-    env["HOME"] = home
-    env["XDG_CACHE_HOME"] = str(pathlib.Path(home) / ".cache")
-    env["TT_VISIBLE_DEVICES"] = str(card)
-    env.setdefault("OMP_NUM_THREADS", "4")
+    env = sandbox_env(home, card)
     pathlib.Path(home).mkdir(parents=True, exist_ok=True)
     files0, _ = cache_stats(home)
     t0 = time.perf_counter()
@@ -121,30 +86,6 @@ def run_leg(weights, systems, home, tag, card, bucketing):
                 cache_mb=round(bytes1 / 1e6, 1), events=evals)
 
 
-def host_quiet():
-    out = subprocess.run(["ps", "-eo", "cmd"], capture_output=True, text=True).stdout
-    for line in out.splitlines():
-        if "tt_bio" in line or "tt-bio-dev/env" in line:
-            return False
-        if "mcscale" in line and ".sh" in line:
-            return False
-    return True
-
-
-def wait_for_quiet(poll_s=15, settle_s=10, max_wait_s=2400):
-    t0 = time.time()
-    quiet_since = None
-    while time.time() - t0 < max_wait_s:
-        if host_quiet():
-            quiet_since = quiet_since or time.time()
-            if time.time() - quiet_since >= settle_s:
-                return True
-        else:
-            quiet_since = None
-        time.sleep(poll_s)
-    return False
-
-
 def screening_stream():
     """K=20 rattled Si systems, sizes log-spread N=16..512 -> E ~0.7k..21k (the full ladder).
 
@@ -159,7 +100,7 @@ def screening_stream():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--weights", default=str(DEFAULT_WEIGHTS))
+    ap.add_argument("--weights", default=str(orb_weights()))
     ap.add_argument("--out", default=None)
     ap.add_argument("--card", type=int, default=0)
     ap.add_argument("--workdir", default="/tmp/ttatom_screening")

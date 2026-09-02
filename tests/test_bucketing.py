@@ -24,12 +24,11 @@ Run (qb1):  TT_VISIBLE_DEVICES=0 PYTHONPATH=. .venv/bin/python -m pytest tests/t
 """
 from __future__ import annotations
 
-import pathlib
-
 import numpy as np
 import pytest
 
-WEIGHTS_DIR = pathlib.Path.home() / ".cache" / "tt_atom" / "orb_weights"
+from tt_atom.orb_weight_cache import CACHE_DIR as WEIGHTS_DIR
+
 CHECKPOINTS = ["conservative-inf-omat", "direct-20-omat", "conservative-omol", "direct-omol"]
 
 pytestmark = pytest.mark.skipif(not WEIGHTS_DIR.is_dir(), reason="no cached Orb weights")

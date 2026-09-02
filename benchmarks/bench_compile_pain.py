@@ -7,10 +7,9 @@ rattled periodic Si supercells (energy+forces, orb-v3-conservative-inf-omat) and
 JSON line per system with N / E / Dmax / tile shapes / eval seconds; the parent diffs cache
 file counts and wall-clock per leg.
 
-Fleet discipline: the child takes the SAME exclusive flock tt_bio's device_lease uses
-(~/.coworker/state/leases/<host>-card<N>.json) before opening the card and holds it until the
-device is closed, so a sibling fleet job serializes with us instead of colliding on the PCI
-device. Legs are kept short (<= ~2 systems) so a sibling's 120 s lease timeout never trips.
+Fleet discipline is ``benchmarks/_harness.py``'s (lease flock, quiet-host wait, sandbox env),
+shared with the other subprocess benchmarks. Legs are kept short (<= ~2 systems) so a sibling's
+120 s lease timeout never trips.
 
 Run (qb1):  .venv/bin/python benchmarks/bench_compile_pain.py --card 3
 """
@@ -20,43 +19,20 @@ import argparse
 import json
 import os
 import pathlib
-import pwd
 import shutil
 import subprocess
 import sys
 import time
 
-
-def _real_home() -> pathlib.Path:
-    """The invoking user's home from the passwd database, NOT ``$HOME``: the sandbox-HOME legs
-    below override ``$HOME`` to control the kernel cache, and the fleet lease must still land in
-    the real ``~/.coworker/state/leases`` so we serialize with sibling fleet jobs."""
-    return pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
-
-
-LEASES = _real_home() / ".coworker" / "state" / "leases"
-HOLDER = os.environ.get("TT_BIO_LEASE_HOLDER", "tt-atom-benchmark")
-DEFAULT_WEIGHTS = _real_home() / ".cache/tt_atom/orb_weights/conservative-inf-omat.npz"
+from _harness import cache_stats, orb_weights, sandbox_env, take_lease, wait_for_quiet
 
 
 def run_child(weights, systems, tag, card):
     """Child mode: one process, one device, evaluate the systems sequentially, JSON-lines out."""
-    import fcntl
-    import socket
-
     import torch
     from ase.build import bulk
 
-    LEASES.mkdir(parents=True, exist_ok=True)
-    lease_path = LEASES / f"{socket.gethostname()}-card{card}.json"
-    lease_fd = os.open(lease_path, os.O_RDWR | os.O_CREAT)
-    t_wait0 = time.perf_counter()
-    fcntl.flock(lease_fd, fcntl.LOCK_EX)          # serialize with tt_bio device_lease holders
-    wait_s = time.perf_counter() - t_wait0
-    with open(lease_path, "w") as f:
-        json.dump({"host": socket.gethostname(), "card": str(card),
-                   "holder": HOLDER, "pid": os.getpid(),
-                   "acquired": time.time(), "released": None}, f)
+    wait_s = take_lease(card)
 
     from tt_atom.geometry import radius_graph
     from tt_atom.orb_weights import OrbWeights
@@ -97,23 +73,8 @@ def run_child(weights, systems, tag, card):
     os._exit(0)
 
 
-def cache_stats(home):
-    """(file count, total bytes) under the tt-metal kernel cache of a sandbox HOME."""
-    root = pathlib.Path(home) / ".cache"
-    n, b = 0, 0
-    for p in root.rglob("*"):
-        if p.is_file():
-            n += 1
-            b += p.stat().st_size
-    return n, b
-
-
 def run_leg(weights, systems, home, tag, card):
-    env = dict(os.environ)
-    env["HOME"] = home
-    env["XDG_CACHE_HOME"] = str(pathlib.Path(home) / ".cache")
-    env["TT_VISIBLE_DEVICES"] = str(card)
-    env.setdefault("OMP_NUM_THREADS", "4")
+    env = sandbox_env(home, card)
     pathlib.Path(home).mkdir(parents=True, exist_ok=True)
     files0, _ = cache_stats(home)
     proc = None
@@ -145,38 +106,9 @@ def run_leg(weights, systems, home, tag, card):
                 cache_files_after=files1, cache_mb=round(bytes1 / 1e6, 1), events=evals)
 
 
-def host_quiet():
-    """True when no sibling fleet device job is running on this host. The sibling audit's legs
-    announce as ``tt_bio.main`` / ``chain*.sh`` processes (its embed fanout does NOT take the
-    lease flock, so process liveness is the only reliable signal). sampler.py is a harmless
-    1 Hz CPU monitor and is ignored."""
-    out = subprocess.run(["ps", "-eo", "cmd"], capture_output=True, text=True).stdout
-    for line in out.splitlines():
-        if "tt_bio" in line or "tt-bio-dev/env" in line:
-            return False                                    # sibling device job or shard worker
-        if "mcscale" in line and ".sh" in line:
-            return False                                    # sibling campaign script
-    return True
-
-
-def wait_for_quiet(poll_s=15, settle_s=10, max_wait_s=2400):
-    """Block until the host has been continuously quiet for ``settle_s`` seconds."""
-    t0 = time.time()
-    quiet_since = None
-    while time.time() - t0 < max_wait_s:
-        if host_quiet():
-            quiet_since = quiet_since or time.time()
-            if time.time() - quiet_since >= settle_s:
-                return True
-        else:
-            quiet_since = None
-        time.sleep(poll_s)
-    return False
-
-
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--weights", default=str(DEFAULT_WEIGHTS))
+    ap.add_argument("--weights", default=str(orb_weights()))
     ap.add_argument("--out", default=None)
     ap.add_argument("--card", type=int, default=3)
     ap.add_argument("--cells", type=int, nargs="+", default=[2, 3, 4, 5, 6])

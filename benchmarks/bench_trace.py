@@ -14,23 +14,14 @@ from __future__ import annotations
 
 import argparse
 import pathlib
-import time
 
 import numpy as np
 from ase.build import molecule
 
+from _harness import median_ms
+
 HERE = pathlib.Path(__file__).parent
-
-
-def _median_ms(fn, n=15, warm=3):
-    for _ in range(warm):
-        fn()
-    ts = []
-    for _ in range(n):
-        t = time.perf_counter()
-        fn()
-        ts.append((time.perf_counter() - t) * 1000)
-    return float(np.median(ts))
+SAMPLES, WARMUP = 15, 3
 
 
 def main():
@@ -47,14 +38,14 @@ def main():
 
     eager = TTAtomCalculator(args.weights, device_id=args.device_id)
     atoms.calc = eager
-    eager_ms = _median_ms(lambda: eager.calculate(atoms))
+    eager_ms = median_ms(lambda: eager.calculate(atoms), SAMPLES, WARMUP)
     Ee, Fe = eager.results["energy"], eager.results["forces"]
     eager.close()
 
     traced = TTAtomCalculator(args.weights, device_id=args.device_id, trace=True)
     atoms.calc = traced
     traced.calculate(atoms)                         # capture
-    traced_ms = _median_ms(lambda: traced.calculate(atoms))
+    traced_ms = median_ms(lambda: traced.calculate(atoms), SAMPLES, WARMUP)
     Et, Ft = traced.results["energy"], traced.results["forces"]
     traced.close()
 
