@@ -53,6 +53,7 @@ def device_forces(system, tag):
                                    host_force_denormalize, host_conservative_force_denormalize,
                                    host_charge_spin_embedding, _to_dev)
     from tt_atom import orb_forces
+    from tt_atom.device import open_device
     import ttnn
 
     gw = _load(system, tag)
@@ -69,7 +70,7 @@ def device_forces(system, tag):
     charge, spin = float(gw.inp("charge")[0]), float(gw.inp("spin")[0])
     cond_nodes = host_charge_spin_embedding(w, charge, spin, N, latent_dim)
 
-    device = ttnn.open_device(device_id=0)
+    device = open_device(0)          # the tests' opener: same program-cache-enabled device
     try:
         enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
                      latent_dim=latent_dim, hidden_dim=1024)
