@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import torch
 
+from .device import to_dev
 from .trace import TraceEngineBase, _host_like
 
 
@@ -76,13 +77,13 @@ class OrbTracedEngine(TraceEngineBase):
         edge_feat, cutoff = ctx[:2]
         ttnn = self.ttnn
         from .orb_forces import backbone_bw
-        from .orb_model import OrbGraphContext, _to_dev
+        from .orb_model import OrbGraphContext
 
         N = self.Z.shape[0]
         self.graph = OrbGraphContext(self.device, senders=self.senders, receivers=self.receivers,
                                      cutoff=cutoff.detach().float(), num_nodes=N)
-        self.node_dev = _to_dev(self.node_feat, self.device, ttnn.bfloat16)
-        self.edge_dev = _to_dev(edge_feat.detach().float(), self.device, ttnn.bfloat16)
+        self.node_dev = to_dev(self.node_feat, self.device, ttnn.bfloat16)
+        self.edge_dev = to_dev(edge_feat.detach().float(), self.device, ttnn.bfloat16)
 
         def body():
             nodes, edges = self.encoder(self.node_dev, self.edge_dev)

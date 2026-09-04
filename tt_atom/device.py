@@ -169,6 +169,15 @@ def compute_kernel_config():
     )
 
 
+def to_dev(t, device, dtype, layout=None):
+    """Move a torch tensor onto the card. ``layout`` defaults to ``TILE_LAYOUT``, the layout every
+    compute op here expects; pass ``ROW_MAJOR_LAYOUT`` for the operands that index rather than
+    compute (gather indices, scatter offsets)."""
+    import ttnn
+
+    return ttnn.from_torch(t, dtype=dtype, layout=layout or ttnn.TILE_LAYOUT, device=device)
+
+
 def open_device(device_id: int = 0, *, l1_small_size: int = 0, trace_region_size: int = 0):
     """Open a single Tenstorrent device with the program cache enabled.
 

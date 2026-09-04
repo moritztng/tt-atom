@@ -20,6 +20,7 @@ import torch
 from ase.calculators.calculator import all_changes
 
 from .ase_base import DeviceCalculator
+from .device import to_dev
 
 
 class OrbCalculator(DeviceCalculator):
@@ -96,7 +97,7 @@ class OrbCalculator(DeviceCalculator):
         from .geometry import radius_graph
         from .orb_forces import energy_and_forces
         from .orb_geometry import check_max_neighbors, host_edge_features
-        from .orb_model import (OrbGraphContext, _to_dev, host_charge_spin_embedding,
+        from .orb_model import (OrbGraphContext, host_charge_spin_embedding,
                                 host_conservative_force_denormalize, host_conservative_stress,
                                 host_energy_denormalize, host_force_denormalize,
                                 host_node_features, host_stress_denormalize, host_zbl_energy,
@@ -147,8 +148,8 @@ class OrbCalculator(DeviceCalculator):
             graph = OrbGraphContext(self.device, senders=dev_senders, receivers=dev_receivers,
                                     cutoff=cutoff.detach().float(), num_nodes=N,
                                     cond_nodes=cond_nodes, **gkw)
-            node_dev = _to_dev(node_feat, self.device, ttnn.bfloat16)
-            edge_dev = _to_dev(edge_feat.detach().float(), self.device, ttnn.bfloat16)
+            node_dev = to_dev(node_feat, self.device, ttnn.bfloat16)
+            edge_dev = to_dev(edge_feat.detach().float(), self.device, ttnn.bfloat16)
             nodes, edges = self.encoder(node_dev, edge_dev)
             if e_bucket:
                 edges = pad_device_rows(ttnn, edges, e_bucket)
@@ -228,7 +229,7 @@ class OrbCalculator(DeviceCalculator):
         from .disjoint import assemble_orb
         from .orb_forces import energy_and_forces_batch
         from .orb_geometry import host_edge_features
-        from .orb_model import (OrbGraphContext, _to_dev, host_charge_spin_embedding,
+        from .orb_model import (OrbGraphContext, host_charge_spin_embedding,
                                 host_conservative_force_denormalize, host_energy_denormalize,
                                 host_force_denormalize, host_node_features, host_zbl_energy,
                                 host_zbl_forces)
@@ -256,10 +257,10 @@ class OrbCalculator(DeviceCalculator):
             graph = OrbGraphContext(self.device, senders=bg.senders, receivers=bg.receivers,
                                    cutoff=cutoff.detach().float(), num_nodes=Ntot,
                                    cond_nodes=cond_nodes)
-            seg_dev = _to_dev(seg.float(), self.device, ttnn.bfloat16)
-            seg_mean_dev = _to_dev(seg_mean.float(), self.device, ttnn.bfloat16)
-            node_dev = _to_dev(node_feat, self.device, ttnn.bfloat16)
-            edge_dev = _to_dev(edge_feat.detach().float(), self.device, ttnn.bfloat16)
+            seg_dev = to_dev(seg.float(), self.device, ttnn.bfloat16)
+            seg_mean_dev = to_dev(seg_mean.float(), self.device, ttnn.bfloat16)
+            node_dev = to_dev(node_feat, self.device, ttnn.bfloat16)
+            edge_dev = to_dev(edge_feat.detach().float(), self.device, ttnn.bfloat16)
             nodes, edges = self.encoder(node_dev, edge_dev)
             for layer in self.layers:
                 nodes, edges = layer(nodes, edges, graph)

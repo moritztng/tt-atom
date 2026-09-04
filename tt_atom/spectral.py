@@ -20,19 +20,13 @@ from __future__ import annotations
 
 import torch
 
-from .device import compute_kernel_config, flag
+from .device import compute_kernel_config, flag, to_dev
 
 # SO3_Linear shares one [cin,cout] weight per degree l across that degree's 2l+1 coefficients.
 # The per-degree path slices x into 3D [N, 2l+1, cin] blocks and runs a batched matmul -- but the
 # tiny coefficient dim (1/3/5) tile-pads to 32, a ~6-32x row blowup that makes this tiny-N module
 # cost ~100 ms/step. Folding it into ONE flat 2D matmul with a block-diagonal-by-coefficient
 # weight [nsph*cin, nsph*cout] kills the padding entirely (bit-compatible ordering). Gated for A/B.
-
-
-def _to_dev(t, device, dtype):
-    import ttnn
-
-    return ttnn.from_torch(t, dtype=dtype, layout=ttnn.TILE_LAYOUT, device=device)
 
 
 class SpectralAtomwise:
@@ -51,14 +45,14 @@ class SpectralAtomwise:
         wdtype = ttnn.bfloat8_b if fast else ttnn.bfloat16
 
         # scalar_mlp: Linear(C -> lmax*H) + SiLU, on the l=0 channel only
-        self.smlp_w = _to_dev(weights[f"{prefix}.scalar_mlp.0.weight"].T.contiguous(), device, wdtype)
-        self.smlp_b = _to_dev(weights[f"{prefix}.scalar_mlp.0.bias"], device, wdtype)
+        self.smlp_w = to_dev(weights[f"{prefix}.scalar_mlp.0.weight"].T.contiguous(), device, wdtype)
+        self.smlp_b = to_dev(weights[f"{prefix}.scalar_mlp.0.bias"], device, wdtype)
 
         # SO3_Linear weight is [lmax+1, out, in]; store per-degree [in, out] for x @ W
         def so3(name, cin, cout):
             W = weights[f"{prefix}.{name}.weight"]                     # [lmax+1, out, in]
-            blocks = [_to_dev(W[l].T.contiguous(), device, wdtype) for l in range(lmax + 1)]
-            b = _to_dev(weights[f"{prefix}.{name}.bias"].view(1, 1, cout), device, wdtype)
+            blocks = [to_dev(W[l].T.contiguous(), device, wdtype) for l in range(lmax + 1)]
+            b = to_dev(weights[f"{prefix}.{name}.bias"].view(1, 1, cout), device, wdtype)
             return blocks, b
 
         self.l1_w, self.l1_b = so3("so3_linear_1", self.C, self.H)     # C -> H
@@ -98,7 +92,7 @@ class SpectralAtomwise:
             Wbd[c * cin:(c + 1) * cin, c * cout:(c + 1) * cout] = W[l].T.float()   # [in,out]
         bbd = torch.zeros(self.nsph * cout, dtype=torch.float32)
         bbd[:cout] = bias                                 # l=0 == coeff 0
-        return _to_dev(Wbd.contiguous(), self.device, wdtype), _to_dev(bbd.contiguous(), self.device, wdtype)
+        return to_dev(Wbd.contiguous(), self.device, wdtype), to_dev(bbd.contiguous(), self.device, wdtype)
 
     def _so3_linear_fused(self, x, wf, bf, cout):
         """x [N, nsph, cin] -> [N, nsph, cout] via one flat 2D matmul on the block-diagonal weight."""

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import torch
 
-from .device import bf8_edge, compute_kernel_config, flag, fused_lnbw
+from .device import bf8_edge, compute_kernel_config, flag, fused_lnbw, to_dev
 
 # The whole SO(2) convolution (m=0 dense linear + every m>0 real/imag mixing) is ONE linear map
 # from the post-radial input [E, nsph*Cin] to [extra | out]. The m>0 cross terms
@@ -43,12 +43,6 @@ def _red_tile(ttnn, device, W):
     return t
 
 
-def _to_dev(t: torch.Tensor, device, dtype):
-    import ttnn
-
-    return ttnn.from_torch(t, dtype=dtype, layout=ttnn.TILE_LAYOUT, device=device)
-
-
 class RadialMLP:
     """Linear -> (LayerNorm -> SiLU) x2 -> Linear. Produces per-m radial weights from the
     invariant edge embedding. Mirrors ``fairchem ... nn/radial.py:RadialMLP``."""
@@ -69,14 +63,14 @@ class RadialMLP:
         # matmul with the duplicated weight sums the repeated rows' gradients (== the old collapse).
         self._dup_index = dup_index
         # net.0 Linear, net.1 LayerNorm, net.3 Linear, net.4 LayerNorm, net.6 Linear
-        self.w0 = _to_dev(weights[f"{prefix}.net.0.weight"].T.contiguous(), device, wdtype)
-        self.b0 = _to_dev(weights[f"{prefix}.net.0.bias"], device, wdtype)
-        self.ln1w = _to_dev(weights[f"{prefix}.net.1.weight"], device, ttnn.bfloat16)
-        self.ln1b = _to_dev(weights[f"{prefix}.net.1.bias"], device, ttnn.bfloat16)
-        self.w3 = _to_dev(weights[f"{prefix}.net.3.weight"].T.contiguous(), device, wdtype)
-        self.b3 = _to_dev(weights[f"{prefix}.net.3.bias"], device, wdtype)
-        self.ln4w = _to_dev(weights[f"{prefix}.net.4.weight"], device, ttnn.bfloat16)
-        self.ln4b = _to_dev(weights[f"{prefix}.net.4.bias"], device, ttnn.bfloat16)
+        self.w0 = to_dev(weights[f"{prefix}.net.0.weight"].T.contiguous(), device, wdtype)
+        self.b0 = to_dev(weights[f"{prefix}.net.0.bias"], device, wdtype)
+        self.ln1w = to_dev(weights[f"{prefix}.net.1.weight"], device, ttnn.bfloat16)
+        self.ln1b = to_dev(weights[f"{prefix}.net.1.bias"], device, ttnn.bfloat16)
+        self.w3 = to_dev(weights[f"{prefix}.net.3.weight"].T.contiguous(), device, wdtype)
+        self.b3 = to_dev(weights[f"{prefix}.net.3.bias"], device, wdtype)
+        self.ln4w = to_dev(weights[f"{prefix}.net.4.weight"], device, ttnn.bfloat16)
+        self.ln4b = to_dev(weights[f"{prefix}.net.4.bias"], device, ttnn.bfloat16)
         # ``out_scale`` folds a downstream constant (e.g. the edge-degree 1/rescale) into the final
         # linear in fp32 before the bf16 cast, so it lands inside the matmul's fp32 accumulation
         # instead of a lossy bf16 elementwise multiply (0.2 is not representable in bf16). w6 is the
@@ -87,13 +81,13 @@ class RadialMLP:
         if dup_index is not None:
             idx = torch.as_tensor(dup_index, dtype=torch.long)
             w6 = w6[idx]; b6 = b6[idx]                                    # duplicate/reorder rows
-        self.w6 = _to_dev(w6.T.contiguous(), device, wdtype)
-        self.b6 = _to_dev(b6, device, wdtype)
+        self.w6 = to_dev(w6.T.contiguous(), device, wdtype)
+        self.b6 = to_dev(b6, device, wdtype)
         # broadcast copies of the LN scales for the hand-written backward ([1, n])
         n1 = weights[f"{prefix}.net.1.weight"].shape[0]
         n4 = weights[f"{prefix}.net.4.weight"].shape[0]
-        self.ln1w_b = _to_dev(weights[f"{prefix}.net.1.weight"].reshape(1, n1), device, ttnn.bfloat16)
-        self.ln4w_b = _to_dev(weights[f"{prefix}.net.4.weight"].reshape(1, n4), device, ttnn.bfloat16)
+        self.ln1w_b = to_dev(weights[f"{prefix}.net.1.weight"].reshape(1, n1), device, ttnn.bfloat16)
+        self.ln4w_b = to_dev(weights[f"{prefix}.net.4.weight"].reshape(1, n4), device, ttnn.bfloat16)
         # fp32 weight copies for the (default, non-fused) analytic-force backward. The radial MLP is
         # tiny (edge-channel hidden), so its VJP runs in fp32 for a few % of one block's cost; a
         # fully-bf16 backward mis-directs forces on out-of-distribution geometries (compressed heavy
@@ -101,11 +95,11 @@ class RadialMLP:
         # SH-norm (rmsnorm_bw) and gate (gate_bw) backwards already use. w6_f mirrors the *transformed*
         # w6 (out_scale + dup_index), so the backward matches the forward.
         f32 = ttnn.float32
-        self.w0_f = _to_dev(weights[f"{prefix}.net.0.weight"].T.contiguous(), device, f32)
-        self.w3_f = _to_dev(weights[f"{prefix}.net.3.weight"].T.contiguous(), device, f32)
-        self.w6_f = _to_dev(w6.T.contiguous(), device, f32)
-        self.ln1w_b_f = _to_dev(weights[f"{prefix}.net.1.weight"].reshape(1, n1), device, f32)
-        self.ln4w_b_f = _to_dev(weights[f"{prefix}.net.4.weight"].reshape(1, n4), device, f32)
+        self.w0_f = to_dev(weights[f"{prefix}.net.0.weight"].T.contiguous(), device, f32)
+        self.w3_f = to_dev(weights[f"{prefix}.net.3.weight"].T.contiguous(), device, f32)
+        self.w6_f = to_dev(w6.T.contiguous(), device, f32)
+        self.ln1w_b_f = to_dev(weights[f"{prefix}.net.1.weight"].reshape(1, n1), device, f32)
+        self.ln4w_b_f = to_dev(weights[f"{prefix}.net.4.weight"].reshape(1, n4), device, f32)
         self.kcfg = compute_kernel_config()
 
     def __call__(self, x_edge):
@@ -233,11 +227,11 @@ class SO2Convolution:
                     if self.has_radial else None)
 
         # m=0 dense linear (has bias)
-        self.w_m0 = _to_dev(weights[f"{prefix}.fc_m0.weight"].T.contiguous(), device, wdtype)
-        self.b_m0 = _to_dev(weights[f"{prefix}.fc_m0.bias"], device, wdtype)
+        self.w_m0 = to_dev(weights[f"{prefix}.fc_m0.weight"].T.contiguous(), device, wdtype)
+        self.b_m0 = to_dev(weights[f"{prefix}.fc_m0.bias"], device, wdtype)
         # m>0 linears (no bias)
         self.w_m = [
-            _to_dev(weights[f"{prefix}.so2_m_conv.{m-1}.fc.weight"].T.contiguous(), device, wdtype)
+            to_dev(weights[f"{prefix}.so2_m_conv.{m-1}.fc.weight"].T.contiguous(), device, wdtype)
             for m in range(1, mmax + 1)
         ]
 
@@ -256,8 +250,8 @@ class SO2Convolution:
         mmax = self.mmax
         w_m0 = weights[f"{prefix}.fc_m0.weight"].T.contiguous().float()       # [in0, 640]
         b_m0 = weights[f"{prefix}.fc_m0.bias"].float()
-        self.fused_wm0 = _to_dev(w_m0.contiguous(), self.device, wdtype)
-        self.fused_bm0 = _to_dev(b_m0.contiguous(), self.device, wdtype)
+        self.fused_wm0 = to_dev(w_m0.contiguous(), self.device, wdtype)
+        self.fused_bm0 = to_dev(b_m0.contiguous(), self.device, wdtype)
         self.fused_m0_out = w_m0.shape[1]                                     # 640 (extra + coeffs)
         self.fused_wm = []                                                   # [2K, 2Hh] per m>0
         self.fused_out_w = [self.fused_m0_out - self.extra]                  # coeff out width per block
@@ -269,7 +263,7 @@ class SO2Convolution:
             Wblk = torch.zeros(2 * K, 2 * Hh, dtype=torch.float32)
             Wblk[0:K, 0:Hh] = Wa; Wblk[0:K, Hh:2 * Hh] = Wb                   # real -> [out_real|out_imag]
             Wblk[K:2 * K, 0:Hh] = -Wb; Wblk[K:2 * K, Hh:2 * Hh] = Wa         # imag -> [out_real|out_imag]
-            self.fused_wm.append(_to_dev(Wblk.contiguous(), self.device, wdtype))
+            self.fused_wm.append(to_dev(Wblk.contiguous(), self.device, wdtype))
             self.fused_out_w.append(2 * Hh)
         self.fused_w = True                                                  # sentinel: fused path on
 

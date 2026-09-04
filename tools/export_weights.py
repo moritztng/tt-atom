@@ -29,7 +29,7 @@ import json
 import numpy as np
 import torch
 
-from npz_atomic import savez_atomic
+from npz_atomic import npy, savez_atomic
 
 from fairchem.core.models.uma.escn_md import eSCNMDBackbone
 
@@ -41,10 +41,6 @@ COMMON = dict(max_num_elements=100, cutoff=5.0, max_neighbors=300, otf_graph=Fal
               direct_forces=False, regress_forces=True, regress_stress=False,
               norm_type="rms_norm_sh", act_type="gate", ff_type="grid",
               use_dataset_embedding=True, dataset_list=["omat"], distance_function="gaussian")
-
-
-def npy(t):
-    return t.detach().to(torch.float32).cpu().numpy()
 
 
 def bundle_arrays(cfg, backbone, energy_block):

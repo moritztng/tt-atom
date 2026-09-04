@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import torch
 
-from .device import orb_fused_silu_bw
+from .device import orb_fused_silu_bw, to_dev
 
 
 def _mm(ttnn, g, W, kcfg):
@@ -269,7 +269,7 @@ def energy_and_forces_batch(encoder, layers, ehead, device, *, pos, senders, rec
     import ttnn
 
     from .orb_geometry import host_edge_features
-    from .orb_model import OrbGraphContext, _to_dev
+    from .orb_model import OrbGraphContext
 
     pos = pos.detach().clone().requires_grad_(True)
     edge_feat, cutoff, _vectors = host_edge_features(pos, senders, receivers, cell_shift,
@@ -278,10 +278,10 @@ def energy_and_forces_batch(encoder, layers, ehead, device, *, pos, senders, rec
     graph = OrbGraphContext(device, senders=senders, receivers=receivers,
                             cutoff=cutoff.detach().float(), num_nodes=Ntot, cond_nodes=cond_nodes)
 
-    node_dev = _to_dev(node_feat, device, ttnn.bfloat16)
-    edge_dev = _to_dev(edge_feat.detach().float(), device, ttnn.bfloat16)
-    seg_mean_dev = _to_dev(seg_mean.float(), device, ttnn.bfloat16)
-    seg_mean_T_dev = _to_dev(seg_mean_T.float(), device, ttnn.bfloat16)
+    node_dev = to_dev(node_feat, device, ttnn.bfloat16)
+    edge_dev = to_dev(edge_feat.detach().float(), device, ttnn.bfloat16)
+    seg_mean_dev = to_dev(seg_mean.float(), device, ttnn.bfloat16)
+    seg_mean_T_dev = to_dev(seg_mean_T.float(), device, ttnn.bfloat16)
     nodes, edges = encoder(node_dev, edge_dev)
     for layer in layers:
         nodes, edges = layer(nodes, edges, graph)
@@ -330,7 +330,7 @@ def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers
 
     from .bucketing import pad_device_rows, pad_graph
     from .orb_geometry import host_edge_features
-    from .orb_model import OrbGraphContext, _to_dev
+    from .orb_model import OrbGraphContext
 
     pos = pos.detach().clone().requires_grad_(True)
     strain = torch.zeros(3, 3, dtype=pos.dtype, requires_grad=True) if compute_stress else None
@@ -348,8 +348,8 @@ def energy_and_forces(encoder, layers, ehead, device, *, pos, senders, receivers
                             cutoff=cutoff_dev.detach().float(), num_nodes=N,
                             cond_nodes=cond_nodes, **gkw)
 
-    node_dev = _to_dev(node_feat, device, ttnn.bfloat16)
-    edge_dev = _to_dev(edge_feat.detach().float(), device, ttnn.bfloat16)
+    node_dev = to_dev(node_feat, device, ttnn.bfloat16)
+    edge_dev = to_dev(edge_feat.detach().float(), device, ttnn.bfloat16)
     nodes, edges = encoder(node_dev, edge_dev)
     if edge_bucket:
         edges = pad_device_rows(ttnn, edges, edge_bucket)

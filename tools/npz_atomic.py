@@ -1,4 +1,6 @@
-"""Atomic ``.npz`` materialization: sidecar in the destination directory, then ``os.replace``.
+"""What the exporters share: how a tensor becomes a stored array, and atomic ``.npz`` writes.
+
+Atomic materialization is a sidecar in the destination directory, then ``os.replace``.
 
 An interrupted export must never leave a truncated file at the final name, because every consumer
 gates on presence (``scripts/release_gate.py`` checks ``.exists()``) rather than on integrity.
@@ -19,6 +21,17 @@ import pathlib
 import tempfile
 
 import numpy as np
+import torch
+
+
+def npy(t):
+    """A torch tensor as the float32 numpy array the bundles store. Every stored array is fp32
+    whatever the checkpoint's own dtype, so the ttnn loader casts from one known type.
+
+    ``tests/gen_golden_orb.py`` keeps its own integer-preserving variant on purpose: a golden
+    bundle also carries index arrays, and rounding those through fp32 would corrupt them.
+    """
+    return t.detach().to(torch.float32).cpu().numpy()
 
 
 def npz_path(out):
