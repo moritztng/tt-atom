@@ -6,7 +6,7 @@ work; validated against the fairchem uma-s-1 oracle on bulk Si (omat) to energy 
 force PCC > 0.99. Use a bundle exported with ``--task omat`` (or oc20/odac/omc) for real numbers;
 the shipped demo bundle is random-weight but still exercises the full periodic path.
 
-    ~/.ttatom_run/env/bin/python examples/periodic.py --weights si_omat.npz
+    python examples/periodic.py --weights si_omat.npz
 """
 from __future__ import annotations
 

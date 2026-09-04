@@ -18,9 +18,8 @@ import json
 import os
 
 import numpy as np
-import torch
 
-from npz_atomic import savez_atomic
+from npz_atomic import npy, savez_atomic
 
 from orb_models.forcefield import pretrained
 
@@ -30,10 +29,6 @@ CKPTS = {
     "conservative-omol": pretrained.orb_v3_conservative_omol,
     "direct-omol": pretrained.orb_v3_direct_omol,
 }
-
-
-def npy(t):
-    return t.detach().to(torch.float32).cpu().numpy()
 
 
 def main():

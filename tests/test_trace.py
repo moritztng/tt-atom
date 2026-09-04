@@ -10,12 +10,9 @@ import numpy as np
 from ase.build import molecule
 
 from tt_atom.calculator import TTAtomCalculator
+from util import pcc_strict
 
 DEMO = str(pathlib.Path(__file__).parent.parent / "examples" / "model_tiny_demo.npz")
-
-
-def _pcc(a, b):
-    return float(np.corrcoef(np.asarray(a).ravel(), np.asarray(b).ravel())[0, 1])
 
 
 def test_traced_matches_eager(device):
@@ -34,7 +31,7 @@ def test_traced_matches_eager(device):
             atoms.calc = traced
             Et, Ft = atoms.get_potential_energy(), atoms.get_forces()
             assert abs(Et - Ee) < 1e-4, f"step {k}: energy {Et} vs {Ee}"
-            assert _pcc(Ft, Fe) > 0.9999, f"step {k}: force PCC {_pcc(Ft, Fe)}"
+            assert pcc_strict(Ft, Fe) > 0.9999, f"step {k}: force PCC {pcc_strict(Ft, Fe)}"
             assert np.abs(Ft - Fe).max() < 1e-3, f"step {k}: max force diff {np.abs(Ft - Fe).max()}"
     finally:
         traced.close()
@@ -79,7 +76,7 @@ def test_traced_recaptures_on_cell_shift_change(device):
             a.calc = traced
             Et, Ft = a.get_potential_energy(), a.get_forces()
             assert abs(Et - Ee) < 1e-4, f"cx={cx}: energy {Et} vs {Ee}"
-            assert _pcc(Ft, Fe) > 0.9999, f"cx={cx}: force PCC {_pcc(Ft, Fe)}"
+            assert pcc_strict(Ft, Fe) > 0.9999, f"cx={cx}: force PCC {pcc_strict(Ft, Fe)}"
             assert np.abs(Ft - Fe).max() < 1e-3, f"cx={cx}: max force diff {np.abs(Ft - Fe).max()}"
     finally:
         traced.close()
@@ -102,6 +99,6 @@ def test_traced_stress_falls_back_to_eager(device):
         s_t, F_t = a.get_stress(), a.get_forces()
         assert s_t is not None and s_t.shape == (6,)
         assert np.abs(s_t - s_e).max() < 1e-4, f"stress {s_t} vs {s_e}"
-        assert _pcc(F_t, F_e) > 0.9999, f"force PCC {_pcc(F_t, F_e)}"
+        assert pcc_strict(F_t, F_e) > 0.9999, f"force PCC {pcc_strict(F_t, F_e)}"
     finally:
         traced.close()

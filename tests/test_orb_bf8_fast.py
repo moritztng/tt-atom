@@ -11,7 +11,7 @@ Bar: UMA's own real-weight ``--fast`` bar (commit 836af75: "forward+forces PCC 0
 accuracy loss") -- same energy/force/stress thresholds as the existing bf16 real-weight tests
 (``test_orb_forces_realweight.py``, ``test_orb_direct_realweight.py``, ``test_orb_stress_realweight.py``).
 
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python -m pytest \
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=. python -m pytest \
         tests/test_orb_bf8_fast.py -q -s
 
 Absent the golden bundle(s) each test auto-skips independently.
@@ -101,7 +101,8 @@ def test_direct_fast_energy_forces(device):
     from tt_atom.orb_weights import OrbWeights
     from tt_atom.orb_model import (Encoder, AttentionInteractionLayer, OrbGraphContext,
                                    EnergyHead, ForceHead, host_cutoff, host_zbl_energy,
-                                   host_energy_denormalize, host_force_denormalize, _to_dev)
+                                   host_energy_denormalize, host_force_denormalize)
+    from tt_atom.device import to_dev
     import ttnn
 
     gw = OrbWeights.load(DIRECT_GOLDEN)
@@ -110,8 +111,8 @@ def test_direct_fast_energy_forces(device):
     L = cfg["num_message_passing_steps"]
     enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
                  latent_dim=cfg["latent_dim"], hidden_dim=1024, fast=True)
-    node_dev = _to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
-    edge_dev = _to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
+    node_dev = to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
+    edge_dev = to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
     nodes, edges = enc(node_dev, edge_dev)
 
     senders = gw.inp("senders").long()

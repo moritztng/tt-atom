@@ -18,7 +18,7 @@ device backbone must reproduce the fairchem oracle. Two periodic tasks are cover
         --system mof --task odac --out ~/.ttatom_run/goldens_real/mgo_odac.npz
     HF_HUB_OFFLINE=1 ~/.ttatom_run/refenv/bin/python tests/gen_golden_real.py \
         --system molcrystal --task omc --out ~/.ttatom_run/goldens_real/co2_omc.npz
-    PYTHONPATH=~/TT-Atom ~/.ttatom_run/env/bin/python -m pytest tests/test_periodic.py -q
+    PYTHONPATH=. python -m pytest tests/test_periodic.py -q
 
 What is checked per task:
   * the periodic neighbour list reproduces fairchem's ``edge_index`` + ``edge_distance_vec``

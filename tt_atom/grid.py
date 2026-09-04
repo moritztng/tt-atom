@@ -13,13 +13,7 @@ Reference: ``fairchem ... escn_md_block.py:GridAtomwise`` + ``common/so3.py:SO3_
 """
 from __future__ import annotations
 
-from .device import L1_NODE_BUDGET, compute_kernel_config, l1_if_fits
-
-
-def _to_dev(t, device, dtype):
-    import ttnn
-
-    return ttnn.from_torch(t, dtype=dtype, layout=ttnn.TILE_LAYOUT, device=device)
+from .device import L1_NODE_BUDGET, compute_kernel_config, l1_if_fits, to_dev
 
 
 class GridAtomwise:
@@ -38,12 +32,12 @@ class GridAtomwise:
         tg = to_grid_mat.reshape(self.npts, nsph)          # x_grid = tg @ x  (over nsph)
         fg = from_grid_mat.reshape(self.npts, nsph)         # x = fg^T @ x_grid (over npts)
         # device matmuls operate on [.., C, k] @ [k, n]; store the right-multiply operands.
-        self.tg_T = _to_dev(tg.T.contiguous(), device, wdtype)   # [nsph, npts]
-        self.fg = _to_dev(fg.contiguous(), device, wdtype)       # [npts, nsph]
+        self.tg_T = to_dev(tg.T.contiguous(), device, wdtype)   # [nsph, npts]
+        self.fg = to_dev(fg.contiguous(), device, wdtype)       # [npts, nsph]
 
-        self.w0 = _to_dev(weights[f"{prefix}.grid_mlp.0.weight"].T.contiguous(), device, wdtype)
-        self.w2 = _to_dev(weights[f"{prefix}.grid_mlp.2.weight"].T.contiguous(), device, wdtype)
-        self.w4 = _to_dev(weights[f"{prefix}.grid_mlp.4.weight"].T.contiguous(), device, wdtype)
+        self.w0 = to_dev(weights[f"{prefix}.grid_mlp.0.weight"].T.contiguous(), device, wdtype)
+        self.w2 = to_dev(weights[f"{prefix}.grid_mlp.2.weight"].T.contiguous(), device, wdtype)
+        self.w4 = to_dev(weights[f"{prefix}.grid_mlp.4.weight"].T.contiguous(), device, wdtype)
 
     def __call__(self, x):
         """x: ttnn ``[N, nsph, C]`` -> ``[N, nsph, C]``."""

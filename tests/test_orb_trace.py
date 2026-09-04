@@ -5,7 +5,7 @@ analytic host geometry VJP is checked to 1e-6 against eager autograd for both ch
 (conservative-inf-omat: analytic-VJP forces; direct-20-omat: forward-only ForceHead) at both the
 toy 4-atom golden and the 24-atom/1064-edge production-scale supercell golden.
 
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python -m pytest \
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=. python -m pytest \
         tests/test_orb_trace.py -q -s
 
 Any individual golden absent -> that case auto-skips (module-level goldens are independent).
@@ -87,7 +87,8 @@ def test_conservative_trace_matches_eager(system, device):
 
 @pytest.mark.parametrize("system", ["toy", "supercell"])
 def test_direct_trace_matches_eager(system, device):
-    from tt_atom.orb_model import OrbGraphContext, _to_dev
+    from tt_atom.device import to_dev
+    from tt_atom.orb_model import OrbGraphContext
     from tt_atom.orb_geometry import host_edge_features
     from tt_atom.orb_trace import OrbTracedEngine
     from tt_atom.orb_weights import OrbWeights
@@ -111,8 +112,8 @@ def test_direct_trace_matches_eager(system, device):
 
     # eager forward: same op stream OrbTracedEngine's direct mode captures
     edge_feat, cutoff, _ = host_edge_features(pos, senders, receivers, cell_shift)
-    node_dev = _to_dev(node_feat, device, ttnn.bfloat16)
-    edge_dev = _to_dev(edge_feat.detach().float(), device, ttnn.bfloat16)
+    node_dev = to_dev(node_feat, device, ttnn.bfloat16)
+    edge_dev = to_dev(edge_feat.detach().float(), device, ttnn.bfloat16)
     graph = OrbGraphContext(device, senders=senders, receivers=receivers,
                             cutoff=cutoff.detach().float(), num_nodes=N)
     nodes, edges = encoder(node_dev, edge_dev)

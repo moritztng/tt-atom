@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 from tt_atom.orb_weight_cache import CACHE_DIR
-from util import GOLDEN_DIR
+from util import GOLDEN_DIR, have_orb_fixture
 
 
 def _build_si():
@@ -51,11 +51,7 @@ def _build_short_contact():
                 pbc=True)
 
 
-def _have(checkpoint, golden):
-    return (CACHE_DIR / f"{checkpoint}.npz").exists() and (GOLDEN_DIR / golden).exists()
-
-
-@pytest.mark.skipif(not _have("conservative-inf-omat", "si_omat_orb.npz"),
+@pytest.mark.skipif(not have_orb_fixture("conservative-inf-omat", "si_omat_orb.npz"),
                     reason="orb weight cache or si_omat_orb.npz golden not found")
 def test_conservative_omat_end_to_end(device):
     from tt_atom.orb_calculator import OrbCalculator
@@ -81,7 +77,7 @@ def test_conservative_omat_end_to_end(device):
         calc.close()
 
 
-@pytest.mark.skipif(not _have("direct-20-omat", "si_short_contact_orb_direct20.npz"),
+@pytest.mark.skipif(not have_orb_fixture("direct-20-omat", "si_short_contact_orb_direct20.npz"),
                     reason="orb weight cache or si_short_contact_orb_direct20.npz golden not found")
 def test_direct_omat_end_to_end(device):
     """The bulk Si golden's periodic images alone exceed max_num_neighbors=20 for this checkpoint
@@ -120,7 +116,7 @@ def test_direct_omat_end_to_end(device):
         calc.close()
 
 
-@pytest.mark.skipif(not _have("conservative-omol", "molecule_omol_conservative.npz"),
+@pytest.mark.skipif(not have_orb_fixture("conservative-omol", "molecule_omol_conservative.npz"),
                     reason="orb weight cache or molecule_omol_conservative.npz golden not found")
 def test_orbmol_conditioning_end_to_end(device):
     """Same ASE path, an OrbMol checkpoint — exercises host_charge_spin_embedding through the

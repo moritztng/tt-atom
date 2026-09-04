@@ -16,7 +16,7 @@ copy, node-offset by N) and checks the batched Encoder+backbone output on each h
 (same bf16 rounding, same PCC) against the already-verified single-system run
 (``test_orb_realweight.py``) -- confirming no adapter code is needed.
 
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python -m pytest \
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=. python -m pytest \
         tests/test_orb_disjoint_batch.py -q -s
 
 Absent the golden bundle the whole module auto-skips.
@@ -44,7 +44,8 @@ def gw():
 
 
 def test_disjoint_batch_row_independence(gw, device):
-    from tt_atom.orb_model import Encoder, AttentionInteractionLayer, OrbGraphContext, _to_dev
+    from tt_atom.device import to_dev
+    from tt_atom.orb_model import Encoder, AttentionInteractionLayer, OrbGraphContext
     import ttnn
 
     cfg = gw.config
@@ -61,8 +62,8 @@ def test_disjoint_batch_row_independence(gw, device):
     def run(node_feat, edge_feat, senders, receivers, cutoff, num_nodes):
         enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
                      latent_dim=cfg["latent_dim"], hidden_dim=1024)
-        node_dev = _to_dev(node_feat, device, ttnn.bfloat16)
-        edge_dev = _to_dev(edge_feat, device, ttnn.bfloat16)
+        node_dev = to_dev(node_feat, device, ttnn.bfloat16)
+        edge_dev = to_dev(edge_feat, device, ttnn.bfloat16)
         nodes, edges = enc(node_dev, edge_dev)
         graph = OrbGraphContext(device, senders=senders, receivers=receivers, cutoff=cutoff,
                                 num_nodes=num_nodes)
@@ -108,13 +109,13 @@ def test_disjoint_batch_row_independence(gw, device):
     from tt_atom.orb_model import EnergyHead
 
     ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"], hidden_dim=1024)
-    single_e = ttnn.to_torch(ehead(_to_dev(single_out, device, ttnn.bfloat16))).float()
+    single_e = ttnn.to_torch(ehead(to_dev(single_out, device, ttnn.bfloat16))).float()
 
     seg_mean = torch.zeros(2, 2 * N)
     seg_mean[0, :N] = 1.0 / N
     seg_mean[1, N:] = 1.0 / N
-    seg_dev = _to_dev(seg_mean, device, ttnn.bfloat16)
-    batch_e = ttnn.to_torch(ehead.batch(_to_dev(batch_out, device, ttnn.bfloat16), seg_dev)).float()
+    seg_dev = to_dev(seg_mean, device, ttnn.bfloat16)
+    batch_e = ttnn.to_torch(ehead.batch(to_dev(batch_out, device, ttnn.bfloat16), seg_dev)).float()
 
     pcc_e = _pcc(batch_e, single_e.expand(2, -1))
     err_e = (batch_e - single_e.expand(2, -1)).abs().max().item()

@@ -10,7 +10,7 @@ The single-system TTAtomCalculator API is unchanged — batching is just the ext
 composition, so the batch shares that composition (e.g. an MD ensemble / conformer set of one
 molecule); pass a real merged bundle for physical energies.
 
-    ~/.ttatom_run/env/bin/python examples/evaluate_batch.py --weights uma_s_ethanol.npz --n 32
+    python examples/evaluate_batch.py --weights uma_s_ethanol.npz --n 32
 """
 from __future__ import annotations
 

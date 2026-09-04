@@ -18,7 +18,7 @@ fully explained by the device's own absolute-error floor -- i.e. the gap is prec
 corr(R, D-R) far from zero AND measured PCC well below the noise-floor prediction.
 
 Run on card 0 with the ttnn env:
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python scripts/orb_omol_noise_floor.py
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=. python scripts/orb_omol_noise_floor.py
 """
 from __future__ import annotations
 
@@ -30,19 +30,13 @@ import numpy as np
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 # The goldens this reads are the parity tests' own, so the directory (and TTATOM_GOLDEN_DIR)
 # has to resolve to the same place theirs does.
-from tests.util import GOLDEN_DIR, pcc as _pcc    # noqa: E402
-
-SYSTEMS = ["molecule", "molecule_charged", "molecule_openshell"]
-CKPT_TAGS = ["conservative", "direct"]
-
-
-def _golden_path(system, tag):
-    return GOLDEN_DIR / f"{system}_omol_{tag}.npz"
+from tests.util import (OMOL_CKPT_TAGS as CKPT_TAGS, OMOL_SYSTEMS as SYSTEMS,   # noqa: E402
+                        omol_golden, pcc as _pcc)
 
 
 def _load(system, tag):
     from tt_atom.orb_weights import OrbWeights
-    return OrbWeights.load(_golden_path(system, tag))
+    return OrbWeights.load(omol_golden(system, tag))
 
 
 def device_forces(system, tag):
@@ -51,7 +45,8 @@ def device_forces(system, tag):
                                    EnergyHead, ForceHead, host_cutoff, host_zbl_energy,
                                    host_zbl_forces, host_energy_denormalize,
                                    host_force_denormalize, host_conservative_force_denormalize,
-                                   host_charge_spin_embedding, _to_dev)
+                                   host_charge_spin_embedding)
+    from tt_atom.device import to_dev
     from tt_atom import orb_forces
     from tt_atom.device import open_device
     import ttnn
@@ -74,8 +69,8 @@ def device_forces(system, tag):
     try:
         enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
                      latent_dim=latent_dim, hidden_dim=1024)
-        node_dev = _to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
-        edge_dev = _to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
+        node_dev = to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
+        edge_dev = to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
         cutoff = host_cutoff(vectors.norm(dim=-1), r_max=6.0)
         graph = OrbGraphContext(device, senders=senders, receivers=receivers, cutoff=cutoff,
                                 num_nodes=N, cond_nodes=cond_nodes)

@@ -19,7 +19,7 @@ composition. Same conservative-inf-omat checkpoint, same analytic-force VJP
 
     ~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py --ckpt conservative-inf-omat \
         --system mgo --out ~/.ttatom_run/goldens_real/mgo_omat_orb.npz
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python -m pytest \
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=. python -m pytest \
         tests/test_orb_mgo_realweight.py -q -s
 
 Absent the golden bundle the whole module auto-skips.
@@ -61,8 +61,8 @@ def test_mgo_energy_and_forces(gw, device):
     oracle on the MgO rock-salt supercell."""
     from tt_atom.orb_model import (Encoder, AttentionInteractionLayer, OrbGraphContext, EnergyHead,
                                    host_cutoff, host_zbl_energy, host_zbl_forces,
-                                   host_energy_denormalize, host_conservative_force_denormalize,
-                                   _to_dev)
+                                   host_energy_denormalize, host_conservative_force_denormalize)
+    from tt_atom.device import to_dev
     from tt_atom.orb_forces import energy_and_forces
     import ttnn
 
@@ -85,8 +85,8 @@ def test_mgo_energy_and_forces(gw, device):
     N = atomic_numbers.shape[0]
 
     # energy: full backbone forward + EnergyHead + host denormalize + host ZBL
-    node_dev = _to_dev(node_feat, device, ttnn.bfloat16)
-    edge_dev = _to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
+    node_dev = to_dev(node_feat, device, ttnn.bfloat16)
+    edge_dev = to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
     nodes, edges = enc(node_dev, edge_dev)
     cutoff = host_cutoff(vectors.norm(dim=-1), r_max=6.0)
     graph = OrbGraphContext(device, senders=senders, receivers=receivers, cutoff=cutoff,

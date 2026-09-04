@@ -10,7 +10,7 @@ Reads the per-step CSV (energy / temperature) and the saved extxyz frames and pr
 Everything is written to a single ``melt_metrics.npz`` (for the renderer to draw live) and a
 ``melt_summary.json`` of the headline numbers for the post / caption.
 
-    ~/.ttatom_run/env/bin/python examples/orb_social/analyze_melt.py \
+    python examples/orb_social/analyze_melt.py \
         --csv md_melt.csv --traj si_melt.extxyz --solid-csv md_solid_nve.csv \
         --out melt_metrics.npz --summary melt_summary.json
 """

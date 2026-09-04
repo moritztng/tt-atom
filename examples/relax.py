@@ -6,7 +6,7 @@ arbitrary — but the forces are the exact analytic gradient of that energy, so 
 genuinely converges. Point ``--weights`` at a bundle exported from a fairchem checkpoint
 (``tools/export_weights.py``) to relax on the real potential.
 
-    ~/.ttatom_run/env/bin/python examples/relax.py
+    python examples/relax.py
 """
 from __future__ import annotations
 

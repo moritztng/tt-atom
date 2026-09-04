@@ -316,7 +316,7 @@ def main() -> int:
     # The guard drives the real `tt_atom.cli` via sys.executable, so it must be launched
     # with a Python that has tt-atom's deps installed (numpy / ttnn / ase) — i.e. the
     # project venv, exactly like scripts/release_gate.py:
-    #     /home/moritz/.ttatom_run/env/bin/python scripts/ux_regression.py
+    #     python scripts/ux_regression.py
     imports = "import tt_atom" if args.cli_only else "import tt_atom, ase"
     probe = _run([sys.executable, "-c", imports],
                  env=_subprocess_env(), timeout=60)
@@ -325,7 +325,7 @@ def main() -> int:
             f"this Python ({sys.executable}) cannot run the requested imports with "
             f"PYTHONPATH={REPO_ROOT}:\n{(probe.stderr or probe.stdout).strip()}\n"
             f"Run the guard with the project venv, e.g. "
-            f"/home/moritz/.ttatom_run/env/bin/python scripts/ux_regression.py")
+            f"python scripts/ux_regression.py")
 
     all_pass = True
 

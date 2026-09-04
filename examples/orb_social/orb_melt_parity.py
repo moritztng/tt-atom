@@ -12,7 +12,7 @@ Two-stage (device env = py3.10+ttnn, reference env = py3.11+orb_models):
     ~/.ttatom_run/refenv/bin/python examples/orb_social/orb_melt_parity.py ref \
         --traj si_melt.extxyz --frames 0 350 700 --out parity_ref.npz
     # 2. on-device + compare (device env)
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=<tt-atom> ~/.ttatom_run/env/bin/python examples/orb_social/orb_melt_parity.py device \
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=<tt-atom> python examples/orb_social/orb_melt_parity.py device \
         --traj si_melt.extxyz --frames 0 350 700 --weights <golden.npz> \
         --ref parity_ref.npz --out parity.json
 """

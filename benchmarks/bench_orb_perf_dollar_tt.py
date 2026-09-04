@@ -11,7 +11,7 @@ a real MD loop, not a degenerate identical-input replay.
 Sweeps supercell sizes so the compute-bound crossover is visible, not a single point, and
 dumps a JSON record with raw per-step timings + edges + git SHA for committed evidence.
 
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python \
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=. python \
         benchmarks/bench_orb_perf_dollar_tt.py --weights ~/.ttatom_run/goldens_real/si_supercell_orb.npz \
         --out benchmarks/orb_perf_dollar_tt.json
 """
@@ -20,13 +20,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 from datetime import datetime, timezone
 
 import numpy as np
 import torch
 from ase.build import bulk
+
+from _harness import git_sha
 
 
 SIZES = [
@@ -35,13 +36,6 @@ SIZES = [
     ("5x5x5", 5, 5, 5),   #  1000 atoms
     ("6x6x7", 6, 6, 7),   #  2016 atoms (~2000)
 ]
-
-
-def _git_sha():
-    try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    except Exception:
-        return None
 
 
 def main():
@@ -81,7 +75,7 @@ def main():
             "positions_jittered_each_step": True,
             "orb_fused_silu_bw": os.environ.get("TT_ATOM_ORB_FUSED_SILU_BW", "auto"),
             "orb_minimal_matmul": os.environ.get("TT_ATOM_ORB_MINIMAL_MATMUL", "auto"),
-            "git_sha": _git_sha(),
+            "git_sha": git_sha(),
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "env_python": sys.executable,
             "records": records,

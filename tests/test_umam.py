@@ -13,7 +13,7 @@ Golden (gated, uncommitted; the checkpoint is 11 GB so the generator loads a sin
     HF_HUB_OFFLINE=1 ~/.ttatom_run/refenv/bin/python tests/gen_golden_real.py \
         --system molecule --task omol --ckpt uma-m-1p1 --merged-only \
         --out ~/.ttatom_run/goldens_real/ethanol_omol_umam.npz
-    PYTHONPATH=~/TT-Atom ~/.ttatom_run/env/bin/python -m pytest tests/test_umam.py -q
+    PYTHONPATH=. python -m pytest tests/test_umam.py -q
 """
 from __future__ import annotations
 
@@ -26,12 +26,6 @@ import torch
 from util import real_golden
 
 GOLDEN = real_golden("ethanol_omol_umam.npz")
-
-
-def _pcc(a, b):
-    a = np.asarray(a, dtype=np.float64).ravel()
-    b = np.asarray(b, dtype=np.float64).ravel()
-    return float(np.corrcoef(a, b)[0, 1])
 
 
 def test_umam_unsupported_raises(device):

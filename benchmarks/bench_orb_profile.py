@@ -1,7 +1,7 @@
 """Warm eager Orb-v3 backbone latency on a toy 4-atom golden and a production-scale periodic
 supercell.
 
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python benchmarks/bench_orb_profile.py
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=. python benchmarks/bench_orb_profile.py
 
 Requires the goldens from tests/gen_golden_orb.py (--system bulk and --system supercell,
 conservative-inf-omat). Falls back gracefully (skips) if a golden is missing.
@@ -15,7 +15,8 @@ SAMPLES, WARMUP = 30, 5
 
 
 def _build_and_time(golden_path, device, *, fast=False):
-    from tt_atom.orb_model import Encoder, AttentionInteractionLayer, OrbGraphContext, host_cutoff, _to_dev
+    from tt_atom.device import to_dev
+    from tt_atom.orb_model import Encoder, AttentionInteractionLayer, OrbGraphContext, host_cutoff
     from tt_atom.orb_weights import OrbWeights
     import ttnn
 
@@ -40,8 +41,8 @@ def _build_and_time(golden_path, device, *, fast=False):
               for i in range(L)]
     graph = OrbGraphContext(device, senders=senders, receivers=receivers, cutoff=cutoff,
                             num_nodes=N)
-    node_dev = _to_dev(node_feat, device, ttnn.bfloat16)
-    edge_dev = _to_dev(edge_feat, device, ttnn.bfloat16)
+    node_dev = to_dev(node_feat, device, ttnn.bfloat16)
+    edge_dev = to_dev(edge_feat, device, ttnn.bfloat16)
 
     def fwd():
         nodes, edges = enc(node_dev, edge_dev)

@@ -1,7 +1,7 @@
 """Shared harness for the hand-run benchmarks — timing, fixture location, fleet discipline.
 
 ``benchmarks/`` is the one place that both times a device and has to coexist with sibling fleet
-jobs, and until this module existed each script carried its own copy of the same four mechanisms.
+jobs, and until this module existed each script carried its own copy of the same mechanisms.
 Everything here is either the repo's existing implementation (``tests.util.GOLDEN_DIR``,
 ``tt_atom.orb_weight_cache``) reached from ``benchmarks/``, or the mechanism the subprocess
 benchmarks already shared by copy.
@@ -26,20 +26,49 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-# --- timing ------------------------------------------------------------------------------------
+# --- timing and provenance ------------------------------------------------------------------------------------
 
-def median_ms(fn, n, warm):
-    """Median wall-clock of ``fn`` in ms over ``n`` calls after ``warm`` untimed ones."""
+def median_ms(fn, n, warm, sync=None):
+    """Median wall-clock of ``fn`` in ms over ``n`` calls after ``warm`` untimed ones.
+
+    ``sync`` is called after the warmup and after every timed call, for the benchmarks that time
+    a fire-and-forget device submission rather than a whole calculator call: without it the last
+    op's cost lands in the next sample.
+    """
     import numpy as np
 
     for _ in range(warm):
         fn()
+    if sync:
+        sync()
     ts = []
     for _ in range(n):
         t = time.perf_counter()
         fn()
+        if sync:
+            sync()
         ts.append((time.perf_counter() - t) * 1000)
     return float(np.median(ts))
+
+
+def mean_s(fn, iters):
+    """Mean wall-clock of ``fn`` in SECONDS over ``iters`` calls, after one untimed call to fill
+    the program cache for this shape. The unit is in the name because the callers report both a
+    per-step time and a systems-per-second rate from it."""
+    fn()
+    t0 = time.perf_counter()
+    for _ in range(iters):
+        fn()
+    return (time.perf_counter() - t0) / iters
+
+
+def git_sha():
+    """HEAD of the checkout being measured, recorded in every result file, or ``None`` when that
+    cannot be determined (no git, not a checkout)."""
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    except Exception:
+        return None
 
 
 # --- fixtures ----------------------------------------------------------------------------------
@@ -71,6 +100,20 @@ def orb_weights(checkpoint: str = "orb-v3-conservative-inf-omat") -> pathlib.Pat
     cache_dir = None if os.environ.get("TT_ATOM_CACHE") else \
         real_home() / ".cache" / "tt_atom" / "orb_weights"
     return OWC.weights_path(checkpoint, cache_dir=cache_dir)
+
+
+def conformers(k, mol, seed0=10):
+    """``k`` rattled copies of an ASE molecule, the batch benchmarks' fixture: same composition
+    (so a UMA batch is legal) and different geometry (so no result is reused)."""
+    from ase.build import molecule as ase_molecule
+
+    out = []
+    for i in range(k):
+        a = ase_molecule(mol)
+        a.rattle(stdev=0.08, seed=seed0 + i)
+        a.info.update(charge=0, spin=1)
+        out.append(a)
+    return out
 
 
 # --- fleet discipline --------------------------------------------------------------------------

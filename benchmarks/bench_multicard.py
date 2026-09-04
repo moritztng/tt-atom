@@ -4,7 +4,7 @@ Evaluates a fixed pool of independent systems on 1..N cards (one worker process 
 weights resident) and reports aggregate Medges/s and the scaling factor at each card count.
 All numbers are measured here; nothing is hardcoded. Results -> benchmarks/results/multicard.json.
 
-Run:  ~/.ttatom_run/env/bin/python benchmarks/bench_multicard.py --weights /tmp/tt_full.npz
+Run:  python benchmarks/bench_multicard.py --weights /tmp/tt_full.npz
 """
 from __future__ import annotations
 

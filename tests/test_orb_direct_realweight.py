@@ -6,7 +6,7 @@ specific), and adds the direct-only ``ForceHead`` device path.
 
     ~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py --ckpt direct-20-omat \
         --out ~/.ttatom_run/goldens_real/si_omat_orb_direct20.npz
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python -m pytest tests/test_orb_direct_realweight.py -q -s
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=. python -m pytest tests/test_orb_direct_realweight.py -q -s
 
 Absent the golden bundle the whole module auto-skips.
 """
@@ -35,7 +35,8 @@ def gw():
 def test_direct_end_to_end(gw, device):
     from tt_atom.orb_model import (Encoder, AttentionInteractionLayer, OrbGraphContext,
                                    EnergyHead, ForceHead, host_cutoff, host_zbl_energy,
-                                   host_energy_denormalize, host_force_denormalize, _to_dev)
+                                   host_energy_denormalize, host_force_denormalize)
+    from tt_atom.device import to_dev
     import ttnn
 
     cfg = gw.config
@@ -43,8 +44,8 @@ def test_direct_end_to_end(gw, device):
     L = cfg["num_message_passing_steps"]
     enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
                  latent_dim=cfg["latent_dim"], hidden_dim=1024)
-    node_dev = _to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
-    edge_dev = _to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
+    node_dev = to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
+    edge_dev = to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
     nodes, edges = enc(node_dev, edge_dev)
 
     senders = gw.inp("senders").long()

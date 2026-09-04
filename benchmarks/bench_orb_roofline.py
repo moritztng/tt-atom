@@ -6,7 +6,7 @@ readback, and the final host geometry VJP.  Explicit synchronization between sta
 makes the attribution additive; ``end_to_end_ms`` separately measures the normal
 pipelined path without those diagnostic barriers.
 
-    PATH=~/.ttatom_run/env/bin:$PATH TT_VISIBLE_DEVICES=0 python3 \
+    TT_VISIBLE_DEVICES=0 python \
         benchmarks/bench_orb_roofline.py \
         --weights ~/.ttatom_run/goldens_real/si_supercell_orb.npz \
         --sizes 3x3x3,6x6x7 --steps 20 --out benchmarks/orb_roofline.json

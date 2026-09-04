@@ -175,7 +175,8 @@ def main():
 
     import ttnn
     from tt_atom.device import open_device
-    from tt_atom.orb_model import AttentionInteractionLayer, _to_dev
+    from tt_atom.device import to_dev
+    from tt_atom.orb_model import AttentionInteractionLayer
     from tt_atom.orb_weights import OrbWeights
 
     torch.manual_seed(args.seed)
@@ -192,7 +193,7 @@ def main():
             # A bounded random input is representative of RMS-normalized residual features
             # and avoids relying on a particular topology while retaining real model weights.
             x_host = torch.randn(rows, 768, dtype=torch.bfloat16) * 0.25
-            x = _to_dev(x_host, device, ttnn.bfloat16)
+            x = to_dev(x_host, device, ttnn.bfloat16)
 
             base_out = mlp(x)
             fused_out = _fused_forward(mlp, x)
@@ -211,7 +212,7 @@ def main():
                 ttnn, device, lambda: _fused_forward(mlp, x), args.warmup, args.iterations)
             # Restore the exact baseline forward caches consumed by the analytic VJP.
             mlp(x)
-            g_out = _to_dev(
+            g_out = to_dev(
                 torch.randn(rows, 256, dtype=torch.bfloat16) * 0.125,
                 device,
                 ttnn.bfloat16,

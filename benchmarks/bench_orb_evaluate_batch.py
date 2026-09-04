@@ -7,7 +7,7 @@ runs ``evaluate_batch`` once on the K-system disjoint union. Both compute energy
 only variable is the disjoint union. We report systems/s for each, the batched speedup, and the
 batch-size ceiling (largest K before device OOM).
 
-    TT_VISIBLE_DEVICES=0 ~/.ttatom_run/env/bin/python \
+    TT_VISIBLE_DEVICES=0 python \
         benchmarks/bench_orb_evaluate_batch.py --checkpoint orb-v3-conservative-omol --mol CH3CH2OH
 """
 from __future__ import annotations
@@ -15,31 +15,14 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
-import time
 
 from ase.build import molecule
+
+from _harness import conformers, mean_s
 
 from tt_atom.orb_calculator import OrbCalculator
 
 RESULTS = pathlib.Path(__file__).parent / "results"
-
-
-def conformers(k, mol, seed0=10):
-    out = []
-    for i in range(k):
-        a = molecule(mol)
-        a.rattle(stdev=0.08, seed=seed0 + i)
-        a.info.update(charge=0, spin=1)
-        out.append(a)
-    return out
-
-
-def time_it(fn, iters):
-    fn()                                        # warm (program-cache fill for this shape)
-    t0 = time.perf_counter()
-    for _ in range(iters):
-        fn()
-    return (time.perf_counter() - t0) / iters
 
 
 def main():
@@ -71,8 +54,8 @@ def main():
             def bat():
                 calc.evaluate_batch(systems)
 
-            seq_s = time_it(seq, max(2, args.iters // 2))
-            bat_s = time_it(bat, args.iters)
+            seq_s = mean_s(seq, max(2, args.iters // 2))
+            bat_s = mean_s(bat, args.iters)
         except RuntimeError as e:                # device OOM etc. -> record the ceiling and stop
             print(f"K={k}: FAILED ({str(e).splitlines()[0][:80]}) -> batch-size ceiling below {k}")
             break

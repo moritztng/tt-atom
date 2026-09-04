@@ -137,11 +137,11 @@ def _run_orb(b, cfg, fast, device_id, in_q, out_q, bucketing=False):
     import torch
 
     from .bucketing import pad_device_rows, pad_graph
-    from .device import open_device
+    from .device import open_device, to_dev
     from .geometry import radius_graph
     from .orb_geometry import check_max_neighbors, host_edge_features
     from .orb_model import (MLP_HIDDEN_DIM, AttentionInteractionLayer, Encoder, EnergyHead,
-                            OrbGraphContext, _to_dev, host_charge_spin_embedding,
+                            OrbGraphContext, host_charge_spin_embedding,
                             host_energy_denormalize, host_node_features, host_zbl_energy)
     import ttnn
 
@@ -190,8 +190,8 @@ def _run_orb(b, cfg, fast, device_id, in_q, out_q, bucketing=False):
         graph = OrbGraphContext(dev, senders=dev_senders, receivers=dev_receivers,
                                 cutoff=cutoff.detach().float(), num_nodes=N, cond_nodes=cond_nodes,
                                 **gkw)
-        node_dev = _to_dev(node_feat, dev, ttnn.bfloat16)
-        edge_dev = _to_dev(edge_feat.detach().float(), dev, ttnn.bfloat16)
+        node_dev = to_dev(node_feat, dev, ttnn.bfloat16)
+        edge_dev = to_dev(edge_feat.detach().float(), dev, ttnn.bfloat16)
         nodes, edges = encoder(node_dev, edge_dev)
         if e_bucket:
             edges = pad_device_rows(ttnn, edges, e_bucket)

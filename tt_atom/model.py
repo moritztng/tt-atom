@@ -14,7 +14,7 @@ import os
 
 import torch
 
-from .device import bf8_edge, compute_kernel_config, device_ede
+from .device import bf8_edge, compute_kernel_config, device_ede, to_dev
 from .norm import RMSNormSH
 from .edgewise import Edgewise
 from .grid import GridAtomwise
@@ -30,13 +30,6 @@ from .spectral import SpectralAtomwise
 SCATTER_LINEAR_THRESHOLD = int(os.environ.get("TT_ATOM_SCATTER_THRESHOLD", "2048"))
 
 
-def _to_dev(t, device, dtype, layout=None):
-    import ttnn
-
-    layout = layout or ttnn.TILE_LAYOUT
-    return ttnn.from_torch(t, dtype=dtype, layout=layout, device=device)
-
-
 class GraphContext:
     """Host-precomputed, device-resident geometric terms for one fixed topology."""
 
@@ -50,8 +43,8 @@ class GraphContext:
         self.N = num_nodes
         src = edge_index[0].to(torch.int32)
         tgt = edge_index[1].to(torch.int32)
-        self.src_idx = _to_dev(src, device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
-        self.tgt_idx = _to_dev(tgt, device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
+        self.src_idx = to_dev(src, device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
+        self.tgt_idx = to_dev(tgt, device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
         # edge->node scatter-add (``out[n] = sum_{e:tgt[e]==n} m[e]``, and the src transpose used by
         # the force VJP). Small systems: dense one-hot matmul S[N,E]@m — one fat op, bit-identical to
         # the golden mirror tests. Large systems: linear O(E) gather+reduce (scatter.py) — the dense
@@ -68,17 +61,17 @@ class GraphContext:
 
             tgt_g, self.Dmax_t = _sc.build_gather(tgt, num_nodes, E)
             src_g, self.Dmax_s = _sc.build_gather(src, num_nodes, E)
-            self.tgt_gather = _to_dev(torch.from_numpy(tgt_g), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
-            self.src_gather = _to_dev(torch.from_numpy(src_g), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
+            self.tgt_gather = to_dev(torch.from_numpy(tgt_g), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
+            self.src_gather = to_dev(torch.from_numpy(src_g), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
         else:
             # scatter one-hot stays bf16: bf8_b is block-float (shared per-tile exponent), so the
             # 0/1 one-hot is NOT bit-exact in bf8 (measured Fpcc 0.98, no speed gain) — keep bf16.
             S = torch.zeros(num_nodes, E)
             S[tgt.long(), torch.arange(E)] = 1.0
-            self.scatter = _to_dev(S, device, wdtype)
+            self.scatter = to_dev(S, device, wdtype)
             Ssrc = torch.zeros(num_nodes, E)
             Ssrc[src.long(), torch.arange(E)] = 1.0
-            self.scatter_src = _to_dev(Ssrc, device, wdtype)
+            self.scatter_src = to_dev(Ssrc, device, wdtype)
         # Wigner rotation as a flat sparse multiply-accumulate (see rotation.py): pack the dense
         # per-edge matrices to their structural nonzeros. bf8 coefficients run faster and stay
         # PCC-safe (the rotation is an orthogonal basis change) -> use in --fast.
@@ -97,12 +90,12 @@ class GraphContext:
         # tile-pad host tilize (~1.7-3.9 ms each; nnz pads to 32) vs ~0.04 ms RM. Consumers
         # (rotation._coef_exp for the fused kernel) to_layout to TILE on device. Only affects the
         # pos-dependent refresh cost -- topology buffers are unchanged.
-        self.rot_fwd_coef = _to_dev(cf, device, wig_dtype, ttnn.ROW_MAJOR_LAYOUT)
-        self.rot_inv_coef = _to_dev(ci, device, wig_dtype, ttnn.ROW_MAJOR_LAYOUT)
+        self.rot_fwd_coef = to_dev(cf, device, wig_dtype, ttnn.ROW_MAJOR_LAYOUT)
+        self.rot_inv_coef = to_dev(ci, device, wig_dtype, ttnn.ROW_MAJOR_LAYOUT)
         # x_edge is stored ROW_MAJOR: the per-step trace refresh's from_torch of a wide [E,320] TILE
         # tensor does a slow host tilize (~24 ms vs ~1.4 ms RM); RadialMLP to_layouts it to TILE on
         # device (~0.16 ms, inside the trace) instead. Only consumer is RadialMLP (so2 rad + edge_degree).
-        self.x_edge = _to_dev(x_edge, device, wdtype, ttnn.ROW_MAJOR_LAYOUT)
+        self.x_edge = to_dev(x_edge, device, wdtype, ttnn.ROW_MAJOR_LAYOUT)
         # only the flat [E,1] envelope is consumed on device (edgewise / edge-degree broadcast); the
         # 3D [E,1,1] form tile-pads to [E,32,32] (a ~64 ms/step re-tilize on the trace refresh) and
         # is read by nothing, so it is not materialised.
@@ -112,8 +105,8 @@ class GraphContext:
         # forward tilizes (and, in bf8-edge mode, casts to bf8) ON DEVICE inside the trace via
         # ``materialize_envelope`` — moving the whole cost to a tiny device op on the [E,1] tensor.
         self._env_dtype = ttnn.bfloat8_b if _b8 else wdtype
-        self.edge_envelope_rm = _to_dev(edge_envelope.reshape(E, 1), device, wdtype,
-                                        ttnn.ROW_MAJOR_LAYOUT)
+        self.edge_envelope_rm = to_dev(edge_envelope.reshape(E, 1), device, wdtype,
+                                       ttnn.ROW_MAJOR_LAYOUT)
         # materialize once here so the eager / per-module test path (which calls edge_wise without
         # going through node_embedding) has a valid buffer; the traced forward re-materializes at
         # its start so the tilize op reads the per-step-refreshed RM buffer (see node_embedding).
@@ -198,9 +191,9 @@ class Backbone:
         else:
             self.edge_degree = None
         # energy head: Linear-SiLU-Linear-SiLU-Linear on the l=0 channel
-        self.eh_w = [_to_dev(weights[f"energy_block.{i}.weight"].T.contiguous(), device, wdtype)
+        self.eh_w = [to_dev(weights[f"energy_block.{i}.weight"].T.contiguous(), device, wdtype)
                      for i in (0, 2, 4)]
-        self.eh_b = [_to_dev(weights[f"energy_block.{i}.bias"], device, wdtype)
+        self.eh_b = [to_dev(weights[f"energy_block.{i}.bias"], device, wdtype)
                      for i in (0, 2, 4)]
 
     def node_embedding(self, x_init, graph, sys_node_embedding):

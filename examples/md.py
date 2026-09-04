@@ -6,7 +6,7 @@ dispatches — the forces are bit-for-bit identical to the eager path. The shipp
 random-weight (arbitrary surface); point ``--weights`` at a bundle exported from a real UMA
 checkpoint (``tools/export_weights.py`` / ``tt-atom convert-checkpoint``) for real dynamics.
 
-    ~/.ttatom_run/env/bin/python examples/md.py --trace
+    python examples/md.py --trace
 """
 from __future__ import annotations
 

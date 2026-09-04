@@ -25,7 +25,7 @@ import math
 
 import torch
 
-from .device import compute_kernel_config, flag
+from .device import compute_kernel_config, flag, to_dev
 
 
 # Width of every MLPNorm hidden layer. Orb's exported config does not carry it (the exporter
@@ -88,13 +88,6 @@ def host_cutoff(r: torch.Tensor, r_max: float = 6.0) -> torch.Tensor:
     return (envelope * (r < r_max)).unsqueeze(-1)
 
 
-def _to_dev(t, device, dtype, layout=None):
-    import ttnn
-
-    layout = layout or ttnn.TILE_LAYOUT
-    return ttnn.from_torch(t, dtype=dtype, layout=layout, device=device)
-
-
 class RMSNorm:
     """Plain ``torch.nn.RMSNorm`` (elementwise-affine, no bias) over the last dim.
 
@@ -108,7 +101,7 @@ class RMSNorm:
         self.ttnn = ttnn
         self.eps = eps
         self.dim = dim
-        self.w = _to_dev(weights[f"{prefix}.weight"].view(1, dim).contiguous(), device, ttnn.bfloat16)
+        self.w = to_dev(weights[f"{prefix}.weight"].view(1, dim).contiguous(), device, ttnn.bfloat16)
 
     def __call__(self, x):
         ttnn = self.ttnn
@@ -153,9 +146,9 @@ class MLPNorm:
         self.w = []
         self.b = []
         for i in range(3):
-            self.w.append(_to_dev(weights[f"{prefix}.mlp.NN-{i}.weight"].T.contiguous(),
-                                  device, wdtype))
-            self.b.append(_to_dev(weights[f"{prefix}.mlp.NN-{i}.bias"], device, wdtype))
+            self.w.append(to_dev(weights[f"{prefix}.mlp.NN-{i}.weight"].T.contiguous(),
+                                 device, wdtype))
+            self.b.append(to_dev(weights[f"{prefix}.mlp.NN-{i}.bias"], device, wdtype))
         self.norm = RMSNorm(weights, f"{prefix}.layer_norm", device, out_dim)
 
     def __call__(self, x):
@@ -217,16 +210,16 @@ class AttentionInteractionLayer:
                                 latent_dim, fast=fast, minimal_matmul=True)
         self.node_mlp = MLPNorm(weights, f"{prefix}._node_mlp", device, 3 * latent_dim, hidden_dim,
                                 latent_dim, fast=fast)
-        self.receive_attn_w = _to_dev(weights[f"{prefix}._receive_attn.weight"].T.contiguous(), device, wdtype)
-        self.receive_attn_b = _to_dev(weights[f"{prefix}._receive_attn.bias"], device, wdtype)
-        self.send_attn_w = _to_dev(weights[f"{prefix}._send_attn.weight"].T.contiguous(), device, wdtype)
-        self.send_attn_b = _to_dev(weights[f"{prefix}._send_attn.bias"], device, wdtype)
+        self.receive_attn_w = to_dev(weights[f"{prefix}._receive_attn.weight"].T.contiguous(), device, wdtype)
+        self.receive_attn_b = to_dev(weights[f"{prefix}._receive_attn.bias"], device, wdtype)
+        self.send_attn_w = to_dev(weights[f"{prefix}._send_attn.weight"].T.contiguous(), device, wdtype)
+        self.send_attn_b = to_dev(weights[f"{prefix}._send_attn.bias"], device, wdtype)
 
         self.has_cond = f"{prefix}._cond_node_proj.weight" in weights
         if self.has_cond:
-            self.cond_node_proj_w = _to_dev(weights[f"{prefix}._cond_node_proj.weight"].T.contiguous(),
-                                            device, wdtype)
-            self.cond_node_proj_b = _to_dev(weights[f"{prefix}._cond_node_proj.bias"], device, wdtype)
+            self.cond_node_proj_w = to_dev(weights[f"{prefix}._cond_node_proj.weight"].T.contiguous(),
+                                           device, wdtype)
+            self.cond_node_proj_b = to_dev(weights[f"{prefix}._cond_node_proj.bias"], device, wdtype)
 
     def __call__(self, nodes, edges, graph):
         """``graph`` supplies ``senders``/``receivers`` gather tables (ttnn embedding-ready,
@@ -290,10 +283,10 @@ class OrbGraphContext:
 
         E = senders.shape[0]
         self.E, self.N = E, num_nodes
-        self.senders_idx = _to_dev(senders.to(torch.int32), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
-        self.receivers_idx = _to_dev(receivers.to(torch.int32), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
-        self.cutoff = _to_dev(cutoff, device, ttnn.bfloat16)
-        self.cond_nodes = _to_dev(cond_nodes, device, ttnn.bfloat16) if cond_nodes is not None else None
+        self.senders_idx = to_dev(senders.to(torch.int32), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
+        self.receivers_idx = to_dev(receivers.to(torch.int32), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
+        self.cutoff = to_dev(cutoff, device, ttnn.bfloat16)
+        self.cond_nodes = to_dev(cond_nodes, device, ttnn.bfloat16) if cond_nodes is not None else None
 
         # Bucketing (tt_atom.bucketing): senders/receivers may carry zero-contributing sentinel
         # edges beyond ``gather_edge_count``; the scatter tables are built from the TRUE edges only
@@ -306,8 +299,8 @@ class OrbGraphContext:
                                               min_width=gather_width)
         src_g, self.Dmax_s = _sc.build_gather(senders[:ge], num_nodes, ge, sentinel=E,
                                               min_width=gather_width)
-        self.tgt_gather = _to_dev(torch.from_numpy(tgt_g), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
-        self.src_gather = _to_dev(torch.from_numpy(src_g), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
+        self.tgt_gather = to_dev(torch.from_numpy(tgt_g), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
+        self.src_gather = to_dev(torch.from_numpy(src_g), device, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)
 
 
 class EnergyHead:
@@ -327,10 +320,10 @@ class EnergyHead:
         self.device = device
         self.kcfg = compute_kernel_config()
         wdtype = ttnn.bfloat8_b if fast else ttnn.bfloat16
-        self.w0 = _to_dev(weights["energy_head.mlp.NN-0.weight"].T.contiguous(), device, wdtype)
-        self.b0 = _to_dev(weights["energy_head.mlp.NN-0.bias"], device, wdtype)
-        self.w1 = _to_dev(weights["energy_head.mlp.NN-1.weight"].T.contiguous(), device, wdtype)
-        self.b1 = _to_dev(weights["energy_head.mlp.NN-1.bias"], device, wdtype)
+        self.w0 = to_dev(weights["energy_head.mlp.NN-0.weight"].T.contiguous(), device, wdtype)
+        self.b0 = to_dev(weights["energy_head.mlp.NN-0.bias"], device, wdtype)
+        self.w1 = to_dev(weights["energy_head.mlp.NN-1.weight"].T.contiguous(), device, wdtype)
+        self.b1 = to_dev(weights["energy_head.mlp.NN-1.bias"], device, wdtype)
 
     def __call__(self, node_features):
         """``node_features``: ttnn ``[N, latent_dim]`` (single system) -> ttnn ``[1, 1]`` raw
@@ -379,10 +372,10 @@ class ForceHead:
         self.ttnn = ttnn
         self.kcfg = compute_kernel_config()
         wdtype = ttnn.bfloat8_b if fast else ttnn.bfloat16
-        self.w0 = _to_dev(weights["forces_head.mlp.NN-0.weight"].T.contiguous(), device, wdtype)
-        self.b0 = _to_dev(weights["forces_head.mlp.NN-0.bias"], device, wdtype)
-        self.w1 = _to_dev(weights["forces_head.mlp.NN-1.weight"].T.contiguous(), device, wdtype)
-        self.b1 = _to_dev(weights["forces_head.mlp.NN-1.bias"], device, wdtype)
+        self.w0 = to_dev(weights["forces_head.mlp.NN-0.weight"].T.contiguous(), device, wdtype)
+        self.b0 = to_dev(weights["forces_head.mlp.NN-0.bias"], device, wdtype)
+        self.w1 = to_dev(weights["forces_head.mlp.NN-1.weight"].T.contiguous(), device, wdtype)
+        self.b1 = to_dev(weights["forces_head.mlp.NN-1.bias"], device, wdtype)
 
     def __call__(self, node_features):
         """``node_features``: ttnn ``[N, latent_dim]`` -> ttnn ``[N, 3]`` raw (normalized-space,
@@ -427,10 +420,10 @@ class StressHead:
         self.ttnn = ttnn
         self.kcfg = compute_kernel_config()
         wdtype = ttnn.bfloat8_b if fast else ttnn.bfloat16
-        self.w0 = _to_dev(weights["stress_head.mlp.NN-0.weight"].T.contiguous(), device, wdtype)
-        self.b0 = _to_dev(weights["stress_head.mlp.NN-0.bias"], device, wdtype)
-        self.w1 = _to_dev(weights["stress_head.mlp.NN-1.weight"].T.contiguous(), device, wdtype)
-        self.b1 = _to_dev(weights["stress_head.mlp.NN-1.bias"], device, wdtype)
+        self.w0 = to_dev(weights["stress_head.mlp.NN-0.weight"].T.contiguous(), device, wdtype)
+        self.b0 = to_dev(weights["stress_head.mlp.NN-0.bias"], device, wdtype)
+        self.w1 = to_dev(weights["stress_head.mlp.NN-1.weight"].T.contiguous(), device, wdtype)
+        self.b1 = to_dev(weights["stress_head.mlp.NN-1.bias"], device, wdtype)
 
     def __call__(self, node_features):
         """``node_features``: ttnn ``[N, latent_dim]`` (single system) -> ttnn ``[1, 6]`` raw
