@@ -174,7 +174,8 @@ def main():
 
     import ttnn
     from tt_atom.device import open_device
-    from tt_atom.orb_model import AttentionInteractionLayer, _to_dev
+    from tt_atom.device import to_dev
+    from tt_atom.orb_model import AttentionInteractionLayer
     from tt_atom.orb_weights import OrbWeights
 
     torch.manual_seed(args.seed)
@@ -196,7 +197,7 @@ def main():
         for tag in [name for name in args.sizes.split(",") if name]:
             rows = EDGE_COUNTS[tag]
             x_host = torch.randn(rows, 768, dtype=torch.bfloat16) * 0.25
-            x = _to_dev(x_host, device, ttnn.bfloat16)
+            x = to_dev(x_host, device, ttnn.bfloat16)
             baseline_out = mlp(x)
             baseline = _median_ms(ttnn, device, lambda: mlp(x), args.warmup, args.iterations)
             baseline_trace, _ = _trace_median_ms(

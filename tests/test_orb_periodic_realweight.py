@@ -13,7 +13,7 @@ Orb's sign convention (``vectors = pos[receivers] - pos[senders] + shift``,
 
     ~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py --ckpt conservative-inf-omat \
         --system supercell --out ~/.ttatom_run/goldens_real/si_supercell_orb.npz
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python -m pytest \
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=. python -m pytest \
         tests/test_orb_periodic_realweight.py -q -s
 
 Absent the golden bundle the whole module auto-skips.
@@ -78,7 +78,8 @@ def test_backbone_on_reconstructed_graph(gw, device):
     give the same result to within the usual bf16 PCC bar."""
     from tt_atom.geometry import radius_graph
     from tt_atom.orb_geometry import host_edge_features
-    from tt_atom.orb_model import Encoder, AttentionInteractionLayer, OrbGraphContext, _to_dev
+    from tt_atom.device import to_dev
+    from tt_atom.orb_model import Encoder, AttentionInteractionLayer, OrbGraphContext
     import ttnn
 
     cfg = gw.config
@@ -97,8 +98,8 @@ def test_backbone_on_reconstructed_graph(gw, device):
 
     enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
                  latent_dim=cfg["latent_dim"], hidden_dim=1024)
-    node_dev = _to_dev(node_feat, device, ttnn.bfloat16)
-    edge_dev = _to_dev(edge_feat.float(), device, ttnn.bfloat16)
+    node_dev = to_dev(node_feat, device, ttnn.bfloat16)
+    edge_dev = to_dev(edge_feat.float(), device, ttnn.bfloat16)
     nodes, edges = enc(node_dev, edge_dev)
 
     graph = OrbGraphContext(device, senders=senders, receivers=receivers,

@@ -13,7 +13,7 @@ Two things make it fast and simple:
   is looked up directly from the checkpoint's embedding table -- no reference-env export is
   needed for the MD system itself.
 
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python examples/orb_md.py \
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=. python examples/orb_md.py \
         --weights si_supercell_orb.npz --nx 3 --ny 3 --nz 3 --steps 300 --temp 900 --out traj.extxyz
 
 The weight bundle is produced by ``tests/gen_golden_orb.py --ckpt conservative-inf-omat`` in the

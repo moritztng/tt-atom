@@ -1,7 +1,7 @@
 """Generate the release perf charts from measured benchmark JSON (no hardcoded numbers).
 
 Run after the benchmarks:
-  ~/.ttatom_run/env/bin/python benchmarks/plot.py
+  python benchmarks/plot.py
 Reads benchmarks/results/{throughput,multicard}.json -> assets/*.png
 """
 from __future__ import annotations

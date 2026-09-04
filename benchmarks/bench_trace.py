@@ -5,7 +5,7 @@ host force finish) of the eager path vs the trace-captured device-resident path,
 breakdown that shows why tracing is the right lever (the device forward+backward dominates and is
 host-dispatch-bound for these graph sizes). Forces are bit-for-bit identical between the two.
 
-    PYTHONPATH=~/TT-Atom ~/.ttatom_run/env/bin/python benchmarks/bench_trace.py \
+    PYTHONPATH=. python benchmarks/bench_trace.py \
         --weights ~/.ttatom_run/uma_s_ethanol.npz
 
 With no --weights it falls back to the committed random-weight demo bundle (architecture-only).

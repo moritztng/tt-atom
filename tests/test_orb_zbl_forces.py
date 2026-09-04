@@ -14,7 +14,7 @@ energy) against the real orb-models oracle total force.
     ~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py --ckpt direct-20-omat \
         --system short_contact \
         --out ~/.ttatom_run/goldens_real/si_short_contact_orb_direct20.npz
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python -m pytest \
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=. python -m pytest \
         tests/test_orb_zbl_forces.py -q -s
 
 Absent the golden bundle the whole module auto-skips.
@@ -118,7 +118,8 @@ def test_direct20_total_force_with_zbl(gw, device):
     force -- the previously-skipped term, now exercised on a golden where it's non-negligible."""
     from tt_atom.orb_model import (Encoder, AttentionInteractionLayer, OrbGraphContext,
                                    ForceHead, host_cutoff, host_force_denormalize,
-                                   host_zbl_forces, _to_dev)
+                                   host_zbl_forces)
+    from tt_atom.device import to_dev
     import ttnn
 
     cfg = gw.config
@@ -126,8 +127,8 @@ def test_direct20_total_force_with_zbl(gw, device):
     L = cfg["num_message_passing_steps"]
     enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
                  latent_dim=cfg["latent_dim"], hidden_dim=1024)
-    node_dev = _to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
-    edge_dev = _to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
+    node_dev = to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
+    edge_dev = to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
     nodes, edges = enc(node_dev, edge_dev)
 
     senders = gw.inp("senders").long()

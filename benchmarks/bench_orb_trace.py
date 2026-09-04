@@ -5,7 +5,7 @@ Extends ``benchmarks/bench_orb_profile.py``'s finding (dispatch-bound: edges sca
 Each simulated step jitters ``pos`` slightly (same fixed topology, different geometry) to exercise
 the real per-step refresh path, not a degenerate repeated-identical-input replay.
 
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python benchmarks/bench_orb_trace.py
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=. python benchmarks/bench_orb_trace.py
 
 Requires the goldens from tests/gen_golden_orb.py (--system bulk and --system supercell,
 conservative-inf-omat). Falls back gracefully (skips) if a golden is missing.
@@ -39,7 +39,8 @@ def _device_only_ms(device, encoder, layers, ehead, graph, node_dev, edge_dev):
 
 
 def _bench_one(label, path, device):
-    from tt_atom.orb_model import Encoder, AttentionInteractionLayer, EnergyHead, OrbGraphContext, _to_dev
+    from tt_atom.device import to_dev
+    from tt_atom.orb_model import Encoder, AttentionInteractionLayer, EnergyHead, OrbGraphContext
     from tt_atom.orb_forces import energy_and_forces
     from tt_atom.orb_geometry import host_edge_features
     from tt_atom.orb_trace import OrbTracedEngine
@@ -96,8 +97,8 @@ def _bench_one(label, path, device):
     # device-only slice: fixed edge_feat/cutoff (no per-step host geometry/refresh/autograd) --
     # eager runs the same forward+backward fresh each call; traced just replays the captured tid.
     edge_feat0, cutoff0, _ = host_edge_features(pos0, senders, receivers, cell_shift)
-    node_dev0 = _to_dev(node_feat, device, ttnn.bfloat16)
-    edge_dev0 = _to_dev(edge_feat0.detach().float(), device, ttnn.bfloat16)
+    node_dev0 = to_dev(node_feat, device, ttnn.bfloat16)
+    edge_dev0 = to_dev(edge_feat0.detach().float(), device, ttnn.bfloat16)
     graph0 = OrbGraphContext(device, senders=senders, receivers=receivers,
                              cutoff=cutoff0.detach().float(), num_nodes=N)
     eager_dev_ms = _device_only_ms(device, encoder, layers, ehead, graph0, node_dev0, edge_dev0)

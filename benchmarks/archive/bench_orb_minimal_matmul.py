@@ -79,7 +79,8 @@ def main():
 
     import ttnn
     from tt_atom.device import open_device
-    from tt_atom.orb_model import AttentionInteractionLayer, _to_dev
+    from tt_atom.device import to_dev
+    from tt_atom.orb_model import AttentionInteractionLayer
     from tt_atom.orb_weights import OrbWeights
 
     torch.manual_seed(17)
@@ -92,7 +93,7 @@ def main():
         mlp = layer.edge_mlp
         for tag in [name for name in args.sizes.split(",") if name]:
             rows = EDGE_COUNTS[tag]
-            x = _to_dev(
+            x = to_dev(
                 torch.randn(rows, 768, dtype=torch.bfloat16) * 0.25,
                 device,
                 ttnn.bfloat16,

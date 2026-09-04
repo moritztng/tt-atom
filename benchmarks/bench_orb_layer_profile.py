@@ -19,26 +19,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import statistics
-import time
 from datetime import datetime, timezone
 
 import numpy as np
 import torch
 from ase.build import bulk
 
+from _harness import median_ms
+
 
 def _med(fn, ttnn, device, *, warmup=3, iters=8):
-    for _ in range(warmup):
-        fn()
-    ttnn.synchronize_device(device)
-    xs = []
-    for _ in range(iters):
-        t = time.perf_counter()
-        fn()
-        ttnn.synchronize_device(device)
-        xs.append((time.perf_counter() - t) * 1e3)
-    return float(statistics.median(xs))
+    """Per-op timing needs the device synchronized around each call: these measure single op
+    submissions, not a whole calculator call that ends in a readback."""
+    return median_ms(fn, iters, warmup, sync=lambda: ttnn.synchronize_device(device))
 
 
 def _build_graph(device, *, nx, ny, nz, latent_dim, ttnn):
@@ -285,7 +278,8 @@ def main():
 
     import ttnn
     from tt_atom.device import open_device, orb_fused_silu_bw
-    from tt_atom.orb_model import AttentionInteractionLayer, _to_dev
+    from tt_atom.device import to_dev
+    from tt_atom.orb_model import AttentionInteractionLayer
     from tt_atom.orb_weights import OrbWeights
 
     torch.manual_seed(17)
@@ -302,8 +296,8 @@ def main():
         Dmax_s, Dmax_t = int(graph.Dmax_s), int(graph.Dmax_t)
 
         # Bounded-random activations representative of normalized residual features.
-        nodes = _to_dev(torch.randn(N, C, dtype=torch.bfloat16) * 0.25, device, ttnn.bfloat16)
-        edges = _to_dev(torch.randn(E, C, dtype=torch.bfloat16) * 0.25, device, ttnn.bfloat16)
+        nodes = to_dev(torch.randn(N, C, dtype=torch.bfloat16) * 0.25, device, ttnn.bfloat16)
+        edges = to_dev(torch.randn(E, C, dtype=torch.bfloat16) * 0.25, device, ttnn.bfloat16)
 
         # Run the real forward once to warm caches and populate layer._cache exactly.
         layer(nodes, edges, graph)
@@ -312,8 +306,8 @@ def main():
         fwd = _profile_forward(ttnn, device, layer, graph, nodes, edges, iters=args.iters)
         # Re-populate cache (profile_forward ran sub-ops, not the real __call__).
         layer(nodes, edges, graph)
-        g_nodes = _to_dev(torch.randn(N, C, dtype=torch.bfloat16) * 0.125, device, ttnn.bfloat16)
-        g_edges = _to_dev(torch.randn(E, C, dtype=torch.bfloat16) * 0.125, device, ttnn.bfloat16)
+        g_nodes = to_dev(torch.randn(N, C, dtype=torch.bfloat16) * 0.125, device, ttnn.bfloat16)
+        g_edges = to_dev(torch.randn(E, C, dtype=torch.bfloat16) * 0.125, device, ttnn.bfloat16)
         bwd = _profile_backward(ttnn, device, layer, graph, g_nodes, g_edges, iters=args.iters)
 
         tf = _traffic_forward(N, E, C, H, Dmax_s, Dmax_t)

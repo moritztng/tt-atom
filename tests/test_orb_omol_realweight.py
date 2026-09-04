@@ -11,7 +11,7 @@ molecule_openshell}``), each for both checkpoints:
 
     ~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py --ckpt conservative-omol \
         --system molecule_charged --out ~/.ttatom_run/goldens_real/molecule_charged_omol_conservative.npz
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python -m pytest \
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=. python -m pytest \
         tests/test_orb_omol_realweight.py -q -s
 
 Each system/checkpoint pair auto-skips if its golden is absent.
@@ -21,20 +21,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from util import GOLDEN_DIR, pcc as _pcc
-
-SYSTEMS = ["molecule", "molecule_charged", "molecule_openshell"]
-CKPT_TAGS = ["conservative", "direct"]
-
-
-def _golden_path(system, tag):
-    return GOLDEN_DIR / f"{system}_omol_{tag}.npz"
-
+from util import OMOL_SYSTEMS as SYSTEMS, omol_golden, pcc as _pcc
 
 def _load(system, tag):
     from tt_atom.orb_weights import OrbWeights
 
-    path = _golden_path(system, tag)
+    path = omol_golden(system, tag)
     if not path.exists():
         pytest.skip(f"OrbMol golden not found at {path}")
     return OrbWeights.load(path)
@@ -69,7 +61,8 @@ def test_conservative_energy_and_forces(device, system):
     from tt_atom.orb_model import (Encoder, AttentionInteractionLayer, OrbGraphContext, EnergyHead,
                                    host_cutoff, host_zbl_energy, host_zbl_forces,
                                    host_energy_denormalize, host_charge_spin_embedding,
-                                   host_conservative_force_denormalize, _to_dev)
+                                   host_conservative_force_denormalize)
+    from tt_atom.device import to_dev
     from tt_atom import orb_forces
     import ttnn
 
@@ -90,8 +83,8 @@ def test_conservative_energy_and_forces(device, system):
 
     enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
                  latent_dim=latent_dim, hidden_dim=1024)
-    node_dev = _to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
-    edge_dev = _to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
+    node_dev = to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
+    edge_dev = to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
     cutoff = host_cutoff(vectors.norm(dim=-1), r_max=6.0)
     graph = OrbGraphContext(device, senders=senders, receivers=receivers, cutoff=cutoff,
                             num_nodes=N, cond_nodes=cond_nodes)
@@ -156,7 +149,8 @@ def test_direct_energy_and_forces(device, system):
     from tt_atom.orb_model import (Encoder, AttentionInteractionLayer, OrbGraphContext, EnergyHead,
                                    ForceHead, host_cutoff, host_zbl_energy, host_zbl_forces,
                                    host_energy_denormalize, host_force_denormalize,
-                                   host_charge_spin_embedding, _to_dev)
+                                   host_charge_spin_embedding)
+    from tt_atom.device import to_dev
     import ttnn
 
     gw = _load(system, "direct")
@@ -176,8 +170,8 @@ def test_direct_energy_and_forces(device, system):
 
     enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
                  latent_dim=latent_dim, hidden_dim=1024)
-    node_dev = _to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
-    edge_dev = _to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
+    node_dev = to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
+    edge_dev = to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
     cutoff = host_cutoff(vectors.norm(dim=-1), r_max=6.0)
     graph = OrbGraphContext(device, senders=senders, receivers=receivers, cutoff=cutoff,
                             num_nodes=N, cond_nodes=cond_nodes)

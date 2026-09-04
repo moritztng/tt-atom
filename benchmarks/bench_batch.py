@@ -10,16 +10,17 @@ a K-system batch. So the only variable is the disjoint union. We report systems/
 batched speedup, the crossover K (where batched first overtakes), and the batch-size ceiling
 (largest K before device OOM).
 
-    ~/.ttatom_run/env/bin/python benchmarks/bench_batch.py --weights ~/.ttatom_run/uma_s_ethanol.npz
+    python benchmarks/bench_batch.py --weights ~/.ttatom_run/uma_s_ethanol.npz
 """
 from __future__ import annotations
 
 import argparse
 import json
 import pathlib
-import time
 
 from ase.build import molecule
+
+from _harness import conformers, mean_s
 
 from tt_atom import device as D
 from tt_atom.model import Backbone
@@ -28,24 +29,6 @@ from tt_atom.weights import WeightBundle
 from tt_atom import forces, disjoint
 
 RESULTS = pathlib.Path(__file__).parent / "results"
-
-
-def conformers(k, mol, seed0=10):
-    out = []
-    for i in range(k):
-        a = molecule(mol)
-        a.rattle(stdev=0.08, seed=seed0 + i)
-        a.info.update(charge=0, spin=1)
-        out.append(a)
-    return out
-
-
-def time_it(fn, iters):
-    fn()                                        # warm (program-cache fill for this shape)
-    t0 = time.perf_counter()
-    for _ in range(iters):
-        fn()
-    return (time.perf_counter() - t0) / iters
 
 
 def main():
@@ -84,8 +67,8 @@ def main():
             def bat():
                 forces.energy_and_forces_batch(bb, geo, bgK, compute_forces=False)
 
-            seq_s = time_it(seq, max(2, args.iters // 2))
-            bat_s = time_it(bat, args.iters)
+            seq_s = mean_s(seq, max(2, args.iters // 2))
+            bat_s = mean_s(bat, args.iters)
         except RuntimeError as e:                # device OOM etc. -> record the ceiling and stop
             print(f"K={k}: FAILED ({str(e).splitlines()[0][:80]}) -> batch-size ceiling below {k}")
             ceiling = k

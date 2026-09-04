@@ -31,6 +31,38 @@ def pcc(a, b):
     return float(np.corrcoef(a, b)[0, 1])
 
 
+def pcc_strict(a, b):
+    """Pearson correlation without :func:`pcc`'s constant-vs-constant guard: two constant arrays
+    give ``nan``, not ``1.0``.
+
+    A bit-exactness module wants that. ``pcc``'s guard exists so a parity test comparing two
+    legitimately constant tensors does not fail on a ``0/0``; a module asserting that two runs
+    agree bit for bit must not accept the one case where the correlation is undefined.
+    """
+    a = np.asarray(a, dtype=np.float64).ravel()
+    b = np.asarray(b, dtype=np.float64).ravel()
+    return float(np.corrcoef(a, b)[0, 1])
+
+
+def have_orb_fixture(checkpoint, golden):
+    """Both halves of an Orb end-to-end test's inputs present: the exported checkpoint in the
+    weight cache, and the golden it is scored against."""
+    from tt_atom.orb_weight_cache import CACHE_DIR
+
+    return (CACHE_DIR / f"{checkpoint}.npz").exists() and (GOLDEN_DIR / golden).exists()
+
+
+# The OrbMol parity matrix, named once: tests/test_orb_omol_realweight.py scores it and
+# scripts/orb_omol_noise_floor.py measures the reference's own run-to-run spread on the same
+# fixtures, so the two must not be able to disagree about which fixtures those are.
+OMOL_SYSTEMS = ["molecule", "molecule_charged", "molecule_openshell"]
+OMOL_CKPT_TAGS = ["conservative", "direct"]
+
+
+def omol_golden(system, tag):
+    return GOLDEN_DIR / f"{system}_omol_{tag}.npz"
+
+
 class Golden:
     """Accessor over a golden npz: weights (``w@``), activations (``a@``),
     host terms (``host@``), inputs (``in@``), outputs (``out@``)."""

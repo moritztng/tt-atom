@@ -7,7 +7,7 @@ for anyone without UMA access.
 
     HF_HUB_OFFLINE=1 ~/.ttatom_run/refenv/bin/python tests/gen_golden_real.py \
         --system molecule --task omol --out ~/.ttatom_run/goldens_real/ethanol_omol.npz
-    PYTHONPATH=~/TT-Atom ~/.ttatom_run/env/bin/python -m pytest tests/test_realweight.py -q
+    PYTHONPATH=. python -m pytest tests/test_realweight.py -q
 
 Point ``TTATOM_REAL_GOLDEN`` at a different bundle to override the default path.
 

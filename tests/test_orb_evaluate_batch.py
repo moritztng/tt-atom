@@ -9,7 +9,7 @@ ASE-facing calculator -- assembly + per-system denormalize + ZBL + the two force
 (conservative VJP and direct ForceHead with per-system net-force removal) -- against the
 single-system ``calculate`` loop on the real checkpoints.
 
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python -m pytest \
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=. python -m pytest \
         tests/test_orb_evaluate_batch.py -q -s
 
 Auto-skips whichever checkpoint cache / golden is missing.
@@ -20,11 +20,7 @@ import numpy as np
 import pytest
 
 from tt_atom.orb_weight_cache import CACHE_DIR
-from util import GOLDEN_DIR, pcc as _pcc
-
-
-def _have(checkpoint, golden):
-    return (CACHE_DIR / f"{checkpoint}.npz").exists() and (GOLDEN_DIR / golden).exists()
+from util import have_orb_fixture, pcc as _pcc
 
 
 def _si_systems(k, jitter):
@@ -103,7 +99,7 @@ def _check_evaluate_batch_vs_loop(calc, systems):
     assert f_rel < 5e-2, f"force rel maxdiff {f_rel:.2e} (abs {f_max:.3e} on |F|={np.abs(F_concat).max():.3e})"
 
 
-@pytest.mark.skipif(not _have("conservative-inf-omat", "si_omat_orb.npz"),
+@pytest.mark.skipif(not have_orb_fixture("conservative-inf-omat", "si_omat_orb.npz"),
                     reason="orb weight cache or si_omat_orb.npz golden not found")
 def test_evaluate_batch_conservative_omat(device):
     from tt_atom.orb_calculator import OrbCalculator
@@ -129,7 +125,7 @@ def test_evaluate_batch_direct_omat(device):
         calc.close()
 
 
-@pytest.mark.skipif(not _have("conservative-omol", "molecule_omol_conservative.npz"),
+@pytest.mark.skipif(not have_orb_fixture("conservative-omol", "molecule_omol_conservative.npz"),
                     reason="orb weight cache or molecule_omol_conservative.npz golden not found")
 def test_evaluate_batch_conservative_omol(device):
     """OrbMol conditioning through the batched path: per-system charge/spin embedding (here all

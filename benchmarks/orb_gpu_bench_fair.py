@@ -48,7 +48,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import time
 from datetime import datetime, timezone
 
@@ -56,20 +55,10 @@ import numpy as np
 import torch
 from ase.build import bulk
 
-
-SIZES = [
-    ("3x3x3", 3, 3, 3),   #   216 atoms
-    ("4x4x4", 4, 4, 4),   #   512 atoms
-    ("5x5x5", 5, 5, 5),   #  1000 atoms
-    ("6x6x7", 6, 6, 7),   #  2016 atoms (~2000)
-]
-
-
-def _git_sha():
-    try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    except Exception:
-        return None
+# The size sweep and the sha are the TT leg's own: this script's whole claim is that both legs
+# measure the same systems, so it must not be able to drift from them.
+from _harness import git_sha
+from bench_orb_perf_dollar_tt import SIZES
 
 
 def _median_step_ms(step_fn, warm, n, sync=torch.cuda.synchronize):
@@ -292,7 +281,7 @@ def _dump(records, args, gpu_name, orb_models_version, edge_method_used, compile
         "torch_version": torch.__version__,
         "cuda_version": torch.version.cuda,
         "gpu_name": gpu_name,
-        "git_sha": _git_sha(),
+        "git_sha": git_sha(),
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "records": records,
     }

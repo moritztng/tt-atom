@@ -9,7 +9,7 @@ Point ``--weights`` at a bundle exported from the real uma-s-1 ``omat`` checkpoi
 the physical potential (default: the periodic golden bundle if present, else the random-weight
 demo bundle — which still converges, on its own arbitrary surface).
 
-    ~/.ttatom_run/env/bin/python examples/relax_cell.py
+    python examples/relax_cell.py
 """
 from __future__ import annotations
 

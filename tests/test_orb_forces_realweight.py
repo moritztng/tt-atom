@@ -7,7 +7,7 @@ Verifies against the REAL oracle: ``orb-models``' own ``torch.autograd`` forces,
 straight into the golden bundle by ``tests/gen_golden_orb.py`` (``out@forces``) -- not a
 hand-rolled reference.
 
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python -m pytest \
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=. python -m pytest \
         tests/test_orb_forces_realweight.py -q -s
 
 Absent the golden bundle the whole module auto-skips.

@@ -5,7 +5,7 @@ worker process per Tenstorrent card (each pinned to its own device with the mode
 the parent streams systems to a shared queue. Near-linear scaling was validated on a 4-card
 QuietBox (qb1): 3.95x on 4 cards. On a single-card host this still runs — it just uses one card.
 
-    ~/.ttatom_run/env/bin/python examples/batch.py --device-ids 0 --n 32
+    python examples/batch.py --device-ids 0 --n 32
 """
 from __future__ import annotations
 

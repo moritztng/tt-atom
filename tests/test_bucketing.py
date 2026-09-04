@@ -28,6 +28,7 @@ import numpy as np
 import pytest
 
 from tt_atom.orb_weight_cache import CACHE_DIR as WEIGHTS_DIR
+from util import pcc_strict
 
 CHECKPOINTS = ["conservative-inf-omat", "direct-20-omat", "conservative-omol", "direct-omol"]
 
@@ -82,10 +83,6 @@ def test_helpers():
     assert gather_kwargs(3, 64) == dict(gather_edge_count=3, gather_width=64)
 
 
-def _pcc(a, b):
-    return float(np.corrcoef(np.asarray(a).ravel(), np.asarray(b).ravel())[0, 1])
-
-
 @pytest.mark.parametrize("checkpoint", CHECKPOINTS)
 def test_bucketing_bitexact(device, checkpoint):
     path = WEIGHTS_DIR / f"{checkpoint}.npz"
@@ -115,7 +112,7 @@ def test_bucketing_bitexact(device, checkpoint):
         e1, f1, s1 = buck[name]
         dE, dF = abs(e0 - e1), float(np.abs(f0 - f1).max())
         dEc, dFc = abs(e0 - ec), float(np.abs(f0 - fc).max())
-        pcc = _pcc(f0, f1)
+        pcc = pcc_strict(f0, f1)
         print(f"\n[{checkpoint}:{name}] dE={dE} dF_max={dF} (instance floor dE={dEc} "
               f"dF={dFc}) pcc={pcc}")
         assert e0 == e1, f"{name}: energy {e0!r} != {e1!r}"

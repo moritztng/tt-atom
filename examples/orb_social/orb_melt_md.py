@@ -19,7 +19,7 @@ Two things matter for this melt trajectory:
 Per-step energy / temperature are logged to a CSV; frames are written to an extxyz trajectory for
 rendering and structural analysis (RDF, MSD).
 
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=<tt-atom> ~/.ttatom_run/env/bin/python examples/orb_social/orb_melt_md.py \
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=<tt-atom> python examples/orb_social/orb_melt_md.py \
         --weights ~/.ttatom_run/goldens_real/si_supercell_orb.npz \
         --ramp-steps 1800 --nve-steps 500 --t-start 300 --t-end 2800 --dt 0.5 \
         --save-every 4 --out si_melt.extxyz --log-csv md_melt.csv

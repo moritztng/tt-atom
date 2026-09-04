@@ -13,7 +13,7 @@ Direct (``orb-v3-direct-20-omat``): a dedicated ``StressHead`` device MLP (same 
 
     ~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py --ckpt direct-20-omat \
         --out ~/.ttatom_run/goldens_real/si_omat_orb_direct20.npz   # regenerate: now has stress_head
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=. ~/.ttatom_run/env/bin/python -m pytest \
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=. python -m pytest \
         tests/test_orb_stress_realweight.py -q -s
 
 Absent the golden bundle(s) each test auto-skips independently.
@@ -85,8 +85,9 @@ def test_direct_stress_head(device):
         pytest.skip("golden predates stress_head weight capture -- regenerate with "
                     "gen_golden_orb.py (see module docstring)")
 
+    from tt_atom.device import to_dev
     from tt_atom.orb_model import (Encoder, AttentionInteractionLayer, OrbGraphContext,
-                                   StressHead, host_cutoff, host_stress_denormalize, _to_dev)
+                                   StressHead, host_cutoff, host_stress_denormalize)
     import ttnn
 
     cfg = gw.config
@@ -94,8 +95,8 @@ def test_direct_stress_head(device):
     L = cfg["num_message_passing_steps"]
     encoder = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
                       latent_dim=cfg["latent_dim"], hidden_dim=1024)
-    node_dev = _to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
-    edge_dev = _to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
+    node_dev = to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
+    edge_dev = to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
     nodes, edges = encoder(node_dev, edge_dev)
 
     senders = gw.inp("senders").long()

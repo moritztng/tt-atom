@@ -7,7 +7,7 @@ Measures, over a system-size sweep, on real hardware:
     function) for an honest CPU-vs-TT speedup
 
 All numbers are real and measured here; nothing is hardcoded. Results -> benchmarks/results/.
-Run:  ~/.ttatom_run/env/bin/python benchmarks/bench_throughput.py --weights /tmp/tt_full.npz
+Run:  python benchmarks/bench_throughput.py --weights /tmp/tt_full.npz
 """
 from __future__ import annotations
 
@@ -15,13 +15,14 @@ import argparse
 import json
 import pathlib
 import sys
-import time
 
 import torch
 from ase.build import bulk
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "tests"))
 import mirror  # noqa: E402
+
+from _harness import mean_s  # noqa: E402
 
 from tt_atom import device as D  # noqa: E402
 from tt_atom.model import Backbone, GraphContext  # noqa: E402
@@ -35,14 +36,6 @@ def make_system(n_cells):
     a = bulk("Si", "diamond", a=5.43) * (n_cells, n_cells, n_cells)
     a.rattle(stdev=0.1, seed=1)
     return a
-
-
-def time_it(fn, iters):
-    fn()  # warmup (compile / program-cache fill)
-    t0 = time.perf_counter()
-    for _ in range(iters):
-        fn()
-    return (time.perf_counter() - t0) / iters
 
 
 def main():
@@ -93,7 +86,7 @@ def main():
             bb(xi, graph, se3)
             ttnn.synchronize_device(dev)
 
-        dev_ms = time_it(dev_fwd, args.iters) * 1e3
+        dev_ms = mean_s(dev_fwd, args.iters) * 1e3
 
         # end-to-end (host geom + upload + forward + readback)
         def e2e():
@@ -102,7 +95,7 @@ def main():
             _, en = bb(x, g, s)
             float(ttnn.to_torch(en).reshape(-1)[0])
 
-        e2e_ms = time_it(e2e, max(3, args.iters // 4)) * 1e3
+        e2e_ms = mean_s(e2e, max(3, args.iters // 4)) * 1e3
 
         # CPU reference (bit-exact mirror)
         def cpu_fwd():
@@ -111,7 +104,7 @@ def main():
             float(mirror.energy(ne, w))
 
         with torch.no_grad():
-            cpu_ms = time_it(cpu_fwd, max(3, args.iters // 4)) * 1e3
+            cpu_ms = mean_s(cpu_fwd, max(3, args.iters // 4)) * 1e3
 
         # honest accuracy: TT energy vs the CPU reference (same fp32 mirror)
         _, en_tt = bb(xi, graph, se3)
