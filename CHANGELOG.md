@@ -35,11 +35,16 @@ byte-identical to 0.3.0.
   silently turned a default-on path off while `TT_ATOM_ORB_SCATTER_RM=false` silently left one on.
   All ten knobs are documented in `custom_kernels/README.md`.
 - Internal consolidation: one implementation each for the cache root, the atomic `.npz` write,
-  Orb's per-atom neighbour cap, Orb's reverse pass, the gate's subprocess environment, and the
-  golden directory the gate and its tests share. `benchmarks/_harness.py` is now the one home for
-  the benchmark-side concerns: median timing, fixture and weight locations, and the fleet
-  discipline (lease flock, quiet-host wait, sandbox child environment) that three subprocess
-  benchmarks each carried a drifting copy of.
+  Orb's per-atom neighbour cap, Orb's reverse pass, the gate's subprocess environment, the golden
+  directory the gate and its tests share, and the host-to-device transfer (`tt_atom.device.to_dev`,
+  which five modules each defined privately and five more imported across module boundaries).
+  `benchmarks/_harness.py` is the one home for the benchmark-side concerns: timing, fixture and
+  weight locations, and the fleet discipline (lease flock, quiet-host wait, sandbox child
+  environment) that three subprocess benchmarks each carried a drifting copy of. `tests/util.py`
+  likewise for the parity helpers the test modules shared by copy.
+- Every "run it like this" header in the repo now names `python` rather than a build-machine
+  interpreter path that exists nowhere, including the two hints `scripts/ux_regression.py` prints
+  when it is started with the wrong Python.
 
 ## [0.3.0] - 2026-08-21
 

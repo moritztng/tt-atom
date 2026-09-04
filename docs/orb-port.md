@@ -127,14 +127,14 @@ about 4.4x to 9.1x more throughput per dollar. Raw timings and environment metad
 Generate real-weight goldens in the reference environment:
 
 ```bash
-~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py \
+refenv/bin/python tests/gen_golden_orb.py \
   --ckpt conservative-inf-omat \
   --system supercell \
   --out ~/.ttatom_run/goldens_real/si_supercell_orb.npz
-~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py \
+refenv/bin/python tests/gen_golden_orb.py \
   --ckpt conservative-inf-omat \
   --out ~/.ttatom_run/goldens_real/si_omat_orb.npz
-~/.ttatom_run/refenv/bin/python tests/gen_golden_orb.py \
+refenv/bin/python tests/gen_golden_orb.py \
   --ckpt direct-20-omat \
   --out ~/.ttatom_run/goldens_real/si_omat_orb_direct20.npz
 ```
