@@ -20,7 +20,7 @@ the same run — plus an absolute PCC >= 0.99999 backstop. Every smaller size is
 (the instance floor is 0.0 there). The direct-20 checkpoint caps neighbours at 20, so its
 systems use a stretched lattice the checkpoint accepts.
 
-Run (qb1):  TT_VISIBLE_DEVICES=0 PYTHONPATH=. .venv/bin/python -m pytest tests/test_bucketing.py -q
+Run:  TT_VISIBLE_DEVICES=0 PYTHONPATH=. python -m pytest tests/test_bucketing.py -q
 """
 from __future__ import annotations
 

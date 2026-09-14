@@ -10,8 +10,7 @@ isolation. Barriered timings over-attribute relative to a pipelined trace, but t
 per stage is the stable signal for finding the next pole. Logical DRAM traffic is computed per
 stage from the exact tensor shapes in tt_atom/orb_model.py and tt_atom/orb_forces.py.
 
-    source .source_env.sh
-    TT_VISIBLE_DEVICES=0 PYTHONPATH=.:$PYTHONPATH $PYREFENV benchmarks/bench_orb_layer_profile.py \
+    TT_VISIBLE_DEVICES=0 PYTHONPATH=. python benchmarks/bench_orb_layer_profile.py \
         --weights ~/.ttatom_run/goldens_real/si_supercell_orb.npz \
         --out benchmarks/orb_layer_profile.json
 """

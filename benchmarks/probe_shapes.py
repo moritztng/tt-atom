@@ -17,7 +17,7 @@ bucketing suffices. This probe answers that with a cold-cache single leg, bucket
 Fleet discipline is ``benchmarks/_harness.py``'s: sandboxed HOME controls the tt-metal kernel
 cache, the child holds the device-lease flock, and the parent waits for a quiet host window.
 
-Run (qb1):  .venv/bin/python benchmarks/probe_shapes.py --card 0
+Run:  python benchmarks/probe_shapes.py --card 0
 """
 from __future__ import annotations
 

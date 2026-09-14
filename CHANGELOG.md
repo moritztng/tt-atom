@@ -44,8 +44,8 @@ byte-identical to 0.3.0.
   environment) that three subprocess benchmarks each carried a drifting copy of. `tests/util.py`
   likewise for the parity helpers the test modules shared by copy. Also one each for the bundles'
   own JSON header (`tools/npz_atomic.config_array`/`read_config`, previously five inline writers
-  and nine inline readers), the Orb hidden MLP width (`orb_model.MLP_HIDDEN_DIM`, now the constructor
-  default rather than 68 copies of `1024`), the Orb weight-cache path
+  and nine inline readers), the Orb hidden MLP width (`orb_model.MLP_HIDDEN_DIM`, now the
+  constructor default rather than 68 copies of `1024`), the Orb weight-cache path
   (`orb_weight_cache.weights_path`, which seven callers built themselves — six of them as pytest
   skip conditions, so a layout change would have silently reported nothing instead of failing),
   the checkpoint-to-`orb_models.pretrained` map, the default reference-env path, and the gate

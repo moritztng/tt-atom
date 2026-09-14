@@ -14,7 +14,7 @@ leg gets a fresh sandbox HOME (its cache then serves as that mode's warm HOME). 
 discipline is ``benchmarks/_harness.py``'s: the child holds the device-lease flock, the parent
 waits for a quiet host window unless --no-wait.
 
-Run (qb1):  .venv/bin/python benchmarks/bench_screening.py --card 0
+Run:  python benchmarks/bench_screening.py --card 0
 """
 from __future__ import annotations
 

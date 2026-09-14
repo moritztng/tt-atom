@@ -11,7 +11,7 @@ Fleet discipline is ``benchmarks/_harness.py``'s (lease flock, quiet-host wait, 
 shared with the other subprocess benchmarks. Legs are kept short (<= ~2 systems) so a sibling's
 120 s lease timeout never trips.
 
-Run (qb1):  .venv/bin/python benchmarks/bench_compile_pain.py --card 3
+Run:  python benchmarks/bench_compile_pain.py --card 3
 """
 from __future__ import annotations
 
