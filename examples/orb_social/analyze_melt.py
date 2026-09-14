@@ -18,9 +18,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import pathlib
+import sys
 
 import numpy as np
 from ase.io import read
+
+# tools/ carries the one atomic .npz writer; the reference leg runs in the refenv, where
+# tt_atom is not installed.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "tools"))
+from npz_atomic import savez_atomic  # noqa: E402
 
 
 def _wrap(pos, cell):
@@ -141,12 +148,12 @@ def main():
         if slope > 0:
             D = slope / 6.0 * 1e-5   # A^2/fs -> m^2/s  (1 A^2/fs = 1e-20 m^2 / 1e-15 s)
 
-    np.savez(args.out,
-             time_fs=t, temp_K=T, epot_ev_atom=epot, ekin_ev_atom=ekin, etot_ev_atom=etot,
-             regime=reg, nve=t_nve0,
-             r=r_grid, g_series=g_series, g_time=np.array(g_time), g_temp=np.array(g_temp),
-             msd=msd, msd_time=ftime, t_melt_cross=t_melt_cross,
-             drift_liquid=drift_liquid, drift_solid=drift_solid, D_m2s=D)
+    savez_atomic(args.out,
+                 time_fs=t, temp_K=T, epot_ev_atom=epot, ekin_ev_atom=ekin, etot_ev_atom=etot,
+                 regime=reg, nve=t_nve0,
+                 r=r_grid, g_series=g_series, g_time=np.array(g_time), g_temp=np.array(g_temp),
+                 msd=msd, msd_time=ftime, t_melt_cross=t_melt_cross,
+                 drift_liquid=drift_liquid, drift_solid=drift_solid, D_m2s=D)
     print(f"wrote {args.out}")
 
     summary = {
