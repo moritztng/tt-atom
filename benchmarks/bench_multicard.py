@@ -16,6 +16,8 @@ import time
 import numpy as np
 from ase.build import bulk
 
+from _harness import git_sha
+
 from tt_atom.batch import MultiCard
 
 RESULTS = pathlib.Path(__file__).parent / "results"
@@ -67,7 +69,7 @@ def main():
     RESULTS.mkdir(exist_ok=True)
     out = RESULTS / ("multicard_fast.json" if args.fast else "multicard.json")
     out.write_text(json.dumps(dict(systems=args.systems, cells=args.cells, natoms=natoms,
-                                   fast=args.fast, rows=rows), indent=2))
+                                   fast=args.fast, git_sha=git_sha(), rows=rows), indent=2))
     print(f"wrote {out}")
 
 

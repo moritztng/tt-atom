@@ -79,9 +79,9 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import date
 
-from _gate_env import REPO_ROOT, child_env
+from _gate_env import child_env, on_sys_path
 
-sys.path.insert(0, str(REPO_ROOT))
+REPO_ROOT = on_sys_path()
 # One golden-dir resolution for the gate and for the tests it runs: they must look in the same
 # place, or a relocated golden set reads as a GAP while the tests happily find their fixtures.
 from tests.util import GOLDEN_DIR    # noqa: E402

@@ -17,12 +17,13 @@ each card-count once and reports wall-clock; no fabricated scaling.
 """
 import argparse
 import json
-import os
 import sys
 import time
 
 import numpy as np
 from ase.build import molecule
+
+from _gate_env import on_sys_path
 
 
 def _systems(n, seed=0):
@@ -47,8 +48,7 @@ def main():
     ap.add_argument("--mode", default="relax", choices=["relax", "md", "energy"])
     args = ap.parse_args()
 
-    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    sys.path.insert(0, repo)
+    on_sys_path()
     from tt_atom.batch import MultiCardSim
 
     all_devs = tuple(int(d) for d in args.devices.split(","))

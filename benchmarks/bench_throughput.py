@@ -19,10 +19,10 @@ import sys
 import torch
 from ase.build import bulk
 
-sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "tests"))
-import mirror  # noqa: E402
+from _harness import REPO_ROOT, git_sha, mean_s
 
-from _harness import mean_s  # noqa: E402
+sys.path.insert(0, str(REPO_ROOT / "tests"))
+import mirror  # noqa: E402
 
 from tt_atom import device as D  # noqa: E402
 from tt_atom.model import Backbone, GraphContext  # noqa: E402
@@ -126,7 +126,8 @@ def main():
     ttnn.close_device(dev)
     RESULTS.mkdir(exist_ok=True)
     out = RESULTS / ("throughput_fast.json" if args.fast else "throughput.json")
-    out.write_text(json.dumps(dict(config=cfg, fast=args.fast, rows=rows), indent=2))
+    out.write_text(json.dumps(dict(config=cfg, fast=args.fast, git_sha=git_sha(),
+                                   rows=rows), indent=2))
     print(f"wrote {out}")
 
 

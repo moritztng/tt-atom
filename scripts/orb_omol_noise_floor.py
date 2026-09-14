@@ -22,12 +22,12 @@ Run on card 0 with the ttnn env:
 """
 from __future__ import annotations
 
-import pathlib
-import sys
 
 import numpy as np
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+from _gate_env import on_sys_path
+
+on_sys_path()
 # The goldens this reads are the parity tests' own, so the directory (and TTATOM_GOLDEN_DIR)
 # has to resolve to the same place theirs does.
 from tests.util import (OMOL_CKPT_TAGS as CKPT_TAGS, OMOL_SYSTEMS as SYSTEMS,   # noqa: E402

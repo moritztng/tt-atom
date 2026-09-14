@@ -63,8 +63,8 @@ def mean_s(fn, iters):
 
 
 def git_sha():
-    """HEAD of the checkout being measured, recorded in every result file, or ``None`` when that
-    cannot be determined (no git, not a checkout)."""
+    """HEAD of the checkout being measured, recorded in every persisted result file, or ``None``
+    when that cannot be determined (no git, not a checkout)."""
     try:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     except Exception:

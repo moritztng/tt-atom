@@ -7,7 +7,9 @@ Each had its own copy, and they had drifted — ``ux_regression``'s docstring cl
 the release_gate invocation convention" while omitting the card, and ``_multicard_sim_parity``
 hard-set the logger level so a caller could not turn it back up for debugging.
 
-``benchmarks/_harness.py`` is the same idea for ``benchmarks/``; that one owns device leases and
+It also owns ``REPO_ROOT`` and the one way to put it on ``sys.path``, which the scripts had
+spelled four different ways (one of them ``sys.path.insert(0, ".")``, which depends on the
+working directory). ``benchmarks/_harness.py`` is the same idea for ``benchmarks/``; that one owns device leases and
 timing, which no gate needs, and its ``sandbox_env`` deliberately redirects ``$HOME`` to control
 the kernel cache, which no gate wants.
 
@@ -18,8 +20,20 @@ from __future__ import annotations
 
 import os
 import pathlib
+import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+def on_sys_path() -> pathlib.Path:
+    """``REPO_ROOT``, guaranteed importable: prepend it to ``sys.path`` if it is not there.
+
+    Call this before importing ``tt_atom`` or ``tests`` from a script, so a checkout with no
+    install (or with an editable install pointing at a different checkout) still resolves here.
+    """
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    return REPO_ROOT
 
 
 def child_env(extra: dict | None = None) -> dict:

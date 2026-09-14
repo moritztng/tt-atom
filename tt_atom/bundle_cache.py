@@ -83,6 +83,12 @@ def bundle_path(model, task, numbers, charge, spin, cache_dir=None, checkpoint=N
     return pathlib.Path(cache_dir or CACHE_DIR) / name
 
 
+def default_refenv():
+    """The refenv TT-Atom creates for you, whether or not it exists yet. Named so a caller can
+    ask about the default specifically, without ``$TT_ATOM_REFENV`` answering for it."""
+    return pathlib.Path.home() / ".ttatom_run" / "refenv" / "bin" / "python"
+
+
 def resolve_refenv(refenv=None):
     """Locate the reference (fairchem) python: explicit arg > ``$TT_ATOM_REFENV`` > default
     ``~/.ttatom_run/refenv/bin/python``. Raises a clear, actionable error if none is found —
@@ -90,7 +96,7 @@ def resolve_refenv(refenv=None):
     candidates = [
         refenv,
         os.environ.get("TT_ATOM_REFENV"),
-        str(pathlib.Path.home() / ".ttatom_run" / "refenv" / "bin" / "python"),
+        str(default_refenv()),
     ]
     for c in candidates:
         if c and pathlib.Path(c).exists():

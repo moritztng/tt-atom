@@ -20,7 +20,7 @@ import pathlib
 
 from ase.build import molecule
 
-from _harness import conformers, mean_s
+from _harness import conformers, git_sha, mean_s
 
 from tt_atom import device as D
 from tt_atom.model import Backbone
@@ -98,7 +98,8 @@ def main():
     print("\nSUMMARY:", json.dumps(summary))
     RESULTS.mkdir(exist_ok=True)
     out = RESULTS / "batch_throughput.json"
-    out.write_text(json.dumps(dict(config=cfg, summary=summary, rows=rows), indent=2))
+    out.write_text(json.dumps(dict(config=cfg, summary=summary, git_sha=git_sha(),
+                                   rows=rows), indent=2))
     print(f"wrote {out}")
 
 

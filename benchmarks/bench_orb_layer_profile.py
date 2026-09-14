@@ -25,7 +25,7 @@ import numpy as np
 import torch
 from ase.build import bulk
 
-from _harness import median_ms
+from _harness import git_sha, median_ms
 
 
 def _med(fn, ttnn, device, *, warmup=3, iters=8):
@@ -351,6 +351,7 @@ def main():
         "method": "eager per-op with ttnn.synchronize_device after every op; share-of-total is the signal",
         "precision": "bf16",
         "orb_fused_silu_bw": rec.get("orb_fused_silu_bw"),
+        "git_sha": git_sha(),
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "record": rec,
     }
