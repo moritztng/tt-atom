@@ -65,15 +65,16 @@ class _WorkerPool:
 
 
 def _worker(device_id, weights_path, fast, bucketing, in_q, out_q):
-    import json
     import pathlib
 
     _pin_worker(device_id)
 
     import numpy as np
 
+    from tools.npz_atomic import read_config
+
     npz = np.load(pathlib.Path(weights_path))
-    cfg = json.loads(bytes(npz["config"]).decode())
+    cfg = read_config(npz)
     if "sphere_channels" in cfg:                               # UMA eSCN-MD bundle
         from .weights import WeightBundle
 

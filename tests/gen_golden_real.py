@@ -25,7 +25,6 @@ spectral-atomwise activations replace the grid ones, and ``scale@*`` carries the
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import pathlib
 import sys
@@ -44,7 +43,7 @@ from fairchem.core.units.mlip_unit.api.inference import InferenceSettings
 # tools/ carries the one atomic .npz writer; these scripts run in the reference env,
 # where tt_atom is not installed.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
-from npz_atomic import savez_atomic  # noqa: E402
+from npz_atomic import config_array, savez_atomic  # noqa: E402
 
 
 def npy(t):
@@ -247,7 +246,7 @@ def main():
         cutoff=float(bb.cutoff), ff_type="spectral", act_type="gate",
         norm_type="rms_norm_sh", chg_spin_emb_type=bb.chg_spin_emb_type, task=args.task,
     )
-    saved["config"] = np.frombuffer(json.dumps(out_cfg).encode(), dtype=np.uint8)
+    saved["config"] = config_array(out_cfg)
 
     di = captured["data"]
     saved["in@atomic_numbers"] = npy(di["atomic_numbers"])

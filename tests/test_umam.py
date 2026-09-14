@@ -17,13 +17,11 @@ Golden (gated, uncommitted; the checkpoint is 11 GB so the generator loads a sin
 """
 from __future__ import annotations
 
-import json
-
 import numpy as np
 import pytest
 import torch
 
-from util import real_golden
+from util import read_config, real_golden
 
 GOLDEN = real_golden("ethanol_omol_umam.npz")
 
@@ -39,7 +37,7 @@ def test_umam_unsupported_raises(device):
     from tt_atom.weights import WeightBundle
 
     rg = np.load(GOLDEN)
-    rcfg = json.loads(bytes(rg["config"]).decode())
+    rcfg = read_config(rg)
     assert rcfg["lmax"] == 4 and rcfg["mmax"] == 2, "expected the uma-m lmax=4/mmax=2 config"
     b = WeightBundle.load(str(GOLDEN))
     assert b.coefficient_index is not None, "uma-m golden must carry coefficient_index"

@@ -1,10 +1,13 @@
 """Golden-fixture helpers shared by the parity tests."""
-import json
 import os
 import pathlib
 
 import numpy as np
 import torch
+
+# The bundle header decoder the exporters' encoder is paired with; re-exported here so a parity
+# module reads a config exactly as tt_atom does, from its usual `from util import ...` line.
+from tools.npz_atomic import read_config  # noqa: F401
 
 DATA = pathlib.Path(__file__).parent / "data"
 
@@ -69,7 +72,7 @@ class Golden:
 
     def __init__(self, name):
         self.d = np.load(DATA / name)
-        self.config = json.loads(bytes(self.d["config"]).decode())
+        self.config = read_config(self.d)
 
     def _t(self, key):
         return torch.from_numpy(self.d[key].copy())

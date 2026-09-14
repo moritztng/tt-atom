@@ -1,4 +1,5 @@
-"""What the exporters share: how a tensor becomes a stored array, and atomic ``.npz`` writes.
+"""What the exporters share: the bundle's JSON header, how a tensor becomes a stored array,
+and atomic ``.npz`` writes.
 
 Atomic materialization is a sidecar in the destination directory, then ``os.replace``.
 
@@ -16,12 +17,31 @@ This lives in ``tools/`` rather than ``tt_atom/`` because most of its callers ru
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import pathlib
 import tempfile
 
 import numpy as np
 import torch
+
+CONFIG_KEY = "config"
+
+
+def config_array(cfg):
+    """``cfg`` as the array every bundle stores under ``config``.
+
+    The reference env (numpy>=2) writes the bundle and the ttnn env (numpy<2) reads it, so the
+    header travels as JSON in a uint8 array rather than as a pickled object. One encoder and one
+    decoder (:func:`read_config`) because a bundle whose two halves disagree about its own header
+    is unreadable in the environment that did not write it.
+    """
+    return np.frombuffer(json.dumps(cfg).encode(), dtype=np.uint8)
+
+
+def read_config(npz):
+    """The ``config`` dict back out of a loaded bundle — the inverse of :func:`config_array`."""
+    return json.loads(bytes(npz[CONFIG_KEY]).decode())
 
 
 def npy(t):

@@ -28,13 +28,11 @@ What is checked per task:
 """
 from __future__ import annotations
 
-import json
-
 import numpy as np
 import pytest
 import torch
 
-from util import GOLDEN_DIR, pcc as _pcc
+from util import GOLDEN_DIR, pcc as _pcc, read_config
 
 # (task label, bundle filename) — parametrized; each case skips if its bundle is absent.
 # omat/omc/odac are fully periodic and include stress; oc20 is mixed-PBC, where stress is undefined.
@@ -60,7 +58,7 @@ def test_neighbour_list_matches_fairchem(task, fname):
     from tt_atom.geometry import radius_graph
 
     rg, _ = _load(fname)
-    cfg = json.loads(bytes(rg["config"]).decode())
+    cfg = read_config(rg)
     assert cfg["task"] == task
     pos = torch.from_numpy(rg["in@pos"].copy()).float()
     cell = torch.from_numpy(rg["in@cell"].reshape(3, 3).copy()).float()
@@ -87,7 +85,7 @@ def test_end_to_end_periodic_energy_forces(task, fname, device):
     from tt_atom.weights import WeightBundle
 
     rg, path = _load(fname)
-    rcfg = json.loads(bytes(rg["config"]).decode())
+    rcfg = read_config(rg)
     b = WeightBundle.load(path)
     w = b.weights
     pos = torch.from_numpy(rg["in@pos"].copy()).float()

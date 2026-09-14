@@ -23,7 +23,6 @@ two environments through disk rather than importing fairchem next to ttnn.
 from __future__ import annotations
 
 import argparse
-import json
 import pathlib
 import sys
 
@@ -37,7 +36,7 @@ from fairchem.core.models.uma.escn_md import eSCNMDBackbone
 # tools/ carries the one atomic .npz writer; these scripts run in the reference env,
 # where tt_atom is not installed.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
-from npz_atomic import savez_atomic  # noqa: E402
+from npz_atomic import config_array, savez_atomic  # noqa: E402
 
 
 TINY = dict(
@@ -169,7 +168,7 @@ def main():
         h.remove()
 
     # ---- assemble npz --------------------------------------------------------------
-    saved["config"] = np.frombuffer(json.dumps(cfg).encode(), dtype=np.uint8)
+    saved["config"] = config_array(cfg)
     # inputs
     saved["in@atomic_numbers"] = npy(data["atomic_numbers"])
     saved["in@pos"] = npy(data["pos"])
