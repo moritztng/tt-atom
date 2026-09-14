@@ -14,8 +14,6 @@ plumbing on real device. Uses orb-v3-direct-omol (direct ForceHead, no autograd)
 ttnn (no fused_rotate needed).
 """
 import json
-import os
-import pathlib
 import subprocess
 import sys
 import tempfile
@@ -23,8 +21,8 @@ import tempfile
 import numpy as np
 from ase.build import molecule
 
-HERE = pathlib.Path(__file__).resolve().parent
-REPO = HERE.parent
+from _gate_env import REPO_ROOT as REPO, child_env
+
 MODEL = "orb-v3-direct-omol"
 DEVICES = (0,)
 RELAX_STEPS = 3
@@ -139,16 +137,14 @@ def _cmp(label, ref, mc):
 
 
 def main():
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(REPO) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-    env.setdefault("TT_VISIBLE_DEVICES", "0")
-    env["TT_METAL_LOGGER_LEVEL"] = "FATAL"
-    env["PARITY_REPO"] = str(REPO)
-    env["PARITY_MODEL"] = MODEL
-    env["PARITY_DEVICES"] = ",".join(map(str, DEVICES))
-    env["PARITY_RELAX_STEPS"] = str(RELAX_STEPS)
-    env["PARITY_MD_STEPS"] = str(MD_STEPS)
-    env["PARITY_SEED"] = str(SEED)
+    env = child_env({
+        "PARITY_REPO": str(REPO),
+        "PARITY_MODEL": MODEL,
+        "PARITY_DEVICES": ",".join(map(str, DEVICES)),
+        "PARITY_RELAX_STEPS": str(RELAX_STEPS),
+        "PARITY_MD_STEPS": str(MD_STEPS),
+        "PARITY_SEED": str(SEED),
+    })
 
     systems_path = tempfile.mktemp(suffix=".json")
     json.dump(_build_systems(), open(systems_path, "w"))
