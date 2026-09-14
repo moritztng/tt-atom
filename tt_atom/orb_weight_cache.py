@@ -20,14 +20,24 @@ CACHE_DIR = CACHE_ROOT / "orb_weights"
 CHECKPOINTS = ("orb-v3-conservative-inf-omat", "orb-v3-direct-20-omat",
               "orb-v3-conservative-omol", "orb-v3-direct-omol")
 
+# The exporter's ``--ckpt`` and the cached filenames drop the family prefix, so both spellings
+# are in circulation; accepting either keeps every caller off the ``CACHE_DIR / f"{name}.npz"``
+# construction, which would turn a layout change into a silent "fixture missing" skip.
+SHORT_NAMES = tuple(c.removeprefix("orb-v3-") for c in CHECKPOINTS)
+
 
 def _short_name(checkpoint):
+    if checkpoint in SHORT_NAMES:
+        return checkpoint
     if checkpoint not in CHECKPOINTS:
-        raise ValueError(f"unknown Orb checkpoint {checkpoint!r}; choose from {CHECKPOINTS}")
+        raise ValueError(f"unknown Orb checkpoint {checkpoint!r}; choose from "
+                         f"{CHECKPOINTS} (or the short forms {SHORT_NAMES})")
     return checkpoint.removeprefix("orb-v3-")
 
 
 def weights_path(checkpoint, cache_dir=None):
+    """Cache path for ``checkpoint``'s exported weights. Takes the full name
+    (``orb-v3-direct-20-omat``) or the short one (``direct-20-omat``)."""
     return pathlib.Path(cache_dir or CACHE_DIR) / f"{_short_name(checkpoint)}.npz"
 
 

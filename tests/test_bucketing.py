@@ -27,12 +27,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tt_atom.orb_weight_cache import CACHE_DIR as WEIGHTS_DIR
+from tt_atom.orb_weight_cache import CACHE_DIR, SHORT_NAMES, weights_path
 from util import pcc_strict
 
-CHECKPOINTS = ["conservative-inf-omat", "direct-20-omat", "conservative-omol", "direct-omol"]
-
-pytestmark = pytest.mark.skipif(not WEIGHTS_DIR.is_dir(), reason="no cached Orb weights")
+pytestmark = pytest.mark.skipif(not CACHE_DIR.is_dir(), reason="no cached Orb weights")
 
 
 def _systems(checkpoint):
@@ -83,9 +81,9 @@ def test_helpers():
     assert gather_kwargs(3, 64) == dict(gather_edge_count=3, gather_width=64)
 
 
-@pytest.mark.parametrize("checkpoint", CHECKPOINTS)
+@pytest.mark.parametrize("checkpoint", SHORT_NAMES)
 def test_bucketing_bitexact(device, checkpoint):
-    path = WEIGHTS_DIR / f"{checkpoint}.npz"
+    path = weights_path(checkpoint)
     if not path.exists():
         pytest.skip(f"weights not cached: {path}")
 

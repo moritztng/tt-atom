@@ -26,12 +26,12 @@ import numpy as np
 import torch
 from ase.build import bulk
 
-from orb_models.forcefield import pretrained
 from orb_models.forcefield.atomic_system import ase_atoms_to_atom_graphs
 
-# tools/ carries the one atomic .npz writer; these scripts run in the reference env,
-# where tt_atom is not installed.
+# tools/ carries the one atomic .npz writer and the one checkpoint -> pretrained map; these
+# scripts run in the reference env, where tt_atom is not installed.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
+from export_orb_weights import CKPTS  # noqa: E402
 from npz_atomic import config_array, savez_atomic  # noqa: E402
 
 
@@ -125,14 +125,6 @@ SYSTEMS = {
     "mgo": build_mgo,
     "molecule": build_molecule, "molecule_charged": build_molecule_charged,
     "molecule_openshell": build_molecule_openshell,
-}
-
-
-CKPTS = {
-    "conservative-inf-omat": pretrained.orb_v3_conservative_inf_omat,
-    "direct-20-omat": pretrained.orb_v3_direct_20_omat,
-    "conservative-omol": pretrained.orb_v3_conservative_omol,
-    "direct-omol": pretrained.orb_v3_direct_omol,
 }
 
 

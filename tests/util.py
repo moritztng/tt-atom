@@ -50,9 +50,9 @@ def pcc_strict(a, b):
 def have_orb_fixture(checkpoint, golden):
     """Both halves of an Orb end-to-end test's inputs present: the exported checkpoint in the
     weight cache, and the golden it is scored against."""
-    from tt_atom.orb_weight_cache import CACHE_DIR
+    from tt_atom.orb_weight_cache import weights_path
 
-    return (CACHE_DIR / f"{checkpoint}.npz").exists() and (GOLDEN_DIR / golden).exists()
+    return weights_path(checkpoint).exists() and (GOLDEN_DIR / golden).exists()
 
 
 # The OrbMol parity matrix, named once: tests/test_orb_omol_realweight.py scores it and

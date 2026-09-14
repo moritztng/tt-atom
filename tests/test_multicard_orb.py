@@ -19,9 +19,9 @@ import pytest
 from ase.build import molecule
 
 from tt_atom.batch import MultiCard
-from tt_atom.orb_weight_cache import CACHE_DIR
+from tt_atom.orb_weight_cache import weights_path
 
-WEIGHTS = CACHE_DIR / "conservative-inf-omat.npz"
+WEIGHTS = weights_path("conservative-inf-omat")
 
 
 def _num_devices():

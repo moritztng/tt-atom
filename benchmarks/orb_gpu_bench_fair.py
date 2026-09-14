@@ -107,8 +107,9 @@ def main():
     except ImportError:  # older layout (v0.5.x)
         from orb_models.forcefield.calculator import ORBCalculator
 
-    loader = (pretrained.orb_v3_conservative_inf_omat if args.ckpt
-              == "orb-v3-conservative-inf-omat" else pretrained.orb_v3_direct_20_omat)
+    # orb_models names its loaders after the checkpoint, so derive it: an if/else here
+    # silently benchmarked direct-20 for any name that was not conservative-inf-omat.
+    loader = getattr(pretrained, args.ckpt.replace("-", "_"))
     res = loader(device=device)
     if isinstance(res, tuple):  # v0.7.0+ returns (model, atoms_adapter)
         model, adapter = res
