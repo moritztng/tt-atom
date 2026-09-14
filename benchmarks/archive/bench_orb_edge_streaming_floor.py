@@ -191,7 +191,6 @@ def main():
             "gnn_stacks.0",
             device,
             latent_dim=256,
-            hidden_dim=1024,
         )
         mlp = layer.edge_mlp
         for tag in [name for name in args.sizes.split(",") if name]:

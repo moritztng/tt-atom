@@ -185,7 +185,7 @@ def main():
     try:
         gw = OrbWeights.load(args.weights)
         layer = AttentionInteractionLayer(
-            gw.weights, "gnn_stacks.0", device, latent_dim=256, hidden_dim=1024, fast=args.fast)
+            gw.weights, "gnn_stacks.0", device, latent_dim=256, fast=args.fast)
         mlp = layer.edge_mlp
         wanted = [name for name in args.sizes.split(",") if name]
         for name in wanted:

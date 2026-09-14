@@ -55,13 +55,12 @@ class OrbDeviceCalculator(Calculator):
         self.w = w
         L = cfg["num_message_passing_steps"]
         self.enc = Encoder(w, self.device, node_in=cfg["node_embed_size"],
-                           edge_in=cfg["edge_embed_size"], latent_dim=cfg["latent_dim"],
-                           hidden_dim=1024, fast=fast)
+                           edge_in=cfg["edge_embed_size"], latent_dim=cfg["latent_dim"], fast=fast)
         self.layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", self.device,
-                                                 latent_dim=cfg["latent_dim"], hidden_dim=1024,
+                                                 latent_dim=cfg["latent_dim"],
                                                  fast=fast)
                        for i in range(L)]
-        self.ehead = EnergyHead(w, self.device, latent_dim=cfg["latent_dim"], hidden_dim=1024,
+        self.ehead = EnergyHead(w, self.device, latent_dim=cfg["latent_dim"],
                                 fast=fast)
         self.engine = None
         self.step_ms = []

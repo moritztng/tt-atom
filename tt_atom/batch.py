@@ -140,9 +140,9 @@ def _run_orb(b, cfg, fast, device_id, in_q, out_q, bucketing=False):
     from .device import open_device, to_dev
     from .geometry import radius_graph
     from .orb_geometry import check_max_neighbors, host_edge_features
-    from .orb_model import (MLP_HIDDEN_DIM, AttentionInteractionLayer, Encoder, EnergyHead,
-                            OrbGraphContext, host_charge_spin_embedding,
-                            host_energy_denormalize, host_node_features, host_zbl_energy)
+    from .orb_model import (AttentionInteractionLayer, Encoder, EnergyHead, OrbGraphContext,
+                            host_charge_spin_embedding, host_energy_denormalize,
+                            host_node_features, host_zbl_energy)
     import ttnn
 
     w = b.weights
@@ -150,15 +150,15 @@ def _run_orb(b, cfg, fast, device_id, in_q, out_q, bucketing=False):
     num_bases = cfg["num_bases"]
     max_num_neighbors = cfg["max_num_neighbors"]
     L = cfg["num_message_passing_steps"]
-    latent_dim, hidden_dim = cfg["latent_dim"], MLP_HIDDEN_DIM
+    latent_dim = cfg["latent_dim"]
     has_cond = "conditioner.charge_embedding.W" in w
     zbl_aggregation = "sum" if "forces_head.mlp.NN-0.weight" in w else "mean"
     dev = open_device(0)
     encoder = Encoder(w, dev, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                      latent_dim=latent_dim, hidden_dim=hidden_dim, fast=fast)
+                      latent_dim=latent_dim, fast=fast)
     layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", dev, latent_dim=latent_dim,
-                                         hidden_dim=hidden_dim, fast=fast) for i in range(L)]
-    ehead = EnergyHead(w, dev, latent_dim=latent_dim, hidden_dim=hidden_dim, fast=fast)
+                                        fast=fast) for i in range(L)]
+    ehead = EnergyHead(w, dev, latent_dim=latent_dim, fast=fast)
     out_q.put(("ready", device_id))
 
     while True:

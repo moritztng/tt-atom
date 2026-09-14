@@ -53,11 +53,11 @@ def _bench_one(label, path, device):
     L = cfg["num_message_passing_steps"]
 
     encoder = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                      latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                      latent_dim=cfg["latent_dim"])
     layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                        latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                                        latent_dim=cfg["latent_dim"])
               for i in range(L)]
-    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"], hidden_dim=1024)
+    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"])
 
     pos0 = gw.inp("pos").float()
     senders = gw.inp("senders").long()

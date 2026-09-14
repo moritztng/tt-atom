@@ -52,26 +52,25 @@ class OrbCalculator(DeviceCalculator):
         self.max_num_neighbors = self.cfg["max_num_neighbors"]
         self.task = self.task_name = self.cfg["task"]
 
-        from .orb_model import (MLP_HIDDEN_DIM, AttentionInteractionLayer, Encoder, EnergyHead,
-                                ForceHead, StressHead)
+        from .orb_model import (AttentionInteractionLayer, Encoder, EnergyHead, ForceHead,
+                                StressHead)
 
         L = self.cfg["num_message_passing_steps"]
-        latent_dim, hidden_dim = self.cfg["latent_dim"], MLP_HIDDEN_DIM
+        latent_dim = self.cfg["latent_dim"]
         self.encoder = Encoder(w, self.device, node_in=self.cfg["node_embed_size"],
                                edge_in=self.cfg["edge_embed_size"], latent_dim=latent_dim,
-                               hidden_dim=hidden_dim, fast=fast)
+                               fast=fast)
         self.layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", self.device,
-                                                 latent_dim=latent_dim, hidden_dim=hidden_dim,
-                                                 fast=fast) for i in range(L)]
-        self.ehead = EnergyHead(w, self.device, latent_dim=latent_dim, hidden_dim=hidden_dim,
-                                fast=fast)
+                                                 latent_dim=latent_dim, fast=fast)
+                       for i in range(L)]
+        self.ehead = EnergyHead(w, self.device, latent_dim=latent_dim, fast=fast)
         # ForceHead present => this is a "direct" checkpoint (forces are a device MLP head, no
         # autograd); absent => "conservative" (forces via tt_atom.orb_forces's analytic VJP).
         self.is_direct = "forces_head.mlp.NN-0.weight" in w
-        self.fhead = (ForceHead(w, self.device, latent_dim=latent_dim, hidden_dim=hidden_dim,
-                                fast=fast) if self.is_direct else None)
-        self.shead = (StressHead(w, self.device, latent_dim=latent_dim, hidden_dim=hidden_dim,
-                                 fast=fast) if "stress_head.mlp.NN-0.weight" in w else None)
+        self.fhead = (ForceHead(w, self.device, latent_dim=latent_dim, fast=fast)
+                      if self.is_direct else None)
+        self.shead = (StressHead(w, self.device, latent_dim=latent_dim, fast=fast)
+                      if "stress_head.mlp.NN-0.weight" in w else None)
         self.has_cond = "conditioner.charge_embedding.W" in w
 
     @classmethod

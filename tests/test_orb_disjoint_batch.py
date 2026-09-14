@@ -61,14 +61,14 @@ def test_disjoint_batch_row_independence(gw, device):
 
     def run(node_feat, edge_feat, senders, receivers, cutoff, num_nodes):
         enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                     latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                     latent_dim=cfg["latent_dim"])
         node_dev = to_dev(node_feat, device, ttnn.bfloat16)
         edge_dev = to_dev(edge_feat, device, ttnn.bfloat16)
         nodes, edges = enc(node_dev, edge_dev)
         graph = OrbGraphContext(device, senders=senders, receivers=receivers, cutoff=cutoff,
                                 num_nodes=num_nodes)
         layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                            latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                                            latent_dim=cfg["latent_dim"])
                   for i in range(L)]
         for layer in layers:
             nodes, edges = layer(nodes, edges, graph)
@@ -108,7 +108,7 @@ def test_disjoint_batch_row_independence(gw, device):
     # segment-matrix adapter -- verify it reproduces the single-system EnergyHead exactly.
     from tt_atom.orb_model import EnergyHead
 
-    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"], hidden_dim=1024)
+    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"])
     single_e = ttnn.to_torch(ehead(to_dev(single_out, device, ttnn.bfloat16))).float()
 
     seg_mean = torch.zeros(2, 2 * N)

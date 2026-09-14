@@ -71,10 +71,10 @@ def test_mgo_energy_and_forces(gw, device):
     L = cfg["num_message_passing_steps"]
     latent_dim = cfg["latent_dim"]
     enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                 latent_dim=latent_dim, hidden_dim=1024)
-    layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device, latent_dim=latent_dim,
-                                        hidden_dim=1024) for i in range(L)]
-    ehead = EnergyHead(w, device, latent_dim=latent_dim, hidden_dim=1024)
+                 latent_dim=latent_dim)
+    layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device, latent_dim=latent_dim)
+              for i in range(L)]
+    ehead = EnergyHead(w, device, latent_dim=latent_dim)
 
     atomic_numbers = gw.inp("atomic_numbers").long()
     senders = gw.inp("senders").long()

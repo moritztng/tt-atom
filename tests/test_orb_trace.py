@@ -34,12 +34,12 @@ def _build_modules(gw, device):
     w = gw.weights
     L = cfg["num_message_passing_steps"]
     encoder = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                      latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                      latent_dim=cfg["latent_dim"])
     layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                        latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                                        latent_dim=cfg["latent_dim"])
               for i in range(L)]
-    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"], hidden_dim=1024)
-    fhead = ForceHead(w, device, latent_dim=cfg["latent_dim"], hidden_dim=1024) \
+    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"])
+    fhead = ForceHead(w, device, latent_dim=cfg["latent_dim"]) \
         if gw.has("w@forces_head.mlp.NN-0.weight") else None
     return encoder, layers, ehead, fhead
 

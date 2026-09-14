@@ -41,11 +41,11 @@ def test_conservative_fast_energy_forces_stress(device):
     w = gw.weights
     L = cfg["num_message_passing_steps"]
     encoder = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                      latent_dim=cfg["latent_dim"], hidden_dim=1024, fast=True)
+                      latent_dim=cfg["latent_dim"], fast=True)
     layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                        latent_dim=cfg["latent_dim"], hidden_dim=1024, fast=True)
+                                        latent_dim=cfg["latent_dim"], fast=True)
               for i in range(L)]
-    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"], hidden_dim=1024, fast=True)
+    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"], fast=True)
 
     pos = gw.inp("pos").float()
     senders = gw.inp("senders").long()
@@ -110,7 +110,7 @@ def test_direct_fast_energy_forces(device):
     w = gw.weights
     L = cfg["num_message_passing_steps"]
     enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                 latent_dim=cfg["latent_dim"], hidden_dim=1024, fast=True)
+                 latent_dim=cfg["latent_dim"], fast=True)
     node_dev = to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
     edge_dev = to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
     nodes, edges = enc(node_dev, edge_dev)
@@ -125,7 +125,7 @@ def test_direct_fast_energy_forces(device):
     graph = OrbGraphContext(device, senders=senders, receivers=receivers, cutoff=cutoff, num_nodes=N)
 
     layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                        latent_dim=cfg["latent_dim"], hidden_dim=1024, fast=True)
+                                        latent_dim=cfg["latent_dim"], fast=True)
               for i in range(L)]
     for layer in layers:
         nodes, edges = layer(nodes, edges, graph)
@@ -134,7 +134,7 @@ def test_direct_fast_energy_forces(device):
     print(f"\n[orb-direct20-fast] final node PCC={final_pcc:.6f}")
     assert final_pcc > 0.99, final_pcc
 
-    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"], hidden_dim=1024, fast=True)
+    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"], fast=True)
     raw_e = ttnn.to_torch(ehead(nodes)).double().view(())
     gnn_energy = host_energy_denormalize(
         raw_e, atomic_numbers, N,
@@ -150,7 +150,7 @@ def test_direct_fast_energy_forces(device):
           f"rel err {e_rel_err:.2e})")
     assert e_rel_err < 1e-2, e_rel_err
 
-    fhead = ForceHead(w, device, latent_dim=cfg["latent_dim"], hidden_dim=1024, fast=True)
+    fhead = ForceHead(w, device, latent_dim=cfg["latent_dim"], fast=True)
     raw_f = ttnn.to_torch(fhead(nodes)).double()
     forces = host_force_denormalize(
         raw_f,
