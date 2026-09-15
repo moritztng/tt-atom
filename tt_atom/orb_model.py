@@ -28,10 +28,11 @@ import torch
 from .device import compute_kernel_config, flag, to_dev
 
 
-# Width of every MLPNorm hidden layer. Orb's exported config does not carry it (the exporter
-# derives latent_dim from a weight shape and stops there); all four public checkpoints have it at
-# 1024, verified from `_encoder._node_fn.mlp.NN-0.weight`. A checkpoint that differed would fail
-# loudly on a shape mismatch at construction, not silently.
+# Width of every MLPNorm hidden layer, and the default for every module below so no caller
+# repeats it. Orb's exported config does not carry it (the exporter derives latent_dim from a
+# weight shape and stops there); all four public checkpoints have it at 1024, verified from
+# `_encoder._node_fn.mlp.NN-0.weight`. A checkpoint that differed would fail loudly on a shape
+# mismatch at construction, not silently, and can pass `hidden_dim=` explicitly.
 MLP_HIDDEN_DIM = 1024
 
 
@@ -175,7 +176,8 @@ class MLPNorm:
 class Encoder:
     """``gns.Encoder``: separate node/edge MLPNorm blocks, no interaction between them."""
 
-    def __init__(self, weights, device, *, node_in, edge_in, latent_dim, hidden_dim, fast=False):
+    def __init__(self, weights, device, *, node_in, edge_in, latent_dim,
+                 hidden_dim=MLP_HIDDEN_DIM, fast=False):
         self.node_fn = MLPNorm(weights, "_encoder._node_fn", device, node_in, hidden_dim, latent_dim,
                                fast=fast)
         self.edge_fn = MLPNorm(weights, "_encoder._edge_fn", device, edge_in, hidden_dim, latent_dim,
@@ -199,7 +201,8 @@ class AttentionInteractionLayer:
     change for checkpoints without it.
     """
 
-    def __init__(self, weights, prefix, device, *, latent_dim, hidden_dim, fast=False):
+    def __init__(self, weights, prefix, device, *, latent_dim, hidden_dim=MLP_HIDDEN_DIM,
+                 fast=False):
         import ttnn
 
         self.ttnn = ttnn
@@ -313,7 +316,7 @@ class EnergyHead:
     exactly like UMA's ``scale_rmsd``/``scale_mean``/``elem_refs`` (``tt_atom/weights.py``).
     """
 
-    def __init__(self, weights, device, *, latent_dim, hidden_dim, fast=False):
+    def __init__(self, weights, device, *, latent_dim, hidden_dim=MLP_HIDDEN_DIM, fast=False):
         import ttnn
 
         self.ttnn = ttnn
@@ -366,7 +369,7 @@ class ForceHead:
     non-periodic (zero-cell) systems -- the ported Si golden is fully periodic.
     """
 
-    def __init__(self, weights, device, *, latent_dim, hidden_dim, fast=False):
+    def __init__(self, weights, device, *, latent_dim, hidden_dim=MLP_HIDDEN_DIM, fast=False):
         import ttnn
 
         self.ttnn = ttnn
@@ -414,7 +417,7 @@ class StressHead:
     stress has no explicit volume division (unlike the conservative virial): the normalizer
     stats were fit directly against the target's own eV/Å^3 units."""
 
-    def __init__(self, weights, device, *, latent_dim, hidden_dim, fast=False):
+    def __init__(self, weights, device, *, latent_dim, hidden_dim=MLP_HIDDEN_DIM, fast=False):
         import ttnn
 
         self.ttnn = ttnn

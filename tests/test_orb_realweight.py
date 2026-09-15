@@ -38,7 +38,7 @@ def test_encoder(gw, device):
     cfg = gw.config
     w = gw.weights
     enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                 latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                 latent_dim=cfg["latent_dim"])
 
     node_feat = gw.host("node_feat")
     edge_feat = gw.host("edge_feat")
@@ -69,7 +69,7 @@ def test_interaction_layer0(gw, device):
     cfg = gw.config
     w = gw.weights
     enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                 latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                 latent_dim=cfg["latent_dim"])
     node_dev = to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
     edge_dev = to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
     nodes, edges = enc(node_dev, edge_dev)
@@ -84,7 +84,7 @@ def test_interaction_layer0(gw, device):
     graph = OrbGraphContext(device, senders=senders, receivers=receivers, cutoff=cutoff, num_nodes=N)
 
     layer0 = AttentionInteractionLayer(w, "gnn_stacks.0", device,
-                                       latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                                       latent_dim=cfg["latent_dim"])
     nodes2, edges2 = layer0(nodes, edges, graph)
     nodes2_t = ttnn.to_torch(nodes2).float()
     edges2_t = ttnn.to_torch(edges2).float()
@@ -110,7 +110,7 @@ def test_full_backbone_5layers(gw, device):
     w = gw.weights
     L = cfg["num_message_passing_steps"]
     enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                 latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                 latent_dim=cfg["latent_dim"])
     node_dev = to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
     edge_dev = to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
     nodes, edges = enc(node_dev, edge_dev)
@@ -123,7 +123,7 @@ def test_full_backbone_5layers(gw, device):
     graph = OrbGraphContext(device, senders=senders, receivers=receivers, cutoff=cutoff, num_nodes=N)
 
     layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                        latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                                        latent_dim=cfg["latent_dim"])
               for i in range(L)]
     for i, layer in enumerate(layers):
         nodes, edges = layer(nodes, edges, graph)
@@ -159,7 +159,7 @@ def test_end_to_end_energy(gw, device):
     w = gw.weights
     L = cfg["num_message_passing_steps"]
     enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                 latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                 latent_dim=cfg["latent_dim"])
     node_dev = to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
     edge_dev = to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
     nodes, edges = enc(node_dev, edge_dev)
@@ -174,12 +174,12 @@ def test_end_to_end_energy(gw, device):
     graph = OrbGraphContext(device, senders=senders, receivers=receivers, cutoff=cutoff, num_nodes=N)
 
     layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                        latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                                        latent_dim=cfg["latent_dim"])
               for i in range(L)]
     for layer in layers:
         nodes, edges = layer(nodes, edges, graph)
 
-    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"], hidden_dim=1024)
+    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"])
     raw_pred = ttnn.to_torch(ehead(nodes)).double().view(())
 
     gnn_energy = host_energy_denormalize(

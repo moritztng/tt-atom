@@ -22,12 +22,12 @@ Run on card 0 with the ttnn env:
 """
 from __future__ import annotations
 
-import pathlib
-import sys
 
 import numpy as np
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+from _gate_env import on_sys_path
+
+on_sys_path()
 # The goldens this reads are the parity tests' own, so the directory (and TTATOM_GOLDEN_DIR)
 # has to resolve to the same place theirs does.
 from tests.util import (OMOL_CKPT_TAGS as CKPT_TAGS, OMOL_SYSTEMS as SYSTEMS,   # noqa: E402
@@ -68,18 +68,18 @@ def device_forces(system, tag):
     device = open_device(0)          # the tests' opener: same program-cache-enabled device
     try:
         enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                     latent_dim=latent_dim, hidden_dim=1024)
+                     latent_dim=latent_dim)
         node_dev = to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
         edge_dev = to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
         cutoff = host_cutoff(vectors.norm(dim=-1), r_max=6.0)
         graph = OrbGraphContext(device, senders=senders, receivers=receivers, cutoff=cutoff,
                                 num_nodes=N, cond_nodes=cond_nodes)
-        layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device, latent_dim=latent_dim,
-                                            hidden_dim=1024) for i in range(L)]
+        layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device, latent_dim=latent_dim)
+                  for i in range(L)]
         nodes, edges = enc(node_dev, edge_dev)
         for layer in layers:
             nodes, edges = layer(nodes, edges, graph)
-        ehead = EnergyHead(w, device, latent_dim=latent_dim, hidden_dim=1024)
+        ehead = EnergyHead(w, device, latent_dim=latent_dim)
         raw_e = ttnn.to_torch(ehead(nodes)).double().view(())
         gnn_energy = host_energy_denormalize(
             raw_e, atomic_numbers, N,
@@ -96,7 +96,7 @@ def device_forces(system, tag):
         e_rel_err = abs(total_energy - gold_energy) / abs(gold_energy)
 
         if tag == "direct":
-            fhead = ForceHead(w, device, latent_dim=latent_dim, hidden_dim=1024)
+            fhead = ForceHead(w, device, latent_dim=latent_dim)
             raw_f = ttnn.to_torch(fhead(nodes)).double()
             gnn_forces = host_force_denormalize(
                 raw_f, running_mean=w["forces_head.normalizer.bn.running_mean"],

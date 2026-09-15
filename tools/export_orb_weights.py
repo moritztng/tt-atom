@@ -14,12 +14,11 @@ Run with the reference (numpy>=2, has ``orb-models``) env:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 
 import numpy as np
 
-from npz_atomic import npy, savez_atomic
+from npz_atomic import config_array, npy, savez_atomic
 
 from orb_models.forcefield import pretrained
 
@@ -60,7 +59,7 @@ def main():
         max_num_neighbors=int(orbff.system_config.max_num_neighbors),
     )
 
-    saved: dict[str, np.ndarray] = {"config": np.frombuffer(json.dumps(cfg).encode(), dtype=np.uint8)}
+    saved: dict[str, np.ndarray] = {"config": config_array(cfg)}
     for k, v in gns.state_dict().items():
         saved[f"w@{k}"] = npy(v)
     for k, v in orbff.heads["energy"].state_dict().items():

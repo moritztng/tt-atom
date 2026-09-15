@@ -11,7 +11,7 @@ Fleet discipline is ``benchmarks/_harness.py``'s (lease flock, quiet-host wait, 
 shared with the other subprocess benchmarks. Legs are kept short (<= ~2 systems) so a sibling's
 120 s lease timeout never trips.
 
-Run (qb1):  .venv/bin/python benchmarks/bench_compile_pain.py --card 3
+Run:  python benchmarks/bench_compile_pain.py --card 3
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ import subprocess
 import sys
 import time
 
-from _harness import cache_stats, orb_weights, sandbox_env, take_lease, wait_for_quiet
+from _harness import cache_stats, git_sha, orb_weights, sandbox_env, take_lease, wait_for_quiet
 
 
 def run_child(weights, systems, tag, card):
@@ -102,7 +102,7 @@ def run_leg(weights, systems, home, tag, card):
         print(proc.stderr[-3000:], file=sys.stderr)
         raise RuntimeError(f"child leg {tag} failed (rc={proc.returncode})")
     evals = [json.loads(l) for l in proc.stdout.splitlines() if l.strip().startswith("{")]
-    return dict(tag=tag, wall_s=round(wall, 2), cache_files_before=files0,
+    return dict(tag=tag, wall_s=round(wall, 2), git_sha=git_sha(), cache_files_before=files0,
                 cache_files_after=files1, cache_mb=round(bytes1 / 1e6, 1), events=evals)
 
 

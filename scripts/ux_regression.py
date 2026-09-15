@@ -34,7 +34,6 @@ Exit 0 iff every requested leg PASSES; 1 otherwise. Runs on one card (one device
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import shutil
 import subprocess
@@ -45,7 +44,7 @@ from pathlib import Path
 
 import numpy as np
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from _gate_env import REPO_ROOT, child_env
 # H2O (3 atoms) is the canonical tiny target — small enough that the committed UMA bundle,
 # 5 MD steps, and a 2-step FIRE relax clear quickly on card. UX plumbing only.
 MOL = "H2O"
@@ -55,22 +54,6 @@ PER_LEG_TIMEOUT_S = 300
 
 # Core `tt-atom run` flags a user reaches for. Leg 1 asserts each appears in --help.
 RUN_FLAGS = ("--relax", "--md", "--steps", "--temp", "--trace", "--out")
-
-
-def _subprocess_env(extra: dict | None = None) -> dict:
-    """Environment for invoking ``tt_atom.cli`` so it resolves to THIS worktree's tt_atom
-    (PYTHONPATH=REPO_ROOT) regardless of any editable install pointing at another
-    checkout. Matches the release_gate invocation convention."""
-    env = dict(os.environ)
-    pp = str(REPO_ROOT)
-    existing = env.get("PYTHONPATH")
-    if existing:
-        pp = pp + os.pathsep + existing
-    env["PYTHONPATH"] = pp
-    env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
-    if extra:
-        env.update(extra)
-    return env
 
 
 def _run(cmd: list[str], *, env: dict | None = None, timeout: int | None = None,
@@ -99,7 +82,7 @@ def _check_cli() -> list[str]:
     def _help(args: list[str], label: str, required_flags: tuple[str, ...] = ()) -> None:
         try:
             r = _run([*_cli(), *args, "--help"],
-                     env=_subprocess_env(), timeout=60)
+                     env=child_env(), timeout=60)
         except Exception as e:
             problems.append(f"{label} --help failed to run: {e}")
             return
@@ -239,7 +222,7 @@ def run_cli_ux(base: Path) -> dict:
     out_md = base / "md.xyz"
     parse_problems: list[str] = []
     prog_problems: list[str] = []
-    env = _subprocess_env()
+    env = child_env()
 
     def invoke(args: list[str], label: str) -> subprocess.CompletedProcess | None:
         try:
@@ -319,7 +302,7 @@ def main() -> int:
     #     python scripts/ux_regression.py
     imports = "import tt_atom" if args.cli_only else "import tt_atom, ase"
     probe = _run([sys.executable, "-c", imports],
-                 env=_subprocess_env(), timeout=60)
+                 env=child_env(), timeout=60)
     if probe.returncode != 0:
         sys.exit(
             f"this Python ({sys.executable}) cannot run the requested imports with "

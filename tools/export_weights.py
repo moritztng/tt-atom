@@ -24,12 +24,11 @@ energy normalizer (``scale@*``) and the real energy head. No weights are committ
 from __future__ import annotations
 
 import argparse
-import json
 
 import numpy as np
 import torch
 
-from npz_atomic import npy, savez_atomic
+from npz_atomic import config_array, npy, savez_atomic
 
 from fairchem.core.models.uma.escn_md import eSCNMDBackbone
 
@@ -47,7 +46,7 @@ def bundle_arrays(cfg, backbone, energy_block):
     """The config + weight + fixed-buffer arrays every bundle carries. Shared by the random-init
     export and the MoLE-merged uma-s-1 export, which differ only in what they add on top."""
     sg = backbone.SO3_grid["lmax_lmax"]
-    saved = {"config": np.frombuffer(json.dumps(cfg).encode(), dtype=np.uint8)}
+    saved = {"config": config_array(cfg)}
     for k, v in backbone.state_dict().items():
         saved[f"w@{k}"] = npy(v)
     for k, v in energy_block.state_dict().items():

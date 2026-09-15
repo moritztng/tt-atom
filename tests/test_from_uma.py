@@ -12,7 +12,6 @@ Nothing here commits or requires new weights; it reuses the out-of-repo real gol
 from __future__ import annotations
 
 import glob
-import json
 import os
 import pathlib
 import shutil
@@ -23,7 +22,7 @@ import pytest
 
 from tt_atom import bundle_cache as BC
 
-from util import real_golden
+from util import read_config, real_golden
 
 REAL_GOLDEN = real_golden("ethanol_omol.npz", "TTATOM_REAL_GOLDEN")
 HF_CKPT = next(iter(glob.glob(str(pathlib.Path.home() / ".cache/huggingface/**/uma-s-1.pt"),
@@ -31,7 +30,9 @@ HF_CKPT = next(iter(glob.glob(str(pathlib.Path.home() / ".cache/huggingface/**/u
 
 
 def _default_refenv():
-    p = pathlib.Path.home() / ".ttatom_run/refenv/bin/python"
+    """The package's default refenv if it is installed here, else ``None`` — deliberately blind
+    to ``$TT_ATOM_REFENV``, which is what the resolution-order test needs to distinguish."""
+    p = BC.default_refenv()
     return str(p) if p.exists() else None
 
 
@@ -177,7 +178,7 @@ def test_cached_fast_path_needs_no_refenv_and_matches_direct(tmp_path, device, m
     from tt_atom import TTAtomCalculator
 
     d = np.load(REAL_GOLDEN)
-    task = json.loads(bytes(d["config"]).decode())["task"]
+    task = read_config(d)["task"]
     atoms = _atoms_from_golden(d)
     charge, spin = atoms.info["charge"], atoms.info["spin"]
 
@@ -282,13 +283,13 @@ def test_autobuild_matches_manual_export(tmp_path):
     manual = tmp_path / "manual.npz"
     env = dict(os.environ)
     env.setdefault("HF_HUB_OFFLINE", "1")
-    tools = pathlib.Path(BC.__file__).resolve().parent.parent / "tools" / "export_weights.py"
+    tools = BC.exporter_path("export_weights.py")
     subprocess.run([_default_refenv(), str(tools), "--uma-s-1", "--xyz", str(xyz),
                     "--task", "omol", "--charge", "0", "--spin", "1", "--out", str(manual)],
                    check=True, env=env)
 
     da, dm = np.load(auto), np.load(manual)
-    assert json.loads(bytes(da["config"]).decode()) == json.loads(bytes(dm["config"]).decode())
+    assert read_config(da) == read_config(dm)
     payload = [k for k in da.files if k.startswith(("w@", "scale@", "host@"))]
     assert payload, "no weight/scale/buffer arrays in the built bundle"
     for k in payload:

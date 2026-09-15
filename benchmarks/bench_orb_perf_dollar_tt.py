@@ -54,8 +54,7 @@ def main():
                     help="comma list of size tags from: " + ",".join(s[0] for s in SIZES))
     args = ap.parse_args()
 
-    sys.path.insert(0, ".")
-    from examples.orb_md import OrbDeviceCalculator  # noqa: E402
+    from examples.orb_md import OrbDeviceCalculator
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)

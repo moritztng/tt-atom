@@ -79,23 +79,14 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import date
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
+from _gate_env import child_env, on_sys_path
+
+REPO_ROOT = on_sys_path()
 # One golden-dir resolution for the gate and for the tests it runs: they must look in the same
 # place, or a relocated golden set reads as a GAP while the tests happily find their fixtures.
 from tests.util import GOLDEN_DIR    # noqa: E402
 
 BASELINE_FILE = REPO_ROOT / "docs" / "perf_baselines.json"
-
-
-def _child_env():
-    """Environment for a gate subprocess: the repo importable, one visible card, quiet tt-metal."""
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + env["PYTHONPATH"]
-                                          if env.get("PYTHONPATH") else "")
-    env.setdefault("TT_VISIBLE_DEVICES", "0")
-    env.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
-    return env
 
 
 def _visible_card():
@@ -374,7 +365,7 @@ def _run_pytest_module(spec):
     xml_path = xml_dir / "junit.xml"
     cmd = [sys.executable, "-m", "pytest", mod, "-q", "-p", "no:cacheprovider",
            f"--junit-xml={xml_path}"]
-    env = _child_env()
+    env = child_env()
     print(f"\n[accuracy] pytest {mod}", flush=True)
     t0 = time.monotonic()
     proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env)
@@ -542,7 +533,7 @@ def _run_oom_family(family, quick):
            "--measure-oom", family, "--out", str(out)]
     if quick:
         cmd.append("--quick")
-    env = _child_env()
+    env = child_env()
     proc = subprocess.Popen(cmd, cwd=REPO_ROOT, env=env, start_new_session=True)
     try:
         returncode = proc.wait(timeout=OOM_MEASURE_TIMEOUT_S)
@@ -758,7 +749,7 @@ def _run_measure_perf(model, quick):
            "--measure-perf", model, "--out", str(out)]
     if quick:
         cmd.append("--quick")
-    env = _child_env()
+    env = child_env()
     proc = subprocess.Popen(cmd, cwd=REPO_ROOT, env=env, start_new_session=True)
     try:
         returncode = proc.wait(timeout=PERF_MEASURE_TIMEOUT_S)
@@ -998,7 +989,7 @@ def run_ux(cli_only):
     cmd = [sys.executable, str(UX_SCRIPT)]
     if cli_only:
         cmd.append("--cli-only")
-    env = _child_env()
+    env = child_env()
     print(f"\n[ux] {' '.join(cmd[1:])}", flush=True)
     t0 = time.monotonic()
     try:
@@ -1277,7 +1268,7 @@ def _run_install():
     out = pathlib.Path(td) / "result.json"
     cmd = [sys.executable, str(pathlib.Path(__file__).resolve()),
            "--measure-install", "--out", str(out)]
-    env = _child_env()
+    env = child_env()
     proc = subprocess.Popen(cmd, cwd=REPO_ROOT, env=env, start_new_session=True)
     try:
         returncode = proc.wait(timeout=INSTALL_TIMEOUT_S)

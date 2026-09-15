@@ -8,11 +8,12 @@ per-family accessors differ, so this holds the shared mechanics and ``weights.We
 / ``orb_weights.OrbWeights`` (Orb) subclass it."""
 from __future__ import annotations
 
-import json
 import pathlib
 
 import numpy as np
 import torch
+
+from tools.npz_atomic import read_config
 
 
 class NpzBundle:
@@ -20,7 +21,7 @@ class NpzBundle:
 
     def __init__(self, npz):
         self._d = npz
-        self.config = json.loads(bytes(npz["config"]).decode())
+        self.config = read_config(npz)
 
     @classmethod
     def load(cls, path):

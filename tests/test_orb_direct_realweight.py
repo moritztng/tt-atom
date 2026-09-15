@@ -43,7 +43,7 @@ def test_direct_end_to_end(gw, device):
     w = gw.weights
     L = cfg["num_message_passing_steps"]
     enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                 latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                 latent_dim=cfg["latent_dim"])
     node_dev = to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
     edge_dev = to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
     nodes, edges = enc(node_dev, edge_dev)
@@ -58,7 +58,7 @@ def test_direct_end_to_end(gw, device):
     graph = OrbGraphContext(device, senders=senders, receivers=receivers, cutoff=cutoff, num_nodes=N)
 
     layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                        latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                                        latent_dim=cfg["latent_dim"])
               for i in range(L)]
     for i, layer in enumerate(layers):
         nodes, edges = layer(nodes, edges, graph)
@@ -72,7 +72,7 @@ def test_direct_end_to_end(gw, device):
     assert final_pcc > 0.99, final_pcc
 
     # energy (same EnergyHead device path as the conservative checkpoint)
-    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"], hidden_dim=1024)
+    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"])
     raw_e = ttnn.to_torch(ehead(nodes)).double().view(())
     gnn_energy = host_energy_denormalize(
         raw_e, atomic_numbers, N,
@@ -91,7 +91,7 @@ def test_direct_end_to_end(gw, device):
     assert e_rel_err < 1e-2, e_rel_err
 
     # forces: direct prediction, no autograd -- the whole point of this checkpoint
-    fhead = ForceHead(w, device, latent_dim=cfg["latent_dim"], hidden_dim=1024)
+    fhead = ForceHead(w, device, latent_dim=cfg["latent_dim"])
     raw_f = ttnn.to_torch(fhead(nodes)).double()
     forces = host_force_denormalize(
         raw_f,

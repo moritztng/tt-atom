@@ -19,7 +19,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tt_atom.orb_weight_cache import CACHE_DIR
+from tt_atom.orb_weight_cache import weights_path
 from util import have_orb_fixture, pcc as _pcc
 
 
@@ -111,7 +111,7 @@ def test_evaluate_batch_conservative_omat(device):
         calc.close()
 
 
-@pytest.mark.skipif(not (CACHE_DIR / "direct-20-omat.npz").exists(),
+@pytest.mark.skipif(not weights_path("direct-20-omat").exists(),
                     reason="orb weight cache not found")
 def test_evaluate_batch_direct_omat(device):
     """direct-20-omat: bulk Si is too dense for max_num_neighbors=20, so use the aperiodic
@@ -139,7 +139,7 @@ def test_evaluate_batch_conservative_omol(device):
         calc.close()
 
 
-@pytest.mark.skipif(not (CACHE_DIR / "conservative-inf-omat.npz").exists(),
+@pytest.mark.skipif(not weights_path("conservative-inf-omat").exists(),
                     reason="orb weight cache not found")
 def test_evaluate_batch_mixes_compositions(device):
     """Orb has no per-composition MoLE routing (unlike UMA), so a batch that mixes compositions is
@@ -166,7 +166,7 @@ def test_evaluate_batch_max_num_neighbors_guard(device):
 
     from tt_atom.orb_calculator import OrbCalculator
 
-    if not (CACHE_DIR / "direct-20-omat.npz").exists():
+    if not weights_path("direct-20-omat").exists():
         pytest.skip("orb weight cache not found")
 
     n = 3

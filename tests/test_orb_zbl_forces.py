@@ -126,7 +126,7 @@ def test_direct20_total_force_with_zbl(gw, device):
     w = gw.weights
     L = cfg["num_message_passing_steps"]
     enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                 latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                 latent_dim=cfg["latent_dim"])
     node_dev = to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
     edge_dev = to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
     nodes, edges = enc(node_dev, edge_dev)
@@ -141,12 +141,12 @@ def test_direct20_total_force_with_zbl(gw, device):
     graph = OrbGraphContext(device, senders=senders, receivers=receivers, cutoff=cutoff, num_nodes=N)
 
     layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                        latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                                        latent_dim=cfg["latent_dim"])
               for i in range(L)]
     for layer in layers:
         nodes, edges = layer(nodes, edges, graph)
 
-    fhead = ForceHead(w, device, latent_dim=cfg["latent_dim"], hidden_dim=1024)
+    fhead = ForceHead(w, device, latent_dim=cfg["latent_dim"])
     raw_f = ttnn.to_torch(fhead(nodes)).double()
     gnn_forces = host_force_denormalize(
         raw_f,

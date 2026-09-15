@@ -14,7 +14,7 @@ leg gets a fresh sandbox HOME (its cache then serves as that mode's warm HOME). 
 discipline is ``benchmarks/_harness.py``'s: the child holds the device-lease flock, the parent
 waits for a quiet host window unless --no-wait.
 
-Run (qb1):  .venv/bin/python benchmarks/bench_screening.py --card 0
+Run:  python benchmarks/bench_screening.py --card 0
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ import subprocess
 import sys
 import time
 
-from _harness import cache_stats, orb_weights, sandbox_env, take_lease, wait_for_quiet
+from _harness import cache_stats, git_sha, orb_weights, sandbox_env, take_lease, wait_for_quiet
 
 
 def run_child(weights, systems, tag, card, bucketing):
@@ -81,7 +81,7 @@ def run_leg(weights, systems, home, tag, card, bucketing):
         print(proc.stderr[-3000:], file=sys.stderr)
         raise RuntimeError(f"child leg {tag} failed (rc={proc.returncode})")
     evals = [json.loads(l) for l in proc.stdout.splitlines() if l.strip().startswith("{")]
-    return dict(tag=tag, bucketing=bucketing, wall_s=round(wall, 2),
+    return dict(tag=tag, bucketing=bucketing, wall_s=round(wall, 2), git_sha=git_sha(),
                 cache_files_before=files0, cache_files_after=files1,
                 cache_mb=round(bytes1 / 1e6, 1), events=evals)
 

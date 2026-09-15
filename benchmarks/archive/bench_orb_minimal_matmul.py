@@ -89,7 +89,7 @@ def main():
     try:
         weights = OrbWeights.load(args.weights)
         layer = AttentionInteractionLayer(
-            weights.weights, "gnn_stacks.0", device, latent_dim=256, hidden_dim=1024)
+            weights.weights, "gnn_stacks.0", device, latent_dim=256)
         mlp = layer.edge_mlp
         for tag in [name for name in args.sizes.split(",") if name]:
             rows = EDGE_COUNTS[tag]

@@ -15,8 +15,9 @@ byte-identical to 0.3.0.
   crashing mid-forward with `AttributeError: ... has no attribute 'fused_gate'`. The flag is
   capability-probed like every other custom-kernel knob; it stays off by default.
 - An interrupted weight export or golden generation can no longer leave a truncated `.npz` at the
-  final name, which the consumers read as a present-but-corrupt fixture. All seven exporters and
-  the gate's own performance baselines write a sidecar and rename it on success.
+  final name, which the consumers read as a present-but-corrupt fixture. All seven exporters, the
+  gate's own performance baselines, and the two Si-melt analysis scripts write a sidecar and
+  rename it on success.
 - `TTATOM_GOLDEN_DIR` now relocates every real-weight golden, for the benchmarks and the
   noise-floor diagnostic as well as the tests and the gate. It used to move two of them, and four
   test modules plus three dev scripts hardcoded the default with no override at all.
@@ -41,7 +42,16 @@ byte-identical to 0.3.0.
   `benchmarks/_harness.py` is the one home for the benchmark-side concerns: timing, fixture and
   weight locations, and the fleet discipline (lease flock, quiet-host wait, sandbox child
   environment) that three subprocess benchmarks each carried a drifting copy of. `tests/util.py`
-  likewise for the parity helpers the test modules shared by copy.
+  likewise for the parity helpers the test modules shared by copy. Also one each for the bundles'
+  own JSON header (`tools/npz_atomic.config_array`/`read_config`, previously five inline writers
+  and nine inline readers), the Orb hidden MLP width (`orb_model.MLP_HIDDEN_DIM`, now the
+  constructor default rather than 68 copies of `1024`), the Orb weight-cache path
+  (`orb_weight_cache.weights_path`, which seven callers built themselves — six of them as pytest
+  skip conditions, so a layout change would have silently reported nothing instead of failing),
+  the checkpoint-to-`orb_models.pretrained` map, the default reference-env path, and the gate
+  scripts' shared checkout root and child environment (`scripts/_gate_env.py`).
+- Every benchmark that persists a result file records the `git_sha` it measured, which two of
+  thirteen did. A number with no tree behind it cannot be compared against a later one.
 - Every "run it like this" header in the repo now names `python` rather than a build-machine
   interpreter path that exists nowhere, including the two hints `scripts/ux_regression.py` prints
   when it is started with the wrong Python.

@@ -19,7 +19,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tt_atom.orb_weight_cache import CACHE_DIR
+from tt_atom.orb_weight_cache import weights_path
 from util import GOLDEN_DIR, have_orb_fixture
 
 
@@ -151,7 +151,7 @@ def test_max_num_neighbors_guard_raises(device):
 
     from tt_atom.orb_calculator import OrbCalculator
 
-    if not (CACHE_DIR / "direct-20-omat.npz").exists():
+    if not weights_path("direct-20-omat").exists():
         pytest.skip("orb weight cache not found")
 
     # 25 atoms packed within the 6 A cutoff of a shared center -- exceeds max_num_neighbors=20

@@ -35,9 +35,9 @@ def _build_and_time(golden_path, device, *, fast=False):
     E = senders.shape[0]
 
     enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                 latent_dim=cfg["latent_dim"], hidden_dim=1024, fast=fast)
+                 latent_dim=cfg["latent_dim"], fast=fast)
     layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                        latent_dim=cfg["latent_dim"], hidden_dim=1024, fast=fast)
+                                        latent_dim=cfg["latent_dim"], fast=fast)
               for i in range(L)]
     graph = OrbGraphContext(device, senders=senders, receivers=receivers, cutoff=cutoff,
                             num_nodes=N)

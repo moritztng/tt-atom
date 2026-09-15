@@ -20,9 +20,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import pathlib
+import sys
 
 import numpy as np
 from ase.io import read
+
+# tools/ carries the one atomic .npz writer; the reference leg runs in the refenv, where
+# tt_atom is not installed.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "tools"))
+from npz_atomic import savez_atomic  # noqa: E402
 
 MODEL = "orb-v3-conservative-inf-omat"
 
@@ -52,7 +59,7 @@ def run_ref(args):
         out[f"f_{fi}"] = f
         print(f"[ref ] frame {fi:4d}  E={e:.4f} eV ({e/len(at):.4f} eV/atom)  "
               f"|F|max={np.abs(f).max():.4f} eV/A", flush=True)
-    np.savez(args.out, **out)
+    savez_atomic(args.out, **out)
     print(f"wrote {args.out}")
 
 

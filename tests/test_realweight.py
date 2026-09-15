@@ -21,13 +21,11 @@ What is checked (all numbers measured on the p150, real uma-s-1, ethanol/omol):
 """
 from __future__ import annotations
 
-import json
-
 import numpy as np
 import pytest
 import torch
 
-from util import pcc as _pcc, real_golden
+from util import pcc as _pcc, read_config, real_golden
 
 REAL_GOLDEN = real_golden("ethanol_omol.npz", "TTATOM_REAL_GOLDEN")
 
@@ -44,7 +42,7 @@ def rg():
 
 @pytest.fixture(scope="module")
 def rcfg(rg):
-    return json.loads(bytes(rg["config"]).decode())
+    return read_config(rg)
 
 
 def _w(rg):

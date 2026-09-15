@@ -17,7 +17,6 @@ decoder) for bottom-up PCC verification of the ttnn port.
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import os
 import pathlib
@@ -27,13 +26,13 @@ import numpy as np
 import torch
 from ase.build import bulk
 
-from orb_models.forcefield import pretrained
 from orb_models.forcefield.atomic_system import ase_atoms_to_atom_graphs
 
-# tools/ carries the one atomic .npz writer; these scripts run in the reference env,
-# where tt_atom is not installed.
+# tools/ carries the one atomic .npz writer and the one checkpoint -> pretrained map; these
+# scripts run in the reference env, where tt_atom is not installed.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
-from npz_atomic import savez_atomic  # noqa: E402
+from export_orb_weights import CKPTS  # noqa: E402
+from npz_atomic import config_array, savez_atomic  # noqa: E402
 
 
 def npy(t):
@@ -129,14 +128,6 @@ SYSTEMS = {
 }
 
 
-CKPTS = {
-    "conservative-inf-omat": pretrained.orb_v3_conservative_inf_omat,
-    "direct-20-omat": pretrained.orb_v3_direct_20_omat,
-    "conservative-omol": pretrained.orb_v3_conservative_omol,
-    "direct-omol": pretrained.orb_v3_direct_omol,
-}
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", default="conservative-inf-omat", choices=list(CKPTS))
@@ -203,7 +194,7 @@ def main():
         task="omol" if "omol" in args.ckpt else "omat",
         has_charge_spin_cond=gns.conditioner is not None,
     )
-    saved["config"] = np.frombuffer(json.dumps(cfg).encode(), dtype=np.uint8)
+    saved["config"] = config_array(cfg)
 
     saved["in@atomic_numbers"] = npy(graph.node_features["atomic_numbers"])
     saved["in@pos"] = npy(graph.node_features["positions"])

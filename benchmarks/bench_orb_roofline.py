@@ -15,9 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import statistics
-import sys
 import time
 from datetime import datetime, timezone
 
@@ -25,8 +23,7 @@ import numpy as np
 import torch
 from ase.build import bulk
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
+from _harness import git_sha   # its import also puts the checkout on sys.path
 from bench_orb_perf_dollar_tt import SIZES
 
 
@@ -189,6 +186,7 @@ def main():
         "method": "explicitly synchronized additive stage attribution plus normal-path end-to-end",
         "fast": args.fast,
         "scatter_ablation": args.ablate_scatter,
+        "git_sha": git_sha(),
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "records": records,
     }

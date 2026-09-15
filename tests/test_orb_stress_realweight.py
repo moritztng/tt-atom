@@ -41,11 +41,11 @@ def test_conservative_stress(device):
     w = gw.weights
     L = cfg["num_message_passing_steps"]
     encoder = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                      latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                      latent_dim=cfg["latent_dim"])
     layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                        latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                                        latent_dim=cfg["latent_dim"])
               for i in range(L)]
-    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"], hidden_dim=1024)
+    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"])
 
     pos = gw.inp("pos").float()
     senders = gw.inp("senders").long()
@@ -94,7 +94,7 @@ def test_direct_stress_head(device):
     w = gw.weights
     L = cfg["num_message_passing_steps"]
     encoder = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                      latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                      latent_dim=cfg["latent_dim"])
     node_dev = to_dev(gw.host("node_feat"), device, ttnn.bfloat16)
     edge_dev = to_dev(gw.host("edge_feat"), device, ttnn.bfloat16)
     nodes, edges = encoder(node_dev, edge_dev)
@@ -108,12 +108,12 @@ def test_direct_stress_head(device):
     graph = OrbGraphContext(device, senders=senders, receivers=receivers, cutoff=cutoff, num_nodes=N)
 
     layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                        latent_dim=cfg["latent_dim"], hidden_dim=1024)
+                                        latent_dim=cfg["latent_dim"])
               for i in range(L)]
     for layer in layers:
         nodes, edges = layer(nodes, edges, graph)
 
-    shead = StressHead(w, device, latent_dim=cfg["latent_dim"], hidden_dim=1024)
+    shead = StressHead(w, device, latent_dim=cfg["latent_dim"])
     raw = ttnn.to_torch(shead(nodes)).double()
     stress = host_stress_denormalize(
         raw,
