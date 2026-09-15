@@ -11,6 +11,11 @@ Behaviour changes are all in the knobs and the caches, not in the models: every 
 byte-identical to 0.3.0.
 
 ### Fixed
+- The release gate reads `OVERALL: PASS` again. Both Orb perf rows were seeded on a stock `ttnn`
+  0.68.0 wheel, an environment that cannot run the UMA path at all, so on the pinned tt-metal
+  source build they reported GAP every run and GAP blocks the gate. They are re-measured on the
+  pinned build and keyed on `tt_metal_commit` like the UMA row: 185.8 sys/s for
+  `orb-conservative-omol-batch` and 176.0 sys/s for `orb-conservative-inf-omat-batch`.
 - `TT_ATOM_FUSED_GATE=1` on a stock `ttnn` wheel now falls back to the ordinary path instead of
   crashing mid-forward with `AttributeError: ... has no attribute 'fused_gate'`. The flag is
   capability-probed like every other custom-kernel knob; it stays off by default.

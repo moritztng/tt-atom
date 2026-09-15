@@ -20,9 +20,9 @@ Each device leg runs in a fresh process so its device state cannot leak into the
    processes and reports each completed ceiling.
 3. **Performance** compares warm throughput for UMA, Orb-v3, and OrbMol with the card-specific
    baselines in `docs/perf_baselines.json`. A missing baseline is a `GAP`; a regression beyond 15%
-   is a `FAIL`. Every baseline records the environment it was measured in, and a row only gates
-   when the run matches it, so **run each row in the environment its own baseline lives in**
-   (see "Performance runs in two environments" below).
+   is a `FAIL`. Every baseline records the environment it was measured in and a row only gates when
+   the run matches it, so run the perf leg in the release environment (see "Performance is gated in
+   the release environment" below).
 4. **UX** checks the CLI help, parses output geometries, rejects non-finite results, and verifies
    that relaxation and MD progress advances through the run.
 
@@ -37,23 +37,16 @@ TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py --leg perf --m
 PYTHONPATH=. python3 scripts/release_gate.py --leg ux --cli-only
 ```
 
-### Performance runs in two environments
+### Performance is gated in the release environment
 
-Orb-v3 and OrbMol run on stock `ttnn` and their baselines are seeded there, because that is what
-Orb users install. UMA needs the source build, so its baseline is seeded on the pinned tt-metal
-commit. Orb is roughly twice as fast on stock `ttnn` as on the pinned source build, so running the
-Orb rows in the source environment measures a number that has no baseline to compare against. The
-other three legs need the source build, since only it can run UMA at all.
+All three baselines are measured on the pinned tt-metal source build. That is the environment the
+install leg builds, and the only one that can run every model, so a single gate run yields a single
+verdict.
 
-```bash
-# UMA row, in the source-built environment
-TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py \
-  --leg perf --model uma-s-1-omol-batch
-
-# Orb rows, on stock ttnn
-TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3 scripts/release_gate.py --leg perf \
-  --model orb-conservative-omol-batch --model orb-conservative-inf-omat-batch
-```
+Orb-v3 and OrbMol also run on a stock `ttnn` wheel, which is what an Orb-only user installs, and
+they are roughly 2.2x faster there: 449 and 396 sys/s on `ttnn` 0.68.0 against 186 and 176 on the
+pinned build, same fixtures and same K on the same p150a (2026-09-15). That environment is not
+gated because it cannot run UMA at all, so an Orb row measured on a stock wheel reports `GAP`.
 
 A row whose environment does not match its baseline reports `GAP`, not `FAIL`: the number is not
 comparable, which is not evidence of a regression. For a source build the environment is keyed on

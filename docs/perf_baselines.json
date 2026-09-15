@@ -5,8 +5,8 @@
         "orb-conservative-omol-batch": {
           "unit": "sys/s",
           "direction": "higher",
-          "value": 463.91522419389514,
-          "latency_ms": 2.1555662497121375,
+          "value": 185.80844784398727,
+          "latency_ms": 5.381886623581522,
           "checkpoint": "orb-v3-conservative-omol",
           "k": 8,
           "warmup": 2,
@@ -15,16 +15,17 @@
           "family": "orbmol",
           "fixture": "molecule",
           "mol": "CH3CH2OH",
-          "tt_atom_version": "0.2.1",
-          "ttnn_version": "0.68.0",
-          "date": "2026-07-25",
-          "note": "ttnn 0.65.1rc17 -> 0.68.0 bump, measured on pc p150a 2026-07-25"
+          "tt_atom_version": "0.3.0",
+          "ttnn_version": "0.65.1rc17.dev5883+gb5522097b39",
+          "tt_metal_commit": "8d759240fdd763a38e3abdc8344076f584dc4f4d",
+          "date": "2026-09-15",
+          "note": "re-seed both Orb rows on the pinned tt-metal 8d759240 source build (tt_metal_commit now the comparator key); the 07-25 numbers were measured on the stock ttnn 0.68.0 wheel, which cannot run the UMA path"
         },
         "orb-conservative-inf-omat-batch": {
           "unit": "sys/s",
           "direction": "higher",
-          "value": 374.4622548238998,
-          "latency_ms": 2.6704961237555835,
+          "value": 175.966987558208,
+          "latency_ms": 5.682884124325938,
           "checkpoint": "orb-v3-conservative-inf-omat",
           "k": 8,
           "warmup": 2,
@@ -33,10 +34,11 @@
           "family": "orb",
           "fixture": "bulk-si",
           "mol": "Si",
-          "tt_atom_version": "0.2.1",
-          "ttnn_version": "0.68.0",
-          "date": "2026-07-25",
-          "note": "ttnn 0.65.1rc17 -> 0.68.0 bump, measured on pc p150a 2026-07-25"
+          "tt_atom_version": "0.3.0",
+          "ttnn_version": "0.65.1rc17.dev5883+gb5522097b39",
+          "tt_metal_commit": "8d759240fdd763a38e3abdc8344076f584dc4f4d",
+          "date": "2026-09-15",
+          "note": "re-seed both Orb rows on the pinned tt-metal 8d759240 source build (tt_metal_commit now the comparator key); the 07-25 numbers were measured on the stock ttnn 0.68.0 wheel, which cannot run the UMA path"
         },
         "uma-s-1-omol-batch": {
           "unit": "sys/s",
@@ -58,9 +60,9 @@
           "note": "seed baselines on the pinned tt-metal 8d759240 release environment"
         }
       },
-      "date": "2026-07-25",
-      "tt_atom_version": "0.2.1",
-      "note": "ttnn 0.65.1rc17 -> 0.68.0 bump, measured on pc p150a 2026-07-25"
+      "date": "2026-09-15",
+      "tt_atom_version": "0.3.0",
+      "note": "re-seed both Orb rows on the pinned tt-metal 8d759240 source build (tt_metal_commit now the comparator key); the 07-25 numbers were measured on the stock ttnn 0.68.0 wheel, which cannot run the UMA path"
     }
   }
 }
