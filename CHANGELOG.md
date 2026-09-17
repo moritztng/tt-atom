@@ -11,6 +11,20 @@ Behaviour changes are all in the knobs and the caches, not in the models: every 
 byte-identical to 0.3.0.
 
 ### Fixed
+- The release gate's perf leg no longer decides by luck. It took one measurement per model against
+  a fixed 15% threshold, and on a p150a the throughput spread between runs reaches that threshold
+  on its own: in the gate run that closed this entry, `uma-s-1-omol-batch` drew 88.9, 104.4 and
+  104.8 sys/s, and the first of those alone is a 20% shortfall against the baseline. The leg now
+  waits for every other process to let go of a card and gates the median of three independent
+  runs, printing all three. With no quiet window it measures anyway and reports a shortfall as
+  `GAP`, since a contended run is not evidence of a regression.
+- `benchmarks/_harness.host_quiet()` reported the host busy forever. It grepped process command
+  lines for `tt_bio`, which matches any agent whose own arguments merely mention it; it asks the
+  kernel who holds a `/dev/tenstorrent` node now. The three benchmarks that wait for a quiet host
+  used to burn their full 40-minute budget and stop without measuring.
+- `TT_ATOM_SCATTER_THRESHOLD` is documented. It is the node count above which UMA's dense one-hot
+  scatter gives way to the linear path, and therefore what bounds DRAM on a large cell, but it
+  appeared in no doc.
 - The release gate reads `OVERALL: PASS` again. Both Orb perf rows were seeded on a stock `ttnn`
   0.68.0 wheel, an environment that cannot run the UMA path at all, so on the pinned tt-metal
   source build they reported GAP every run and GAP blocks the gate. They are re-measured on the
@@ -46,8 +60,11 @@ byte-identical to 0.3.0.
   which five modules each defined privately and five more imported across module boundaries).
   `benchmarks/_harness.py` is the one home for the benchmark-side concerns: timing, fixture and
   weight locations, and the fleet discipline (lease flock, quiet-host wait, sandbox child
-  environment) that three subprocess benchmarks each carried a drifting copy of. `tests/util.py`
-  likewise for the parity helpers the test modules shared by copy. Also one each for the bundles'
+  environment) that three subprocess benchmarks each carried a drifting copy of, and the perf leg
+  of the release gate now takes its quiet-host check and its molecule fixture from there too.
+  `tests/util.py` likewise for the parity helpers the test modules shared by copy, including the
+  Orb backbone construction six sites spelled out and the weights fixture seven parity modules
+  each defined. Also one each for the bundles'
   own JSON header (`tools/npz_atomic.config_array`/`read_config`, previously five inline writers
   and nine inline readers), the Orb hidden MLP width (`orb_model.MLP_HIDDEN_DIM`, now the
   constructor default rather than 68 copies of `1024`), the Orb weight-cache path
