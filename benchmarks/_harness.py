@@ -151,10 +151,17 @@ def take_lease(card):
 def sandbox_env(home, card):
     """Child environment for one leg: ``$HOME`` (and ``XDG_CACHE_HOME``) pointed at ``home``, so
     the tt-metal persistent kernel cache under it is exactly controlled — a fresh dir is cold,
-    a populated one warm — and the card pinned."""
+    a populated one warm — and the card pinned.
+
+    ``home`` is resolved: a relative ``--workdir`` would otherwise reach the child as a relative
+    ``$HOME``, which tt-metal resolves against whatever the child's own working directory is. It
+    dies deep in the JIT build with "Failed to open compile failure log file", naming a path that
+    looks right.
+    """
+    home = pathlib.Path(home).resolve()
     env = dict(os.environ)
     env["HOME"] = str(home)
-    env["XDG_CACHE_HOME"] = str(pathlib.Path(home) / ".cache")
+    env["XDG_CACHE_HOME"] = str(home / ".cache")
     env["TT_VISIBLE_DEVICES"] = str(card)
     env.setdefault("OMP_NUM_THREADS", "4")
     return env
