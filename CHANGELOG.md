@@ -22,6 +22,19 @@ byte-identical to 0.3.0.
   lines for `tt_bio`, which matches any agent whose own arguments merely mention it; it asks the
   kernel who holds a `/dev/tenstorrent` node now. The three benchmarks that wait for a quiet host
   used to burn their full 40-minute budget and stop without measuring.
+- The edge-bucketing speedup in the README and `docs/orb-port.md` is re-measured and now names the
+  environment it was taken in. It said 1.4x cold wall-clock on a 20-system screening stream; two
+  draws on the pinned tt-metal source build give **1.11x and 1.14x** (235.1 / 236.5 s unbucketed
+  against 210.9 / 207.6 s bucketed). What bucketing saves is compiles, and that is unchanged and
+  exact: 20 distinct edge shapes collapse to 7 buckets and 2350 fewer kernel files are built,
+  identical to the file across both draws. The wall-clock ratio fell because a compile costs about
+  half what it did in whatever environment produced the earlier number — which that log does not
+  record, so the three subprocess benchmarks now stamp `ttnn_version` next to `git_sha`.
+- `benchmarks/_harness.sandbox_env` resolves the sandbox `$HOME`. A relative `--workdir` reached
+  the child as a relative `$HOME`, and tt-metal resolves that against the child's own working
+  directory: it died deep in the JIT build with "Failed to open compile failure log file" and a
+  path that reads as correct. `bench_compile_pain.py` also defaulted to `--card 3`, a card that
+  does not exist on the host this repo is routed to.
 - `TT_ATOM_SCATTER_THRESHOLD` is documented. It is the node count above which UMA's dense one-hot
   scatter gives way to the linear path, and therefore what bounds DRAM on a large cell, but it
   appeared in no doc.

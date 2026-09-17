@@ -71,6 +71,24 @@ def git_sha():
         return None
 
 
+def ttnn_version():
+    """The loaded ``ttnn``'s version, or ``None``. Goes into a result file next to
+    :func:`git_sha`, because the tree alone does not identify a measurement: the compile and
+    dispatch costs these benchmarks report differ by 2x between a stock wheel and the pinned
+    source build, and a committed log that records neither cannot be compared with a later one.
+
+    ``scripts/release_gate.py`` keys its perf baselines on the stronger
+    ``_tt_metal_source_id()`` (the tt-metal tree ``ttnn`` was built from); that one needs the
+    gate's release pin to mean anything, so it stays there.
+    """
+    try:
+        from importlib.metadata import version
+
+        return version("ttnn")
+    except Exception:
+        return None
+
+
 # --- fixtures ----------------------------------------------------------------------------------
 
 def real_home() -> pathlib.Path:

@@ -98,11 +98,22 @@ Si stream (16 to 256 atoms, 670 to 10934 edges, p150a):
 
 | stream | cold wall clock | distinct edge shapes | kernel files compiled |
 |---|---:|---:|---:|
-| unbucketed | 463.1 s | 20 / 20 | 22299 |
-| bucketed | 334.4 s (1.38x) | 7 buckets | 19885 (-11%) |
+| unbucketed | 235.1 / 236.5 s | 20 / 20 | 20831 |
+| bucketed | 210.9 / 207.6 s (1.11x / 1.14x) | 7 buckets | 18481 (-11.3%) |
 
-Warm, the same stream runs 13.0 s unbucketed versus 11.7 s bucketed (0.65 s versus 0.58 s per
-system). Raw log: `benchmarks/screening_orb_si_p150a.jsonl`.
+Two draws on the pinned tt-metal source build (2026-09-17, `bench_screening.py --card 0`). Warm,
+the same stream runs 11.6 to 12.0 s unbucketed versus 7.0 to 11.2 s bucketed; the warm legs are
+short enough that their spread swamps the difference.
+
+What bucketing saves is compiles, and that part is exact and reproducible: 20 distinct edge shapes
+collapse to 7 buckets and 2350 fewer kernel files get built, identical to the file across both
+draws. How much wall clock that saves depends entirely on what one compile costs. An earlier
+measurement of this same stream recorded 463.1 s versus 334.4 s (1.38x) with the same -11% file
+count, so compiles were about twice as expensive in whatever environment produced it — which that
+log does not record, the reason `bench_screening.py` now stamps results. Read the 1.1x as the
+figure for the environment named above, not as a property of bucketing.
+
+Raw logs: `benchmarks/screening_orb_si_p150a.jsonl` (the earlier, unstamped run).
 
 ## H200 comparison
 
