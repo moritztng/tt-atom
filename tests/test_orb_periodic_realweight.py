@@ -39,12 +39,6 @@ def _edge_fingerprint(senders, receivers, vectors, decimals=4):
     return {(int(s[i]), int(r[i]), tuple(v[i])) for i in range(len(s))}
 
 
-@pytest.fixture(scope="module")
-def gw():
-    from tt_atom.orb_weights import OrbWeights
-
-    return OrbWeights.load(REAL_GOLDEN)
-
 
 def test_radius_graph_matches_orb_neighbor_list(gw):
     """The from-scratch reconstruction (UMA's ``radius_graph`` + Orb's sender/receiver swap)

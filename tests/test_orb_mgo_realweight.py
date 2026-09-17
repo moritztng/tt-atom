@@ -38,12 +38,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture(scope="module")
-def gw():
-    from tt_atom.orb_weights import OrbWeights
-
-    return OrbWeights.load(REAL_GOLDEN)
-
 
 def test_mgo_multi_element_composition(gw):
     """Sanity: this golden is genuinely binary (Mg + O), not a re-run of the Si toy. The

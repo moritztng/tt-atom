@@ -25,12 +25,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture(scope="module")
-def gw():
-    from tt_atom.orb_weights import OrbWeights
-
-    return OrbWeights.load(REAL_GOLDEN)
-
 
 def test_direct_end_to_end(gw, device):
     from tt_atom.orb_model import (Encoder, AttentionInteractionLayer, OrbGraphContext,

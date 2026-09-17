@@ -51,16 +51,6 @@ def _build_graph(device, *, nx, ny, nz, latent_dim, ttnn):
     return graph, N, int(senders.shape[0])
 
 
-def _logical_bytes(shapes, dtype_bytes=2):
-    """Sum of tile-padded byte sizes for a list of (rows, width) read/write transfers."""
-    total = 0
-    for rows, width in shapes:
-        rp = ((rows + 31) // 32) * 32
-        wp = ((width + 31) // 32) * 32
-        total += rp * wp * dtype_bytes
-    return total
-
-
 def _profile_forward(ttnn, device, layer, graph, nodes, edges, *, iters):
     """Replicate AttentionInteractionLayer.__call__ op-by-op with sync barriers."""
     C, N = layer.C, graph.N

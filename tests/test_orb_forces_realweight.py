@@ -26,12 +26,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture(scope="module")
-def gw():
-    from tt_atom.orb_weights import OrbWeights
-
-    return OrbWeights.load(REAL_GOLDEN)
-
 
 
 def test_edge_geometry_matches_golden(gw):

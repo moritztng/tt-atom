@@ -36,12 +36,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture(scope="module")
-def gw():
-    from tt_atom.orb_weights import OrbWeights
-
-    return OrbWeights.load(REAL_GOLDEN)
-
 
 def test_disjoint_batch_row_independence(gw, device):
     from tt_atom.device import to_dev
