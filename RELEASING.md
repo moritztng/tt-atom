@@ -22,7 +22,8 @@ Each device leg runs in a fresh process so its device state cannot leak into the
    baselines in `docs/perf_baselines.json`. A missing baseline is a `GAP`; a regression beyond 15%
    is a `FAIL`. Every baseline records the environment it was measured in and a row only gates when
    the run matches it, so run the perf leg in the release environment (see "Performance is gated in
-   the release environment" below).
+   the release environment" below). Each row is the median of three independent measurement runs,
+   taken once no other process holds a card (see "One draw is not a measurement" below).
 4. **UX** checks the CLI help, parses output geometries, rejects non-finite results, and verifies
    that relaxation and MD progress advances through the run.
 
@@ -54,6 +55,19 @@ the tt-metal tree `ttnn` was built from, not on the `ttnn` version string, becau
 install freezes that string at install time and it goes stale as soon as the checkout moves. A
 tree that still matches the pinned commit gates against the pinned baseline whatever its metadata
 says.
+
+### One draw is not a measurement
+
+The perf leg waits up to 10 minutes for every other process to let go of a Tenstorrent card, then
+runs each model three times in three separate processes and gates the median. A single run against
+a fixed threshold decides by luck: on a busy p150a the `uma-s-1-omol-batch` row was bimodal with
+the 15% threshold sitting between the modes, and the same unchanged code produced both `PASS` and
+`FAIL` across 22 runs. The per-run numbers are printed under each row.
+
+If no quiet window opens in that budget, the leg measures anyway and reports a shortfall as `GAP`
+rather than `FAIL`, because a contended run is not evidence of a regression. A `PASS` stands either
+way, since contention can only make a run slower. Baselines cannot be seeded against a busy card at
+all.
 
 Refresh a performance baseline only for an intentional, measured change:
 

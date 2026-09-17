@@ -27,7 +27,10 @@ numbers on your card). Four regular legs run before each tag:
      absent from stock ttnn builds, so on such a host the UMA row reports GAP (env), not FAIL.
      A baseline seeded on a different ttnn build is likewise GAP (not comparable), not FAIL —
      only a real measured regression, or a run that used a different protocol than its own
-     baseline, is a FAIL.
+     baseline, is a FAIL. The leg waits for every other process to let go of a card, then gates
+     the median of ``PERF_DRAWS`` independent measurement processes: one draw against a fixed
+     threshold decides by luck on a host where the row is bimodal. If no quiet window opens, it
+     measures anyway and downgrades a shortfall to GAP, since contention only ever slows a draw.
   4. UX — the user-facing plumbing still works headlessly on a tiny input (H2O): CLI --help
      behaves and lists the core flags, a real single-point + relax + MD(--steps 5) write an
      --out geometry that parses under ase.io.read with finite energy/forces, and the CLI's
@@ -85,6 +88,12 @@ REPO_ROOT = on_sys_path()
 # One golden-dir resolution for the gate and for the tests it runs: they must look in the same
 # place, or a relocated golden set reads as a GAP while the tests happily find their fixtures.
 from tests.util import GOLDEN_DIR    # noqa: E402
+
+# The perf leg takes both of these from benchmarks/_harness rather than growing its own: the
+# host-quiet check, and the rattled-conformer fixture that tests/gen_golden_batch.py also builds
+# for the batch golden. `benchmarks/` is a script directory, not a package.
+sys.path.insert(0, str(REPO_ROOT / "benchmarks"))
+from _harness import conformers, wait_for_quiet   # noqa: E402
 
 BASELINE_FILE = REPO_ROOT / "docs" / "perf_baselines.json"
 
@@ -206,6 +215,13 @@ PERF_WARMUP = 2
 PERF_REPEAT = 5
 PERF_WARMUP_QUICK = 1
 PERF_REPEAT_QUICK = 3
+# Independent measurement processes per model, of which the median is gated. Warmup+repeat
+# already median away the spread *inside* one process; the spread that decides this leg is
+# between processes. See _measure_draws.
+PERF_DRAWS = 3
+PERF_DRAWS_QUICK = 1
+# How long to wait for every other process to let go of a card before measuring.
+PERF_QUIET_WAIT_S = 600
 DEFAULT_THRESHOLD = 15.0  # % regression allowed before FAIL
 # A normal measurement (warmup+repeat evaluate_batch calls) finishes in seconds; this only
 # guards against a wedged device hanging the whole gate forever.
@@ -601,14 +617,7 @@ def _print_oom(res):
 def _perf_systems(spec, k):
     """Build K small systems for the perf leg's disjoint-union batch, per spec."""
     if spec["fixture"] == "molecule":
-        from ase.build import molecule
-        out = []
-        for i in range(k):
-            a = molecule(spec["mol"])
-            a.rattle(stdev=0.08, seed=10 + i)
-            a.info.update(charge=0, spin=1)
-            out.append(a)
-        return out
+        return conformers(k, spec["mol"])
     if spec["fixture"] == "bulk-si":
         from ase.build import bulk
         out = []
@@ -800,19 +809,52 @@ def _card_baselines(data, card_type):
     return entry.get("models", {}) if entry else None
 
 
+def _measure_draws(model, quick, draws):
+    """One row per model: the median draw of ``draws`` independent measurement processes.
+
+    ``measure_perf`` already takes the median of ``repeat`` timed calls inside one process, and
+    that is the wrong axis. What decides this leg is the spread *between* processes: on pc the
+    ``uma-s-1-omol-batch`` row came out bimodal across draws with the -15% threshold sitting in
+    the gap between the modes, so one draw decided PASS or FAIL by luck and both a tidied tree
+    and untouched master produced each verdict from the same code (22 alternating draws,
+    state/grand-tidy-tt-atom-2026-09-04.md).
+
+    The row returned is a real draw, the one holding the median throughput, so every field it
+    carries was measured together; the other draws ride along in ``draws_throughput`` so a
+    reader can see the spread the verdict was taken from.
+    """
+    got = []
+    for _ in range(draws):
+        r = _run_measure_perf(model, quick)
+        if r.get("failed"):
+            return r        # an env gap or a device hang repeats; do not spend the other draws
+        got.append(r)
+    got.sort(key=lambda r: r["throughput"])
+    row = got[len(got) // 2]
+    row["draws_throughput"] = [round(r["throughput"], 4) for r in got]
+    return row
+
+
 def run_perf(quick, models, update_baseline, note, threshold):
     if quick and update_baseline:
         sys.exit("--quick cannot update performance baselines")
     card = detect_card_type()
+    draws = PERF_DRAWS_QUICK if quick else PERF_DRAWS
     print(f"\n[perf] warm throughput: models={','.join(models)} card={card} "
-          f"(warmup+repeat per model, K per spec)", flush=True)
-    rows = [_run_measure_perf(m, quick) for m in models]
+          f"(median of {draws} draw(s), warmup+repeat each, K per spec)", flush=True)
+    quiet = wait_for_quiet(max_wait_s=PERF_QUIET_WAIT_S)
+    if not quiet:
+        print(f"[perf] another process still holds a card after {PERF_QUIET_WAIT_S}s — measuring "
+              f"anyway, but a slow row will report GAP rather than FAIL", file=sys.stderr)
+    rows = [_measure_draws(m, quick, draws) for m in models]
     if update_baseline:
+        if not quiet:
+            sys.exit("refusing to seed a baseline measured against a busy card")
         return _update_perf_baselines(rows, card, note, threshold)
-    return _compare_perf(rows, card, threshold)
+    return _compare_perf(rows, card, threshold, quiet=quiet)
 
 
-def _compare_perf(rows, card, threshold):
+def _compare_perf(rows, card, threshold, quiet=True):
     bm = _card_baselines(_load_baselines(), card) or {}
     overall_pass = True
     any_gap = False
@@ -888,7 +930,15 @@ def _compare_perf(rows, card, threshold):
         r["delta"] = f"{'+' if raw_pct >= 0 else ''}{raw_pct:.1f}%"
         r["verdict"] = "PASS" if pct >= -threshold else "FAIL"
         r["note"] = f"vs baseline {base:.4g} {r['unit']} (threshold -{threshold:.0f}%)"
-        if r["verdict"] == "FAIL":
+        if r["verdict"] == "FAIL" and not quiet:
+            # Measured against a card someone else was also using. Contention can only slow a
+            # draw, so the PASS above stands on its own; a shortfall is simply not evidence of a
+            # regression, and the gate reports what it has not verified as GAP. Still
+            # release-blocking in default mode, so this does not weaken the gate.
+            r["verdict"] = "GAP"
+            any_gap = True
+            r["note"] += " — another process held a card throughout; not a verified regression"
+        elif r["verdict"] == "FAIL":
             overall_pass = False
     verdict = "FAIL" if not overall_pass else ("GAP" if any_gap else "PASS")
     return dict(verdict=verdict, rows=rows, card=card)
@@ -914,6 +964,7 @@ def _update_perf_baselines(rows, card, note, threshold):
                            value=r["throughput"], latency_ms=r["latency_ms"],
                            checkpoint=r["checkpoint"], k=r["k"],
                            warmup=r["warmup"], repeat=r["repeat"],
+                           draws_throughput=r.get("draws_throughput"),
                            natoms_per_system=r["natoms_per_system"],
                            family=r["family"], fixture=r["fixture"], mol=r["mol"],
                            tt_atom_version=r["tt_atom_version"], ttnn_version=r["ttnn_version"],
@@ -955,6 +1006,10 @@ def _print_perf(res):
         delta = r.get("delta", "n/a")
         verdict = r.get("verdict", "?")
         print(f"{key:<34}{base:>12}{cur:>12}{delta:>10}{verdict:>10}")
+        draws = r.get("draws_throughput") or []
+        if len(draws) > 1:
+            print(f"    -> draws: {', '.join(f'{d:.4g}' for d in draws)} {r['unit']} "
+                  f"(median gated)")
         if r.get("note"):
             print(f"    -> {r['note']}")
     print("-" * 78)
