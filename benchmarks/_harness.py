@@ -171,18 +171,42 @@ def cache_stats(home):
     return n, b
 
 
+def card_holders():
+    """PIDs, other than this process, holding a ``/dev/tenstorrent/*`` node open.
+
+    Asks the kernel who has a card, rather than asking ``ps`` who *mentions* one. The previous
+    implementation here matched any command line containing ``tt_bio``, which on this fleet
+    includes the agent that launches these benchmarks (its task prompt names ``tt_bio``), so
+    :func:`host_quiet` answered False forever and every caller burned its full wait budget and
+    bailed. A process holding the device is the fact we actually want, and nothing a sibling
+    writes in its argv can fake it either way.
+
+    Processes owned by another user are invisible here and are skipped; every fleet job on these
+    hosts runs as the same user.
+    """
+    me = os.getpid()
+    held = []
+    for proc in pathlib.Path("/proc").iterdir():
+        if not proc.name.isdigit() or int(proc.name) == me:
+            continue
+        try:
+            for fd in (proc / "fd").iterdir():
+                if os.readlink(fd).startswith("/dev/tenstorrent/"):
+                    held.append(int(proc.name))
+                    break
+        except OSError:                                     # exited, or not ours to read
+            continue
+    return held
+
+
 def host_quiet():
-    """True when no sibling fleet device job is running on this host. The sibling audit's legs
-    announce as ``tt_bio.main`` / ``chain*.sh`` processes (its embed fanout does NOT take the
-    lease flock, so process liveness is the only reliable signal). sampler.py is a harmless
-    1 Hz CPU monitor and is ignored."""
-    out = subprocess.run(["ps", "-eo", "cmd"], capture_output=True, text=True).stdout
-    for line in out.splitlines():
-        if "tt_bio" in line or "tt-bio-dev/env" in line:
-            return False                                    # sibling device job or shard worker
-        if "mcscale" in line and ".sh" in line:
-            return False                                    # sibling campaign script
-    return True
+    """True when no other process on this host has a Tenstorrent card open.
+
+    Card contention is what this can measure exactly. It says nothing about CPU contention from
+    a non-device sibling, which also moves a dispatch-bound number; the defense against that is
+    measuring more than once, not this check.
+    """
+    return not card_holders()
 
 
 def wait_for_quiet(poll_s=15, settle_s=10, max_wait_s=2400):
