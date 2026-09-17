@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from util import GOLDEN_DIR as GOLDENS
+from util import GOLDEN_DIR as GOLDENS, orb_backbone
 
 CONSERVATIVE = {
     "toy": GOLDENS / "si_omat_orb.npz",
@@ -28,17 +28,11 @@ DIRECT = {
 
 
 def _build_modules(gw, device):
-    from tt_atom.orb_model import Encoder, AttentionInteractionLayer, EnergyHead, ForceHead
+    from tt_atom.orb_model import ForceHead
 
     cfg = gw.config
     w = gw.weights
-    L = cfg["num_message_passing_steps"]
-    encoder = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                      latent_dim=cfg["latent_dim"])
-    layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                        latent_dim=cfg["latent_dim"])
-              for i in range(L)]
-    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"])
+    encoder, layers, ehead = orb_backbone(gw, device)
     fhead = ForceHead(w, device, latent_dim=cfg["latent_dim"]) \
         if gw.has("w@forces_head.mlp.NN-0.weight") else None
     return encoder, layers, ehead, fhead

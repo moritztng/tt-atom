@@ -47,6 +47,26 @@ def pcc_strict(a, b):
     return float(np.corrcoef(a, b)[0, 1])
 
 
+def orb_backbone(gw, device, *, fast=False):
+    """The encoder, message-passing layers and energy head a golden bundle's own config describes.
+
+    Six parity and benchmark sites spelled this construction out identically, down to re-reading
+    ``num_message_passing_steps`` and ``latent_dim`` out of ``cfg`` at every use. Sites that build
+    only part of the stack keep doing so: constructing heads a test does not call would upload
+    weights it never reads.
+    """
+    from tt_atom.orb_model import AttentionInteractionLayer, Encoder, EnergyHead
+
+    cfg, w = gw.config, gw.weights
+    latent_dim = cfg["latent_dim"]
+    encoder = Encoder(w, device, node_in=cfg["node_embed_size"],
+                      edge_in=cfg["edge_embed_size"], latent_dim=latent_dim, fast=fast)
+    layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
+                                        latent_dim=latent_dim, fast=fast)
+              for i in range(cfg["num_message_passing_steps"])]
+    return encoder, layers, EnergyHead(w, device, latent_dim=latent_dim, fast=fast)
+
+
 def have_orb_fixture(checkpoint, golden):
     """Both halves of an Orb end-to-end test's inputs present: the exported checkpoint in the
     weight cache, and the golden it is scored against."""

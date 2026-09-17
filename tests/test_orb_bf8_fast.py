@@ -21,7 +21,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from util import pcc as _pcc, real_golden
+from util import orb_backbone, pcc as _pcc, real_golden
 
 CONSERVATIVE_GOLDEN = real_golden("si_omat_orb.npz", "TTATOM_ORB_GOLDEN")
 DIRECT_GOLDEN = real_golden("si_omat_orb_direct20.npz", "TTATOM_ORB_DIRECT_GOLDEN")
@@ -31,21 +31,14 @@ DIRECT_GOLDEN = real_golden("si_omat_orb_direct20.npz", "TTATOM_ORB_DIRECT_GOLDE
                     reason=f"Orb golden bundle not found at {CONSERVATIVE_GOLDEN}")
 def test_conservative_fast_energy_forces_stress(device):
     from tt_atom.orb_weights import OrbWeights
-    from tt_atom.orb_model import (Encoder, AttentionInteractionLayer, EnergyHead,
-                                   host_energy_denormalize, host_zbl_energy,
-                                   host_conservative_force_denormalize, host_conservative_stress)
+    from tt_atom.orb_model import (host_energy_denormalize, host_zbl_energy,
+                                   host_conservative_force_denormalize,
+                                   host_conservative_stress)
     from tt_atom.orb_forces import energy_and_forces
 
     gw = OrbWeights.load(CONSERVATIVE_GOLDEN)
-    cfg = gw.config
     w = gw.weights
-    L = cfg["num_message_passing_steps"]
-    encoder = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                      latent_dim=cfg["latent_dim"], fast=True)
-    layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                        latent_dim=cfg["latent_dim"], fast=True)
-              for i in range(L)]
-    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"], fast=True)
+    encoder, layers, ehead = orb_backbone(gw, device, fast=True)
 
     pos = gw.inp("pos").float()
     senders = gw.inp("senders").long()

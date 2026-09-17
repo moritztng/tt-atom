@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from util import pcc as _pcc, real_golden
+from util import orb_backbone, pcc as _pcc, real_golden
 
 REAL_GOLDEN = real_golden("si_omat_orb.npz", "TTATOM_ORB_GOLDEN")
 
@@ -53,19 +53,11 @@ def test_edge_geometry_matches_golden(gw):
 
 
 def test_conservative_forces(gw, device):
-    from tt_atom.orb_model import (Encoder, AttentionInteractionLayer, EnergyHead,
-                                   host_conservative_force_denormalize)
+    from tt_atom.orb_model import host_conservative_force_denormalize
     from tt_atom.orb_forces import energy_and_forces
 
-    cfg = gw.config
     w = gw.weights
-    L = cfg["num_message_passing_steps"]
-    encoder = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                      latent_dim=cfg["latent_dim"])
-    layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                        latent_dim=cfg["latent_dim"])
-              for i in range(L)]
-    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"])
+    encoder, layers, ehead = orb_backbone(gw, device)
 
     pos = gw.inp("pos").float()
     senders = gw.inp("senders").long()

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import pytest
 
-from util import pcc as _pcc, real_golden
+from util import orb_backbone, pcc as _pcc, real_golden
 
 REAL_GOLDEN = real_golden("mgo_omat_orb.npz", "TTATOM_ORB_MGO_GOLDEN")
 
@@ -53,22 +53,16 @@ def test_mgo_energy_and_forces(gw, device):
     """Full device pipeline (encoder -> 5 interaction layers -> EnergyHead, and
     ``orb_forces.energy_and_forces`` for analytic conservative forces) vs the real orb-models
     oracle on the MgO rock-salt supercell."""
-    from tt_atom.orb_model import (Encoder, AttentionInteractionLayer, OrbGraphContext, EnergyHead,
+    from tt_atom.orb_model import (OrbGraphContext,
                                    host_cutoff, host_zbl_energy, host_zbl_forces,
                                    host_energy_denormalize, host_conservative_force_denormalize)
     from tt_atom.device import to_dev
     from tt_atom.orb_forces import energy_and_forces
     import ttnn
 
-    cfg = gw.config
     w = gw.weights
-    L = cfg["num_message_passing_steps"]
-    latent_dim = cfg["latent_dim"]
-    enc = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                 latent_dim=latent_dim)
-    layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device, latent_dim=latent_dim)
-              for i in range(L)]
-    ehead = EnergyHead(w, device, latent_dim=latent_dim)
+    enc, layers, ehead = orb_backbone(gw, device)
+    L = len(layers)
 
     atomic_numbers = gw.inp("atomic_numbers").long()
     senders = gw.inp("senders").long()

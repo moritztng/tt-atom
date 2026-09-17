@@ -15,6 +15,7 @@ from __future__ import annotations
 import torch
 
 from _harness import golden_dir, median_ms
+from tests.util import orb_backbone
 
 GOLDENS = golden_dir()
 SAMPLES, WARMUP = 20, 5
@@ -40,7 +41,7 @@ def _device_only_ms(device, encoder, layers, ehead, graph, node_dev, edge_dev):
 
 def _bench_one(label, path, device):
     from tt_atom.device import to_dev
-    from tt_atom.orb_model import Encoder, AttentionInteractionLayer, EnergyHead, OrbGraphContext
+    from tt_atom.orb_model import OrbGraphContext
     from tt_atom.orb_forces import energy_and_forces
     from tt_atom.orb_geometry import host_edge_features
     from tt_atom.orb_trace import OrbTracedEngine
@@ -48,16 +49,7 @@ def _bench_one(label, path, device):
     import ttnn
 
     gw = OrbWeights.load(path)
-    cfg = gw.config
-    w = gw.weights
-    L = cfg["num_message_passing_steps"]
-
-    encoder = Encoder(w, device, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                      latent_dim=cfg["latent_dim"])
-    layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                        latent_dim=cfg["latent_dim"])
-              for i in range(L)]
-    ehead = EnergyHead(w, device, latent_dim=cfg["latent_dim"])
+    encoder, layers, ehead = orb_backbone(gw, device)
 
     pos0 = gw.inp("pos").float()
     senders = gw.inp("senders").long()
