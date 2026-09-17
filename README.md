@@ -162,8 +162,9 @@ loops (or single points) — each card owns a complete ASE calculator and optimi
 for its assigned structures, so a high-throughput screening batch runs data-parallel with
 bit-exact per-structure results. For a screening stream of differently-sized systems,
 `bucketing=True` (Orb) pads edges to a fixed ladder so one compile set serves many sizes: a
-20-system stream compiles 7 edge shapes instead of 20, which measured 1.1x faster cold
-wall-clock on the pinned build, bit-exact per system ([numbers](docs/orb-port.md#throughput)). See [`docs/orb-port.md`](docs/orb-port.md) and
+20-system stream compiles 7 edge shapes instead of 20, which measured 1.1x faster cold wall-clock
+on the pinned build, bit-exact per system ([numbers](docs/orb-port.md#throughput)). See
+[`docs/orb-port.md`](docs/orb-port.md) and
 [`custom_kernels/README.md`](custom_kernels/README.md) for measured performance.
 
 ## Compared to upstream (fairchem / orb-models)
