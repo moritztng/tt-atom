@@ -60,6 +60,12 @@ All five default ON and exist so the pre-optimization path stays reachable for c
 - **`TT_ATOM_ORB_SCATTER_RM=0`** — restores the tile-layout concat in `segment_sum` instead of row-major. Bit-exact either way (same reduction order). Orb only.
 - **`TT_ATOM_ORB_MINIMAL_MATMUL=0`** — routes Orb's large edge MLPs through `ttnn.linear` instead of `ttnn.experimental.minimal_matmul`. Orb only.
 
+One knob is not a boolean. `TT_ATOM_SCATTER_THRESHOLD` (default 2048) is the node count above
+which UMA's dense one-hot scatter matmul gives way to the linear gather+reduce path. The dense
+path is bit-identical and about 5x faster at MD sizes, but its one-hot is O(N·E) and reaches
+546 MB at 1728 nodes, so the threshold is what bounds memory on a large cell. Lower it if a big
+system runs out of DRAM; `=0` takes the linear path everywhere.
+
 `device_ede`/`bf8_edge` are manual opt-ins: ~2x on a traced MD step at large systems (512 atoms: 389 -> 194 ms; 216 atoms: 158 -> 85 ms, force PCC 0.9997), but they regress small molecules (~0.85x at 9 atoms), so they are not global defaults.
 
 ## Re-integrating onto a newer tt-metal commit

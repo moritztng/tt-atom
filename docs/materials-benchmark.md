@@ -40,9 +40,10 @@ check reruns only the device side against a fixed reference.
 ## Results
 
 These are the committed benchmark measurements for TT-Atom, taken on a
-single Blackhole p150a card (card 0) on 2026-07-21 with the pinned source
-`tt-metal` build and `TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3
-scripts/release_gate.py --leg accuracy`. Every currently-shipped family is
+single Blackhole p150a card (card 0) with the pinned source `tt-metal`
+build and `TT_VISIBLE_DEVICES=0 PYTHONPATH=. python3
+scripts/release_gate.py --leg accuracy`; each row's date is below the
+table. Every currently-shipped family is
 covered: UMA `uma-s-1`
 (molecular / `omol`), Orb-v3 `conservative-inf-omat` and `direct-20-omat`
 (bulk / `omat`, analytic forces, periodic supercell, multi-element oxide,
@@ -51,7 +52,7 @@ charged / open-shell).
 
 | family | checkpoint | regime | metric | R | D | X | result |
 |---|---|---|---:|---:|---:|---:|---|
-| uma | uma-s-1 | molecular / omol (ethanol) | energy rel err, force PCC | 0 / 1.00000 | 0 / 1.00000 | 1.84e-7 / 0.99965 | PASS |
+| uma | uma-s-1 | molecular / omol (ethanol) | energy rel err, force PCC | 0 / 1.00000 | 0 / 1.00000 | 4.75e-7 / 0.99965 | PASS |
 | orb | conservative-inf-omat | bulk / omat (Si toy) | energy rel err | 0 | 0 | 6.9e-4 | PASS |
 | orb | conservative-inf-omat | analytic forces (`F = -dE/dpos`) | force PCC | 1.00000 | 1.00000 | 0.99999 | PASS |
 | orb | direct-20-omat | bulk / omat (direct) | energy rel err, force PCC | 0 / 1.00000 | 0 / 1.00000 | 5.8e-4 / 0.99997 | PASS |
@@ -78,13 +79,12 @@ a real architectural difference from UMA, not a port discrepancy; the
 full non-equivariance analysis and the ZBL pair-repulsion correction live
 in `docs/orb-port.md`.
 
-The `uma` row predates the two UMA force corrections of 2026-08-18 (the
-quaternion edge frame and the fp32 radial-MLP backward), so its X column
-is not a measurement of the current code — it stands as the last recorded
-value until this table is regenerated with the command below. What has
-been re-verified since is the bar, not the figure: the gate runs of 08-20
-and 08-21 both put all three UMA accuracy modules at PASS on the source
-build. The Orb-v3 / OrbMol rows are untouched by those fixes.
+The `uma` row was regenerated on 2026-09-17. Its previous figure predated
+the two UMA force corrections of 2026-08-18 (the quaternion edge frame
+and the fp32 radial-MLP backward); across those, energy relative error
+moved from 1.84e-7 to 4.75e-7 and force PCC stayed at 0.99965. The
+Orb-v3 and OrbMol rows are untouched by those fixes and still carry their
+2026-07-21 measurements.
 
 ¶ The periodic-supercell row verifies the radius-graph reconstruction
 matches `orb-models`' neighbour list exactly (1064 edges, symmetric
