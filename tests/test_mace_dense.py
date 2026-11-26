@@ -23,3 +23,16 @@ def test_symmetric_contraction_folded(g, layer, n_out):  # noqa: F811
         b = dense.symmetric_contraction(x, attrs.argmax(1), T, parent, last)
         assert T.shape[2] == 16 + 136 + 816
         assert (a - b).abs().max() < 1e-12 * a.abs().max()
+
+
+def test_fold_only_present_elements(g):  # noqa: F811
+    w = g["w"]
+    el = ref.node_attrs(g["Z"], w["atomic_numbers"].long()).argmax(1)
+    present = el.unique()
+    x = torch.randn(len(g["Z"]), 128, 16, generator=torch.Generator().manual_seed(2), dtype=torch.float64)
+    full = dense.product_tables(w, 0, 2)
+    sub = dense.product_tables(w, 0, 2, elements=present)
+    local = torch.searchsorted(present, el)
+    for (Tf, p, l), (Ts, _, _) in zip(full, sub):
+        assert Ts.shape[0] == len(present)
+        assert torch.equal(dense.symmetric_contraction(x, el, Tf, p, l), dense.symmetric_contraction(x, local, Ts, p, l))

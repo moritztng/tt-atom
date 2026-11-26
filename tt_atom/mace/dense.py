@@ -69,14 +69,19 @@ def symmetric_contraction(x, element, T, parent, last):
     return out.reshape(x.shape[0], -1)
 
 
-def product_tables(w, layer, n_out):
-    """Fold every output irrep of ``products.<layer>``: [(T, parent, last)] in output order."""
+def product_tables(w, layer, n_out, elements=None):
+    """Fold every output irrep of ``products.<layer>``: [(T, parent, last)] in output order.
+
+    ``elements`` (indices into the model's element table) folds only those, in that order: a table is
+    [c, 968, 2L+1] per element, so folding all 89 of MP-0b3 costs ~0.6 GB in float64 for nothing.
+    """
     out = []
     for k in range(n_out):
         q = f"products.{layer}.symmetric_contractions.contractions.{k}."
         corr = sum(1 for key in w if key.startswith(q + "U_matrix_"))
         U = [w[f"{q}U_matrix_{nu}"] for nu in range(1, corr + 1)]
         W = [w[f"{q}weights.{corr - 1 - nu}"] for nu in range(1, corr)] + [w[q + "weights_max"]]
+        W = W if elements is None else [v[elements] for v in W]
         _, parent, last = monomials(U[0].shape[-2], corr)
         out.append((fold_contraction(U, W), parent, last))
     return out
