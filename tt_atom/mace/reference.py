@@ -206,20 +206,25 @@ def reshape_irreps(x, irreps):
     return torch.cat(split(x, irreps), dim=-1)
 
 
-def density_interaction(w, layer, attrs, feats, irreps_in, sh, edge_feats, edge_index, irreps_out, sh_ls=(0, 1, 2, 3)):
-    """RealAgnosticDensityInteractionBlock (MACE-MP-0b3 layer 0)."""
+def density_interaction(w, layer, attrs, feats, irreps_in, sh, edge_feats, edge_index, irreps_out,
+                        sc_irreps=None, sh_ls=(0, 1, 2, 3)):
+    """RealAgnosticDensity[Residual]InteractionBlock. With ``sc_irreps`` (the residual variant, MP-0b3 layer 1)
+    the element-selector TP runs on the input and is returned as the skip; otherwise it runs on the message.
+    Returns (node features [n, mul, (lmax+1)^2], skip or None)."""
     p = f"interactions.{layer}."
     sender, receiver = edge_index
     n = feats.shape[0]
-    up = linear(feats, irreps_in, irreps_in, w[p + "linear_up.weight"])
+    sc = fc_tp(feats, irreps_in, attrs, sc_irreps, w[p + "skip_tp.weight"]) if sc_irreps else None
+    up = linear(feats, irreps_in, irreps_in, w[p + "linear_up.weight"])  # MACE keeps the irreps here
     tp_w = fc_net(edge_feats, _layers(w, p + "conv_tp_weights"))
     dens = torch.tanh(fc_net(edge_feats, _layers(w, p + "density_fn")) ** 2)
     density = torch.zeros(n, 1, dtype=feats.dtype).index_add_(0, receiver, dens)
     mji, irreps_mid = conv_tp(up[sender], irreps_in, sh, list(sh_ls), tp_w, [l for _, l in irreps_out])
     msg = torch.zeros(n, mji.shape[1], dtype=feats.dtype).index_add_(0, receiver, mji)
     msg = linear(msg, irreps_mid, irreps_out, w[p + "linear.weight"]) / (density + 1)
-    msg = fc_tp(msg, irreps_out, attrs, irreps_out, w[p + "skip_tp.weight"])
-    return reshape_irreps(msg, irreps_out)
+    if sc is None:
+        msg = fc_tp(msg, irreps_out, attrs, irreps_out, w[p + "skip_tp.weight"])
+    return reshape_irreps(msg, irreps_out), sc
 
 
 def _layers(w, prefix):
@@ -228,3 +233,32 @@ def _layers(w, prefix):
         out.append(w[f"{prefix}.layer{i}.weight"])
         i += 1
     return out
+
+
+def symmetric_contraction(x, attrs, U, W):
+    """One MACE Contraction (one output irrep), correlation = len(U).
+
+    x [n, c, (lmax+1)^2]; U[nu-1] = U_matrix_nu, shape [(2L+1,)] + [ell]*nu + [K_nu]; W[nu-1] = the
+    [n_elements, K_nu, c] weights. Highest order first: contract the element-mixed weights into U, add the
+    running sum, then contract one ell index with x; repeat down to nu = 1. Returns [n, c * (2L+1)].
+    """
+    out = None
+    for nu in range(len(U), 0, -1):
+        wc = torch.einsum("ekc,be->bkc", W[nu - 1], attrs)
+        t = torch.einsum("...k,bkc->bc...", U[nu - 1], wc)
+        out = torch.einsum("bc...i,bci->bc...", t if out is None else t + out, x)
+    return out.reshape(out.shape[0], -1)
+
+
+def product_block(w, layer, x, attrs, irreps_out, sc=None):
+    """EquivariantProductBasisBlock: symmetric contraction per output irrep, linear, plus the skip."""
+    p = f"products.{layer}."
+    outs = []
+    for k in range(len(irreps_out)):
+        q = f"{p}symmetric_contractions.contractions.{k}."
+        corr = sum(1 for key in w if key.startswith(q + "U_matrix_"))
+        U = [w[f"{q}U_matrix_{nu}"] for nu in range(1, corr + 1)]
+        W = [w[f"{q}weights.{corr - 1 - nu}"] for nu in range(1, corr)] + [w[q + "weights_max"]]
+        outs.append(symmetric_contraction(x, attrs, U, W))
+    out = linear(torch.cat(outs, dim=1), irreps_out, irreps_out, w[p + "linear.weight"])
+    return out if sc is None else out + sc

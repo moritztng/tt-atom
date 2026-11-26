@@ -53,6 +53,30 @@ H = [(128, l) for l in range(4)]  # 128x0e+128x1o+128x2e+128x3o
 def test_interaction_0(g):
     w, t = g["w"], g["t"]
     attrs = ref.node_attrs(g["Z"], w["atomic_numbers"].long())
-    out = ref.density_interaction(w, 0, attrs, t["a@node_embedding.out0"], [(128, 0)],
-                                  t["a@spherical_harmonics.out0"], t["a@radial_embedding.out0"], g["ei"], H)
+    out, sc = ref.density_interaction(w, 0, attrs, t["a@node_embedding.out0"], [(128, 0)],
+                                      t["a@spherical_harmonics.out0"], t["a@radial_embedding.out0"], g["ei"], H)
+    assert sc is None
     close(out, t["a@interactions.0.out0"])
+
+
+def test_product_0(g):
+    w, t = g["w"], g["t"]
+    attrs = ref.node_attrs(g["Z"], w["atomic_numbers"].long())
+    close(ref.product_block(w, 0, t["a@interactions.0.out0"], attrs, [(128, 0), (128, 1)]), t["a@products.0.out0"])
+
+
+def test_interaction_1(g):
+    w, t = g["w"], g["t"]
+    attrs = ref.node_attrs(g["Z"], w["atomic_numbers"].long())
+    out, sc = ref.density_interaction(w, 1, attrs, t["a@products.0.out0"], [(128, 0), (128, 1)],
+                                      t["a@spherical_harmonics.out0"], t["a@radial_embedding.out0"], g["ei"], H,
+                                      sc_irreps=[(128, 0)])
+    close(sc, t["a@interactions.1.out1"])
+    close(out, t["a@interactions.1.out0"])
+
+
+def test_product_1(g):
+    w, t = g["w"], g["t"]
+    attrs = ref.node_attrs(g["Z"], w["atomic_numbers"].long())
+    close(ref.product_block(w, 1, t["a@interactions.1.out0"], attrs, [(128, 0)], sc=t["a@interactions.1.out1"]),
+          t["a@products.1.out0"])
