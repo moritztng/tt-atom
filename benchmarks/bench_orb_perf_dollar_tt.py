@@ -30,6 +30,46 @@ from ase.build import bulk
 from _harness import git_sha
 
 
+class AiclkSampler:
+    """Samples every card's AICLK (MHz) from sysfs every 0.2 s while active.
+
+    Read from the tenstorrent class node (no device open, no tt-smi). Recorded per node because
+    the /dev node number is not the TT_VISIBLE_DEVICES index; the busy card is the one above idle.
+    """
+
+    def __init__(self):
+        import glob
+        import threading
+        self.paths = {p.split("!")[-1].split("/")[0]: p
+                      for p in glob.glob("/sys/class/tenstorrent/tenstorrent!*/tt_aiclk")}
+        self.mhz = {n: [] for n in self.paths}
+        self._stop = threading.Event()
+        self._t = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self):
+        while not self._stop.is_set():
+            for n, p in self.paths.items():
+                try:
+                    v = int(open(p).read().strip())
+                except (OSError, ValueError):
+                    continue
+                if v != 0xFFFFFFFF:  # dead-ARC sentinel is not a clock
+                    self.mhz[n].append(v)
+            self._stop.wait(0.2)
+
+    def __enter__(self):
+        self._t.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self._t.join()
+
+    def summary(self):
+        return {n: {"median": int(np.median(v)), "min": min(v), "max": max(v), "n": len(v)}
+                for n, v in self.mhz.items() if v}
+
+
 SIZES = [
     ("3x3x3", 3, 3, 3),   #   216 atoms
     ("4x4x4", 4, 4, 4),   #   512 atoms
@@ -104,13 +144,14 @@ def main():
 
             calc.step_ms.clear()
             e0 = None
-            for i in range(args.steps):
-                p = atoms.get_positions() + rng.normal(0.0, 0.01, atoms.positions.shape)
-                atoms.set_positions(p)
-                e = atoms.get_potential_energy()
-                _ = atoms.get_forces()
-                if i == 0:
-                    e0 = float(e)
+            with AiclkSampler() as clk:
+                for i in range(args.steps):
+                    p = atoms.get_positions() + rng.normal(0.0, 0.01, atoms.positions.shape)
+                    atoms.set_positions(p)
+                    e = atoms.get_potential_energy()
+                    _ = atoms.get_forces()
+                    if i == 0:
+                        e0 = float(e)
 
             raw = list(calc.step_ms)
             med = float(np.median(raw))
@@ -123,6 +164,8 @@ def main():
                 "step_ms_min": float(min(raw)),
                 "step_ms_max": float(max(raw)),
                 "steps_per_s": 1000.0 / med,
+                "aiclk_mhz_during_by_node": clk.summary(),
+                "tt_visible_devices": os.environ.get("TT_VISIBLE_DEVICES"),
                 "energy_sample_eV": e0,
                 "energy_sample_eV_per_atom": (e0 / N) if e0 is not None else None,
                 "precision": ("bf8 weights/hidden MLP activations, bf16 residual stream, "
@@ -133,6 +176,7 @@ def main():
             }
             records.append(rec)
             print(f"N={N} edges={calc.n_edges} median={med:.3f} ms  => {1000.0/med:.2f} steps/s"
+                  f"  aiclk={clk.summary()}"
                   f"  (e0={e0:.3f} eV, {e0/N:.4f} eV/atom)", flush=True)
             calc.close()
         except Exception as exc:  # noqa: BLE001
