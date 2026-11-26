@@ -196,7 +196,11 @@ def main():
                 r["parity"] = {"dE_per_atom_eV": dE, "max_abs_dF_eV_per_A": fmax, "ok": ok}
                 rec["variants"][v] = r
             except Exception as exc:  # noqa: BLE001 -- a variant that cannot run is a recorded result
-                rec["variants"][v] = {"error": f"{type(exc).__name__}: {exc}"}
+                import traceback  # the failing package line, so a capture break is fixable from the log
+                where = [f"{f.filename.split('site-packages/')[-1]}:{f.lineno} {f.line}"
+                         for f in traceback.extract_tb(exc.__traceback__)[-4:]]
+                rec["variants"][v] = {"error": f"{type(exc).__name__}: {str(exc)[:160]}", "where": where}
+                print("    " + "\n    ".join(where), flush=True)
         for v, r in rec["variants"].items():
             if "step_ms_median" in r:
                 print(f"  {v:17s} {r['step_ms_median']:8.3f} ms  sm={r['sm_clock_mhz_during']} MHz", flush=True)
