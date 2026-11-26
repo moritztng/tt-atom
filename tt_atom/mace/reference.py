@@ -92,3 +92,139 @@ def zbl(r, atomic_numbers, edge_index, w, n_nodes):
     env = polynomial_cutoff(r, cov[zi_u] + cov[zi_v], w[pre + "p"])
     v = 0.5 * (14.3996 * zu * zv) / r * phi * env
     return torch.zeros(n_nodes, 1, dtype=r.dtype).index_add_(0, edge_index[1], v).squeeze(-1)
+
+
+# ---- e3nn building blocks. Irreps are lists of (mul, l) with the natural parity (-1)^l, which is all
+# MACE-MP uses; features are e3nn's layout, each block [mul, 2l+1] flattened mul-major.
+
+_W3J = {}
+
+
+def wigner_3j(l1, l2, l3):
+    """e3nn's unit-norm Wigner 3j for l1+l2+l3 even: the normalised Gaunt integral of our real SH.
+
+    Exact Gauss-Legendre x uniform-phi quadrature (degree <= 9); matches e3nn.o3.wigner_3j to 1e-15,
+    sign included, for every l <= 3 triple MACE-MP uses.
+    """
+    key = (l1, l2, l3)
+    if key not in _W3J:
+        import numpy as np
+        xg, wg = np.polynomial.legendre.leggauss(12)
+        ct = torch.tensor(xg, dtype=torch.float64)[:, None].expand(-1, 24)
+        ph = (torch.arange(24, dtype=torch.float64) * (2 * math.pi / 24))[None, :].expand(12, -1)
+        st = (1 - ct ** 2).sqrt()
+        Y = spherical_harmonics(torch.stack([st * ph.cos(), st * ph.sin(), ct], -1).reshape(-1, 3))
+        q = torch.tensor(wg, dtype=torch.float64)[:, None].expand(-1, 24).reshape(-1)
+        s = [Y[:, l * l:(l + 1) ** 2] for l in key]
+        G = torch.einsum("n,ni,nj,nk->ijk", q, *s)
+        _W3J[key] = G / G.norm()
+    return _W3J[key]
+
+
+def split(x, irreps):
+    out, i = [], 0
+    for mul, l in irreps:
+        d = 2 * l + 1
+        out.append(x[:, i:i + mul * d].reshape(-1, mul, d))
+        i += mul * d
+    return out
+
+
+def merge(blocks):
+    return torch.cat([b.reshape(b.shape[0], -1) for b in blocks], dim=1)
+
+
+def linear(x, irreps_in, irreps_out, weight):
+    """e3nn o3.Linear, element path normalisation: each output sums every same-l input / sqrt(fan-in)."""
+    xs, outs, k = split(x, irreps_in), [], 0
+    out = [torch.zeros(x.shape[0], m, 2 * l + 1, dtype=x.dtype) for m, l in irreps_out]
+    fan = [sum(mi for mi, li in irreps_in if li == l) for _, l in irreps_out]
+    for i, (mi, li) in enumerate(irreps_in):
+        for o, (mo, lo) in enumerate(irreps_out):
+            if li == lo:
+                W = weight[k:k + mi * mo].reshape(mi, mo)
+                k += mi * mo
+                out[o] = out[o] + torch.einsum("nui,uv->nvi", xs[i], W) / math.sqrt(fan[o])
+    assert k == weight.numel()
+    return merge(out)
+
+
+def fc_net(x, weights, act=True):
+    """e3nn nn.FullyConnectedNet: x @ W / sqrt(fan-in), normalised SiLU between layers, none after the last."""
+    for i, W in enumerate(weights):
+        x = x @ W / math.sqrt(W.shape[0])
+        if act and i < len(weights) - 1:
+            x = torch.nn.functional.silu(x) * _silu_2mom()
+    return x
+
+
+def _silu_2mom():
+    """e3nn normalize2mom constant for SiLU: its own seed-0 Monte Carlo estimate, reproduced exactly."""
+    if "silu" not in _W3J:
+        z = torch.randn(1_000_000, generator=torch.Generator().manual_seed(0), dtype=torch.float64)
+        _W3J["silu"] = torch.nn.functional.silu(z).pow(2).mean().pow(-0.5).item()
+    return _W3J["silu"]
+
+
+def conv_tp_irreps(irreps1, sh_ls, target_ls):
+    """MACE tp_out_irreps_with_instructions: every allowed (i, j, l_out), outputs sorted by l (stable)."""
+    ins = [(i, j, lo) for i, (_, l1) in enumerate(irreps1) for j, l2 in enumerate(sh_ls)
+           for lo in range(abs(l1 - l2), l1 + l2 + 1) if lo in target_ls and (l1 + l2 + lo) % 2 == 0]
+    ins = sorted(ins, key=lambda t: t[2])
+    return [(irreps1[i][0], lo) for i, _, lo in ins], ins
+
+
+def conv_tp(x1, irreps1, sh, sh_ls, w, target_ls):
+    """'uvu' tensor product, per-edge weights: one output block per instruction, component normalised."""
+    irreps_mid, ins = conv_tp_irreps(irreps1, sh_ls, target_ls)
+    xs, ys, out, k = split(x1, irreps1), split(sh, [(1, l) for l in sh_ls]), [], 0
+    for i, j, lo in ins:
+        mul, l1 = irreps1[i]
+        C = wigner_3j(l1, sh_ls[j], lo) * math.sqrt(2 * lo + 1)
+        out.append(torch.einsum("eui,ej,ijk,eu->euk", xs[i], ys[j][:, 0], C, w[:, k:k + mul]))
+        k += mul
+    return merge(out), irreps_mid
+
+
+def fc_tp(x1, irreps1, attrs, irreps_out, weight):
+    """e3nn FullyConnectedTensorProduct with scalar node attributes (the element-selector skip)."""
+    n_el, xs, k = attrs.shape[1], split(x1, irreps1), 0
+    out = [torch.zeros(x1.shape[0], m, 2 * l + 1, dtype=x1.dtype) for m, l in irreps_out]
+    fan = [sum(mi * n_el for mi, li in irreps1 if li == l) for _, l in irreps_out]
+    for i, (mi, li) in enumerate(irreps1):
+        for o, (mo, lo) in enumerate(irreps_out):
+            if li == lo:
+                W = weight[k:k + mi * n_el * mo].reshape(mi, n_el, mo)
+                k += mi * n_el * mo
+                out[o] = out[o] + torch.einsum("nui,nv,uvw->nwi", xs[i], attrs, W) / math.sqrt(fan[o])
+    assert k == weight.numel()
+    return merge(out)
+
+
+def reshape_irreps(x, irreps):
+    """[n, sum mul*(2l+1)] -> [n, mul, sum(2l+1)] (MACE reshape_irreps, equal muls)."""
+    return torch.cat(split(x, irreps), dim=-1)
+
+
+def density_interaction(w, layer, attrs, feats, irreps_in, sh, edge_feats, edge_index, irreps_out, sh_ls=(0, 1, 2, 3)):
+    """RealAgnosticDensityInteractionBlock (MACE-MP-0b3 layer 0)."""
+    p = f"interactions.{layer}."
+    sender, receiver = edge_index
+    n = feats.shape[0]
+    up = linear(feats, irreps_in, irreps_in, w[p + "linear_up.weight"])
+    tp_w = fc_net(edge_feats, _layers(w, p + "conv_tp_weights"))
+    dens = torch.tanh(fc_net(edge_feats, _layers(w, p + "density_fn")) ** 2)
+    density = torch.zeros(n, 1, dtype=feats.dtype).index_add_(0, receiver, dens)
+    mji, irreps_mid = conv_tp(up[sender], irreps_in, sh, list(sh_ls), tp_w, [l for _, l in irreps_out])
+    msg = torch.zeros(n, mji.shape[1], dtype=feats.dtype).index_add_(0, receiver, mji)
+    msg = linear(msg, irreps_mid, irreps_out, w[p + "linear.weight"]) / (density + 1)
+    msg = fc_tp(msg, irreps_out, attrs, irreps_out, w[p + "skip_tp.weight"])
+    return reshape_irreps(msg, irreps_out)
+
+
+def _layers(w, prefix):
+    out, i = [], 0
+    while f"{prefix}.layer{i}.weight" in w:
+        out.append(w[f"{prefix}.layer{i}.weight"])
+        i += 1
+    return out

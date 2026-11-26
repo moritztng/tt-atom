@@ -45,3 +45,14 @@ def test_radial_embedding(g):
 
 def test_zbl(g):
     close(ref.zbl(g["r"], g["Z"], g["ei"], g["w"], len(g["Z"])), g["t"]["a@pair_repulsion_fn.out0"])
+
+
+H = [(128, l) for l in range(4)]  # 128x0e+128x1o+128x2e+128x3o
+
+
+def test_interaction_0(g):
+    w, t = g["w"], g["t"]
+    attrs = ref.node_attrs(g["Z"], w["atomic_numbers"].long())
+    out = ref.density_interaction(w, 0, attrs, t["a@node_embedding.out0"], [(128, 0)],
+                                  t["a@spherical_harmonics.out0"], t["a@radial_embedding.out0"], g["ei"], H)
+    close(out, t["a@interactions.0.out0"])
