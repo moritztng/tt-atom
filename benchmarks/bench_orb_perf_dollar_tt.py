@@ -90,6 +90,8 @@ def main():
     ap.add_argument("--fast", action="store_true",
                     help="use bf8 weights and hidden MLP activations (release-gated)")
     ap.add_argument("--out", default="benchmarks/orb_perf_dollar_tt.json")
+    ap.add_argument("--platform", default="Tenstorrent Blackhole p150 (one card, device 0)",
+                    help="the card that ran, recorded verbatim (e.g. one chip of a p300c)")
     ap.add_argument("--sizes", default=",".join(s[0] for s in SIZES),
                     help="comma list of size tags from: " + ",".join(s[0] for s in SIZES))
     args = ap.parse_args()
@@ -104,7 +106,7 @@ def main():
 
     def _dump(records):
         out = {
-            "platform": "Tenstorrent Blackhole p150 (one card, device 0)",
+            "platform": args.platform,
             "model": "orb-v3-conservative-inf-omat",
             "system": "periodic Si diamond supercell, monatomic (node feature tiled, system-independent weights)",
             "quantity": "one MD step = energy + conservative analytic forces (F = -dE/dpos), no stress",
