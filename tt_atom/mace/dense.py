@@ -85,3 +85,44 @@ def product_tables(w, layer, n_out, elements=None):
         _, parent, last = monomials(U[0].shape[-2], corr)
         out.append((fold_contraction(U, W), parent, last))
     return out
+
+
+def conv_tp_plan(irreps1, sh_ls, target_ls):
+    """Constants for the 'uvu' edge tensor product when every input block has the same multiplicity.
+
+    C [A, B, K]: A = input components (all blocks stacked), B = SH components, K = output components of
+    every instruction in reference order, each instruction's CG block placed at its (input, SH, output)
+    slice and scaled by sqrt(2 l_out + 1). ins_of_k [K] names the instruction (weight column block) of each k.
+    """
+    from . import reference as ref
+    assert len({m for m, _ in irreps1}) == 1, "uvu recast needs equal multiplicities"
+    irreps_mid, ins = ref.conv_tp_irreps(irreps1, sh_ls, target_ls)
+    a0 = [sum(2 * l + 1 for _, l in irreps1[:i]) for i in range(len(irreps1))]
+    b0 = [sum(2 * l + 1 for l in sh_ls[:j]) for j in range(len(sh_ls))]
+    A, B = a0[-1] + 2 * irreps1[-1][1] + 1, b0[-1] + 2 * sh_ls[-1] + 1
+    K = sum(2 * lo + 1 for _, _, lo in ins)
+    C, ins_of_k, k = torch.zeros(A, B, K, dtype=torch.float64), torch.empty(K, dtype=torch.long), 0
+    for n, (i, j, lo) in enumerate(ins):
+        l1, l2 = irreps1[i][1], sh_ls[j]
+        C[a0[i]:a0[i] + 2 * l1 + 1, b0[j]:b0[j] + 2 * l2 + 1, k:k + 2 * lo + 1] = \
+            ref.wigner_3j(l1, l2, lo) * (2 * lo + 1) ** 0.5
+        ins_of_k[k:k + 2 * lo + 1] = n
+        k += 2 * lo + 1
+    return C, ins_of_k, irreps_mid
+
+
+def conv_tp(x1, sh, w, C, ins_of_k):
+    """x1 [E, mul, A] (input blocks stacked on the last axis), sh [E, B], w [E, n_ins * mul] -> reference layout.
+
+    Per edge the SH fold into one coupling matrix (sh @ C), the channels share it (one batched matmul),
+    and the per-edge weights scale each instruction's columns.
+    """
+    E, mul, A = x1.shape
+    M = (sh @ C.permute(1, 0, 2).reshape(C.shape[1], -1).to(sh.dtype)).reshape(E, A, -1)  # [E, A, K]
+    out = torch.bmm(x1, M) * w.reshape(E, -1, mul).transpose(1, 2)[:, :, ins_of_k]  # [E, mul, K]
+    blocks, k = [], 0
+    for n in range(int(ins_of_k.max()) + 1):
+        d = int((ins_of_k == n).sum())
+        blocks.append(out[:, :, k:k + d].reshape(E, -1))
+        k += d
+    return torch.cat(blocks, dim=1)
