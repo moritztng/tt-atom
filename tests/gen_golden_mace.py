@@ -77,11 +77,17 @@ def main():
         return fn
 
     handles = []
-    for name in ("node_embedding", "radial_embedding", "spherical_harmonics"):
-        handles.append(getattr(model, name).register_forward_hook(hook(name)))
+    for name in ("node_embedding", "radial_embedding", "spherical_harmonics", "pair_repulsion_fn"):
+        if hasattr(model, name):
+            handles.append(getattr(model, name).register_forward_hook(hook(name)))
+    # Each block and each of its direct sub-blocks (linear_up, conv_tp_weights, conv_tp, linear,
+    # skip_tp, density_fn; the product's symmetric contraction and linear), so a parity failure
+    # names the sub-block that carries it.
     for kind in ("interactions", "products", "readouts"):
         for i, m in enumerate(getattr(model, kind)):
             handles.append(m.register_forward_hook(hook(f"{kind}.{i}")))
+            for sub, c in m.named_children():
+                handles.append(c.register_forward_hook(hook(f"{kind}.{i}.{sub}")))
     out = model(batch.to_dict(), training=False, compute_force=True, compute_stress=True)
     for h in handles:
         h.remove()
