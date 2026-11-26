@@ -262,3 +262,38 @@ def product_block(w, layer, x, attrs, irreps_out, sc=None):
         outs.append(symmetric_contraction(x, attrs, U, W))
     out = linear(torch.cat(outs, dim=1), irreps_out, irreps_out, w[p + "linear.weight"])
     return out if sc is None else out + sc
+
+
+def readout(w, layer, x, irreps_in):
+    """Layer 0: linear to one scalar. Last layer: linear -> normalised SiLU -> linear (NonLinearReadoutBlock)."""
+    p = f"readouts.{layer}."
+    if p + "linear.weight" in w:
+        return linear(x, irreps_in, [(1, 0)], w[p + "linear.weight"])
+    hidden = w[p + "linear_2.weight"].numel()
+    h = linear(x, irreps_in, [(hidden, 0)], w[p + "linear_1.weight"])
+    return linear(torch.nn.functional.silu(h) * _silu_2mom(), [(hidden, 0)], [(1, 0)], w[p + "linear_2.weight"])
+
+
+HIDDEN = [(128, l) for l in range(4)]  # MP-0b3 medium: 128 channels, messages up to l = 3
+
+
+def energy(w, atomic_numbers, pos, edge_index, shifts):
+    """Total energy of ScaleShiftMACE (MP-0b3 medium): E0 + scale * (ZBL + readouts) + shift, summed over atoms."""
+    attrs = node_attrs(atomic_numbers, w["atomic_numbers"].long())
+    vec, r = edge_vectors(pos, edge_index, shifts)
+    sh = spherical_harmonics(vec)
+    ef = radial_embedding(r, atomic_numbers, edge_index, w)
+    feats, irreps, sc, node_e = node_embedding(attrs, w), [(128, 0)], None, zbl(r, atomic_numbers, edge_index, w, len(pos))
+    for layer, (prod_irreps, sc_irreps) in enumerate([([(128, 0), (128, 1)], None), ([(128, 0)], [(128, 0)])]):
+        x, sc = density_interaction(w, layer, attrs, feats, irreps, sh, ef, edge_index, HIDDEN, sc_irreps)
+        feats, irreps = product_block(w, layer, x, attrs, prod_irreps, sc), prod_irreps
+        node_e = node_e + readout(w, layer, feats, irreps).squeeze(-1)
+    node_e = w["scale_shift.scale"] * node_e + w["scale_shift.shift"]
+    return (attrs @ w["atomic_energies_fn.atomic_energies"]).sum() + node_e.sum()
+
+
+def energy_forces(w, atomic_numbers, pos, edge_index, shifts):
+    pos = pos.detach().clone().requires_grad_(True)
+    e = energy(w, atomic_numbers, pos, edge_index, shifts)
+    (g,) = torch.autograd.grad(e, pos)
+    return e.detach(), -g

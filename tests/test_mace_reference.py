@@ -80,3 +80,16 @@ def test_product_1(g):
     attrs = ref.node_attrs(g["Z"], w["atomic_numbers"].long())
     close(ref.product_block(w, 1, t["a@interactions.1.out0"], attrs, [(128, 0)], sc=t["a@interactions.1.out1"]),
           t["a@products.1.out0"])
+
+
+def test_readouts(g):
+    w, t = g["w"], g["t"]
+    close(ref.readout(w, 0, t["a@products.0.out0"], [(128, 0), (128, 1)]), t["a@readouts.0.out0"])
+    close(ref.readout(w, 1, t["a@products.1.out0"], [(128, 0)]), t["a@readouts.1.out0"])
+
+
+def test_energy_forces(g):
+    t = g["t"]
+    e, f = ref.energy_forces(g["w"], g["Z"], t["in@pos"].to(torch.float64), g["ei"], t["in@shifts"].to(torch.float64))
+    close(e.reshape(1), t["out@energy"])
+    close(f, t["out@forces"])
