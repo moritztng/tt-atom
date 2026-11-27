@@ -69,7 +69,8 @@ At 128 nine-atom molecules, the measured speedup over a Python loop is about 19x
 relaxation. Replay is bit-exact with eager execution for energy and forces on the tested toy and
 production graphs. The measured whole-step speedup is 1.30x to 1.51x.
 
-The current bf16 conservative-force curve for periodic Si is:
+The bf16 conservative-force curve for periodic Si measured on a p150a in July 2026 (AICLK not
+recorded; the clocked p300c numbers are under [GPU comparison](#gpu-comparison)) is:
 
 | atoms | warm traced step |
 |---:|---:|
@@ -115,23 +116,36 @@ figure for the environment named above, not as a property of bucketing.
 
 Raw logs: `benchmarks/screening_orb_si_p150a.jsonl` (the earlier, unstamped run).
 
-## H200 comparison
+## GPU comparison
 
-The committed comparison uses the same `orb-v3-conservative-inf-omat` checkpoint and periodic Si
-cells. The TT side uses its normal traced MD path; the H200 side uses the stock
-`orb-models==0.7.0` calculator.
+Both sides run the same `orb-v3-conservative-inf-omat` checkpoint on the same periodic Si cells,
+compute energy plus conservative forces with stress off, keep the neighbour list frozen and move
+positions every step. The GPU runs `orb-models` 0.7.0 at its fastest setting: TF32 matmuls (the
+package default, `float32-high`) with the whole step captured in one CUDA graph. That beat both
+`torch.compile` and the stock calculator on every size. TT runs its traced bf16 path on one
+Blackhole chip of a p300c at 1350 MHz AICLK. Times are medians of 80 to 100 steps.
 
-| atoms | p150 bf16 traced | H200 fp32 stock | H200 speedup |
-|---:|---:|---:|---:|
-| 216 | 42.68 ms | 16.85 ms | 2.5x |
-| 512 | 91.80 ms | 19.43 ms | 4.7x |
-| 1000 | 188.27 ms | 44.47 ms | 4.2x |
-| 2016 | 372.13 ms | 70.51 ms | 5.3x |
+| atoms | TT chip | H200 | B200 | TT throughput vs H200 / B200 | TT per $ vs H200 / B200 |
+|---:|---:|---:|---:|---:|---:|
+| 216 | 41.9 ms | 7.24 ms | 6.29 ms | 0.17x / 0.15x | 6.3x / 7.4x |
+| 512 | 93.6 ms | 13.98 ms | 11.63 ms | 0.15x / 0.12x | 5.5x / 6.1x |
+| 1000 | 212.8 ms | 25.04 ms | 20.90 ms | 0.12x / 0.10x | 4.3x / 4.8x |
+| 2016 | 392.0 ms | 47.58 ms | 39.95 ms | 0.12x / 0.10x | 4.4x / 5.0x |
 
-The H200 is faster at every tested size. At the measured card prices, the p150 still provides
-about 4.4x to 9.1x more throughput per dollar. Raw timings and environment metadata are in
-`benchmarks/orb_perf_dollar_gpu_v0.7.0.json` and
-`benchmarks/orb_perf_edge_mlp_fused.json`.
+One GPU is 6 to 10 times faster than one TT chip. Per dollar, the TT chip delivers 4.3 to 7.4
+times the throughput, priced at $1,399 per chip against one eighth of an 8-GPU system ($51,250
+for H200, $68,750 for B200).
+
+Every leg is graded against the same float64 forces. TT bf16 has a force MAE of 6.0 to 6.7 meV/Å.
+B200 in TF32 sits at 0.4 meV/Å, so the GPU numbers above are also the more accurate ones. H200 in
+TF32 graded 1.7 to 10.5 meV/Å, with a larger worst-case force error than TT at three of the four
+sizes; the table still uses that faster setting rather than charging the H200 for full fp32. Full fp32 (`float32-highest`) is below 0.01 meV/Å on both GPUs and costs 2.4 to
+2.9 times the TF32 step.
+
+The protocol is in `benchmarks/orb_gpu_bench_fair.py`, the comparison in
+`benchmarks/orb_fair_compare.py`, and the raw results, clocks and float64 anchors in
+`benchmarks/orb_fair/`. An earlier version of this section compared TT's traced path to the stock
+H200 calculator and quoted 4.4x to 9.1x per dollar; that was not one protocol on both sides.
 
 ## Reproduce
 

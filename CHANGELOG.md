@@ -10,6 +10,14 @@ smoke (see `RELEASING.md`).
 Behaviour changes are all in the knobs and the caches, not in the models: every numeric path is
 byte-identical to 0.3.0.
 
+### Changed
+- The Orb GPU comparison in `docs/orb-port.md` is redone as one protocol on both sides. The GPU now
+  runs at its fastest setting (TF32, whole step in one CUDA graph, frozen neighbour list) instead
+  of the stock calculator, B200 is added, and every leg is graded against the same float64 forces.
+  One TT chip at 1350 MHz delivers 4.3x to 6.3x the throughput per dollar of an H200 and 4.8x to
+  7.4x of a B200 (216 to 2016 Si atoms), down from the 4.4x to 9.1x quoted before. Raw results
+  are in `benchmarks/orb_fair/`.
+
 ### Fixed
 - The release gate's perf leg no longer decides by luck. It took one measurement per model against
   a fixed 15% threshold, and on a p150a the throughput spread between runs reaches that threshold
