@@ -14,6 +14,7 @@ probes a device.
 from __future__ import annotations
 
 import os
+import sys
 from contextlib import contextmanager
 
 # Three measured wins landed on the source-ttnn build (branch ``moritztng/tt-atom``, carrying
@@ -219,18 +220,22 @@ def pin_one_chip(device_id: int) -> int:
     With ``TT_VISIBLE_DEVICES`` unset, ttnn brings up every card on the host for a one-chip job,
     which TT_FATALs (or spins) on a multi-card box whose cards are not cabled as the mesh it
     derives. So an unpinned open on a multi-card host pins ``device_id`` first, as the
-    ``--devices`` workers already do. A lone p300 chip is a custom topology and also needs the
-    1x1 mesh descriptor. A caller's own ``TT_VISIBLE_DEVICES`` or descriptor always wins.
+    ``--devices`` workers already do. Device ids here are UMD logical ids (``0..n-1``), which are
+    not ``/dev/tenstorrent`` node numbers. The pin only takes effect before ttnn is imported; after
+    that the id is left alone so ``open_device(2)`` still opens chip 2. A lone chip on an all-p300
+    host is a custom topology and also needs the 1x1 mesh descriptor. A caller's own
+    ``TT_VISIBLE_DEVICES`` or descriptor always wins.
     """
     nodes = _tt_nodes()
-    if os.environ.get("TT_VISIBLE_DEVICES") is None and len(nodes) > 1:
-        if device_id not in nodes:
-            raise ValueError(f"device {device_id} not present; this host has {nodes}")
+    if os.environ.get("TT_VISIBLE_DEVICES") is None and len(nodes) > 1 and "ttnn" not in sys.modules:
+        if not 0 <= device_id < len(nodes):
+            raise ValueError(f"device {device_id} not present; this host has {len(nodes)} chips")
         os.environ["TT_VISIBLE_DEVICES"] = str(device_id)
         device_id = 0
     visible = os.environ.get("TT_VISIBLE_DEVICES")
-    chips = [int(v) for v in visible.split(",") if v.strip().isdigit()] if visible else nodes
-    if len(chips) == 1 and _is_p300(chips[0]) and not os.environ.get("TT_MESH_GRAPH_DESC_PATH"):
+    n_open = len([v for v in visible.split(",") if v.strip()]) if visible else len(nodes)
+    if (n_open == 1 and nodes and all(_is_p300(n) for n in nodes)
+            and not os.environ.get("TT_MESH_GRAPH_DESC_PATH")):
         mgd = _mesh_descriptor("p150_mesh_graph_descriptor.textproto")
         if mgd:
             os.environ["TT_MESH_GRAPH_DESC_PATH"] = mgd
