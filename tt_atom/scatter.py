@@ -85,8 +85,10 @@ def embed_rows(ttnn, idx, table):
     the plain op, unchanged."""
     if table.dtype == ttnn.bfloat16:
         return ttnn.embedding(idx, table)
-    out = linear32(ttnn, lambda p: ttnn.to_layout(ttnn.typecast(ttnn.embedding(
-        idx, ttnn.to_layout(ttnn.typecast(p, ttnn.bfloat16), ttnn.ROW_MAJOR_LAYOUT)), ttnn.float32), ttnn.TILE_LAYOUT), table)
+    # Tile before the typecast: a row-major typecast of a gather whose row count is not a multiple of 32 hangs
+    # the card (qb2, 11-27).
+    out = linear32(ttnn, lambda p: ttnn.typecast(ttnn.to_layout(ttnn.embedding(
+        idx, ttnn.to_layout(ttnn.typecast(p, ttnn.bfloat16), ttnn.ROW_MAJOR_LAYOUT)), ttnn.TILE_LAYOUT), ttnn.float32), table)
     return out if table.layout == ttnn.TILE_LAYOUT else ttnn.to_layout(out, ttnn.ROW_MAJOR_LAYOUT)
 
 def segment_sum(ttnn, msg, gather_dev, Dmax, N, W):
