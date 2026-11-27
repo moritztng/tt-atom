@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 
-FROZEN = ("frozen_compiled", "frozen_cudagraph", "frozen_compiled_cudagraph")
+FROZEN = ("frozen_compiled", "frozen_cudagraph", "frozen_compiled_cudagraph", "frozen_reduce_overhead")
 
 
 def no_worse(g, t):
