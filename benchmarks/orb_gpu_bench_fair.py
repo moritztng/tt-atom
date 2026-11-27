@@ -291,6 +291,19 @@ def main():
                                 run()
                         torch.cuda.current_stream().wait_stream(s)
                         sync_probe(run)
+                        if v == "frozen_compiled_cudagraph":
+                            # Dynamo may not compile inside a capture: log why a frame recompiles and keep
+                            # calling (the probe ran on the default stream) until a call compiles nothing.
+                            from torch._dynamo.utils import counters
+                            torch._logging.set_logs(recompiles=True)
+                            for _ in range(8):
+                                before = counters["frames"]["total"]
+                                with torch.cuda.stream(s):
+                                    run()
+                                torch.cuda.synchronize()
+                                if counters["frames"]["total"] == before:
+                                    break
+                            torch._logging.set_logs(recompiles=False)
                         g = torch.cuda.CUDAGraph()
                         with torch.cuda.graph(g, capture_error_mode="thread_local"):
                             static_out = run()
