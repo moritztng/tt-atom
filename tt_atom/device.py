@@ -178,12 +178,72 @@ def to_dev(t, device, dtype, layout=None):
     return ttnn.from_torch(t, dtype=dtype, layout=layout or ttnn.TILE_LAYOUT, device=device)
 
 
+P300_SUBSYSTEMS = frozenset({"0x0044", "0x0045", "0x0046"})
+
+
+def _tt_nodes() -> list[int]:
+    from pathlib import Path
+
+    return sorted(int(p.name) for p in Path("/dev/tenstorrent").glob("[0-9]*"))
+
+
+def _is_p300(node: int) -> bool:
+    try:
+        sub = open(f"/sys/class/tenstorrent/tenstorrent!{node}/device/subsystem_device").read()
+    except OSError:
+        return False
+    return sub.strip().lower() in P300_SUBSYSTEMS
+
+
+def _mesh_descriptor(filename: str) -> str | None:
+    """A fabric mesh-graph descriptor from the installed tt-metal (wheel or source checkout)."""
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.find_spec("ttnn")
+    if spec is None or not spec.submodule_search_locations:
+        return None
+    root = Path(next(iter(spec.submodule_search_locations)))
+    roots = [root, *([Path(os.environ["TT_METAL_HOME"])] if os.environ.get("TT_METAL_HOME") else []),
+             *root.parents[:2]]
+    for r in roots:
+        f = r / "tt_metal" / "fabric" / "mesh_graph_descriptors" / filename
+        if f.is_file():
+            return str(f)
+    return None
+
+
+def pin_one_chip(device_id: int) -> int:
+    """Make ``device_id`` the only chip this process opens; return the id to open it by.
+
+    With ``TT_VISIBLE_DEVICES`` unset, ttnn brings up every card on the host for a one-chip job,
+    which TT_FATALs (or spins) on a multi-card box whose cards are not cabled as the mesh it
+    derives. So an unpinned open on a multi-card host pins ``device_id`` first, as the
+    ``--devices`` workers already do. A lone p300 chip is a custom topology and also needs the
+    1x1 mesh descriptor. A caller's own ``TT_VISIBLE_DEVICES`` or descriptor always wins.
+    """
+    nodes = _tt_nodes()
+    if os.environ.get("TT_VISIBLE_DEVICES") is None and len(nodes) > 1:
+        if device_id not in nodes:
+            raise ValueError(f"device {device_id} not present; this host has {nodes}")
+        os.environ["TT_VISIBLE_DEVICES"] = str(device_id)
+        device_id = 0
+    visible = os.environ.get("TT_VISIBLE_DEVICES")
+    chips = [int(v) for v in visible.split(",") if v.strip().isdigit()] if visible else nodes
+    if len(chips) == 1 and _is_p300(chips[0]) and not os.environ.get("TT_MESH_GRAPH_DESC_PATH"):
+        mgd = _mesh_descriptor("p150_mesh_graph_descriptor.textproto")
+        if mgd:
+            os.environ["TT_MESH_GRAPH_DESC_PATH"] = mgd
+    return device_id
+
+
 def open_device(device_id: int = 0, *, l1_small_size: int = 0, trace_region_size: int = 0):
     """Open a single Tenstorrent device with the program cache enabled.
 
     The program cache is what makes warm calls cheap (kernels are compiled once); device
     residency + trace capture build on top of it.
     """
+    device_id = pin_one_chip(device_id)
     import ttnn
 
     dev = ttnn.open_device(
