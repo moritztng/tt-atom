@@ -171,3 +171,40 @@ def interaction(feats, sh, ef, plan):
     if not plan["residual"]:
         msg = _per_element(msg, plan, plan["skip"])
     return msg, sc
+
+
+def product_setup(dev, w, layer, element, elements, irreps_out, dtype):
+    """Symmetric contraction + linear of ``products.<layer>`` and the layer's readout, flattened cm layout."""
+    from . import reference as ref
+
+    p, a = f"products.{layer}.", sum(2 * l + 1 for _, l in irreps_out)
+    tables = dense.product_tables(w, layer, len(irreps_out), elements=elements)
+    tdev = lambda t: D.to_dev(t, dev, dtype)  # noqa: E731
+    r = f"readouts.{layer}."
+    if r + "linear.weight" in w:
+        ro = [tdev(dense.plan_matrix(dense.linear_plan(irreps_out, [(1, 0)], w[r + "linear.weight"]), a, 1))]
+    else:
+        hid = w[r + "linear_2.weight"].numel()
+        ro = [tdev(dense.plan_matrix(dense.linear_plan(irreps_out, [(hid, 0)], w[r + "linear_1.weight"]), a, 1)),
+              tdev(dense.plan_matrix(dense.linear_plan([(hid, 0)], [(1, 0)], w[r + "linear_2.weight"]), 1, 1))]
+    return {"sc": symmetric_contraction_setup(dev, tables, element, dtype), "a": a,
+            "lin": tdev(dense.plan_matrix(dense.linear_plan(irreps_out, irreps_out, w[p + "linear.weight"]), a, a)),
+            "readout": ro, "silu": ref._silu_2mom(), "cfg": D.compute_kernel_config()}
+
+
+def product(x, sc, plan, n):
+    """x [n, 16 * 128] cm (interaction output), sc [n, a * 128] or None -> (features [n, a * 128], node energy [n, 1])."""
+    import ttnn
+
+    cfg = plan["cfg"]
+    rows = ttnn.reshape(ttnn.permute(ttnn.reshape(x, (n, 16, 128)), (0, 2, 1)), (n * 128, 16))
+    y = symmetric_contraction(rows, plan["sc"], n, 128)  # [128, n, a]
+    y = ttnn.reshape(ttnn.permute(y, (1, 2, 0)), (n, plan["a"] * 128))
+    y = ttnn.matmul(y, plan["lin"], compute_kernel_config=cfg)
+    if sc is not None:
+        y = ttnn.add(y, sc)
+    ro = plan["readout"]
+    e = ttnn.matmul(y, ro[0], compute_kernel_config=cfg)
+    if len(ro) > 1:
+        e = ttnn.matmul(ttnn.multiply(ttnn.silu(e), plan["silu"]), ro[1], compute_kernel_config=cfg)
+    return y, e

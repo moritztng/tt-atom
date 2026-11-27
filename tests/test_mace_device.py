@@ -105,3 +105,30 @@ def test_interaction_device(g, device, layer, dt):  # noqa: F811
         err = rel(ttnn.to_torch(sc).double(), t["a@interactions.1.out1"].double()[order])
         print(f"interaction skip layer 1 {dt}: rel err {err:.2e}")
         assert err < BAR[dt], err
+
+
+@pytest.mark.parametrize("dt", ["float32", "bfloat16"])
+@pytest.mark.parametrize("layer", [0, 1])
+def test_product_readout_device(g, device, layer, dt):  # noqa: F811
+    """Product block (symmetric contraction, linear, skip) and the layer's readout on the card."""
+    import ttnn
+
+    w, t = g["w"], g["t"]
+    el = ref.node_attrs(g["Z"], w["atomic_numbers"].long()).argmax(1)
+    present = el.unique()
+    local = torch.searchsorted(present, el)
+    order = torch.argsort(local, stable=True)
+    irreps = [(128, 0), (128, 1)] if layer == 0 else [(128, 0)]
+    plan = tt_blocks.product_setup(device, w, layer, local[order], present, irreps, _dtype(dt))
+    n = len(order)
+
+    def dev(a):
+        return ttnn.from_torch(a.reshape(n, -1), dtype=_dtype(dt), layout=ttnn.TILE_LAYOUT, device=device)
+    x = t[f"a@interactions.{layer}.out0"].double()[order].transpose(1, 2)  # cm [n, 16, 128]
+    sc = dev(t["a@interactions.1.out1"].double()[order]) if layer == 1 else None
+    y, e = tt_blocks.product(dev(x), sc, plan, n)
+    got = dense.from_cm(ttnn.to_torch(y).double().reshape(n, -1, 128), irreps)
+    err = rel(got, t[f"a@products.{layer}.out0"].double()[order])
+    err_e = rel(ttnn.to_torch(e).double(), t[f"a@readouts.{layer}.out0"].double()[order])
+    print(f"product layer {layer} {dt}: rel err {err:.2e}, readout {err_e:.2e}")
+    assert err < BAR[dt] and err_e < BAR[dt], (err, err_e)
