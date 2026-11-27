@@ -140,10 +140,10 @@ class MLPNorm:
         self.kcfg = compute_kernel_config()
         wdtype = ttnn.bfloat8_b if fast else ttnn.bfloat16
         self.hidden_dtype = wdtype
-        # minimal_matmul requires activation and weight dtypes to match, unlike linear.
-        self.use_minimal_matmul = (
-            minimal_matmul and not fast and _orb_minimal_matmul_enabled(ttnn)
-        )
+        # minimal_matmul requires activation and weight dtypes to match, unlike linear, so under
+        # fast the first activation is cast to bfloat8_b (the hidden ones already are). Auto-config
+        # ttnn.linear overflows L1 on the ~92k-edge MLPs of a 2016-atom cell, so fast needs it too.
+        self.use_minimal_matmul = minimal_matmul and _orb_minimal_matmul_enabled(ttnn)
         self.w = []
         self.b = []
         for i in range(3):
@@ -155,6 +155,9 @@ class MLPNorm:
     def __call__(self, x):
         ttnn = self.ttnn
         if self.use_minimal_matmul:
+            if x.dtype != self.hidden_dtype:
+                x = ttnn.typecast(x, self.hidden_dtype)
+
             def linear(value, weight, bias, dtype):
                 return ttnn.experimental.minimal_matmul(
                     value, weight, bias_tensor=bias,
