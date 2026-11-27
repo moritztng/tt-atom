@@ -83,6 +83,25 @@ def rotation_capture_safe(generator):
     return eye + s + 0.5 * (s @ s)
 
 
+def sized_repeat(rep):
+    """`repeat_interleave` with a tensor of repeats reads its output size back to the host, which a
+    CUDA graph cannot capture. The graph here is frozen, so each size is a constant: the eager warmup
+    computes it once per repeats tensor (keyed by storage, shape and dim) and capture reuses it."""
+    sizes = {}
+
+    def sized(x, repeats=None, dim=None, *, output_size=None):
+        if output_size is None and isinstance(repeats, torch.Tensor):
+            n = x.numel() if dim is None else x.shape[dim]
+            key = (repeats.data_ptr(), tuple(repeats.shape), dim, n)
+            if key not in sizes:  # one repeat broadcasts over the axis, several are summed
+                sizes[key] = int(repeats.sum()) if repeats.numel() > 1 else n * int(repeats)
+            output_size = sizes[key]
+        if repeats is None:
+            return rep(x, output_size=output_size)
+        return rep(x, repeats, dim, output_size=output_size)
+    return sized
+
+
 def sync_probe(run):
     """Log the first host-syncing op of one eager call; a sync is what breaks a CUDA-graph capture."""
     import traceback
@@ -196,6 +215,8 @@ def main():
                     feat = orb_models.common.atoms.featurization
                     exp_rot = feat.rotation_from_generator
                     feat.rotation_from_generator = rotation_capture_safe
+                    rep_t, rep_m = torch.repeat_interleave, torch.Tensor.repeat_interleave
+                    torch.repeat_interleave, torch.Tensor.repeat_interleave = sized_repeat(rep_t)
                     try:
                         s = torch.cuda.Stream()
                         s.wait_stream(torch.cuda.current_stream())
@@ -209,6 +230,7 @@ def main():
                             static_out = run()
                     finally:
                         feat.rotation_from_generator = exp_rot
+                        torch.repeat_interleave, torch.Tensor.repeat_interleave = rep_t, rep_m
 
                     def run():  # noqa: F811 -- replay replaces the eager call
                         g.replay()
