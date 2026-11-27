@@ -31,6 +31,8 @@ Variants:
                    graph and replayed; the GPU counterpart of the TT leg's trace/replay.
   frozen_compiled_cudagraph  both: torch.compile (static shapes, the graph is frozen) for fused
                    kernels, then the whole step captured into one CUDA graph.
+  frozen_reduce_overhead  torch.compile(mode="reduce-overhead", dynamic=False): PyTorch's own
+                   CUDA graphs per compiled region, the package-level way to get both.
 
     python benchmarks/orb_gpu_bench_fair.py --out orb_perf_dollar_gpu_<gpu>.json
 """
@@ -50,7 +52,7 @@ from ase.build import bulk
 from _harness import git_sha
 from bench_orb_perf_dollar_tt import SIZES, grade
 
-FROZEN = ("frozen_compiled", "frozen_cudagraph", "frozen_compiled_cudagraph")
+FROZEN = ("frozen_compiled", "frozen_cudagraph", "frozen_compiled_cudagraph", "frozen_reduce_overhead")
 CAPTURED = ("frozen_cudagraph", "frozen_compiled_cudagraph")
 
 
@@ -170,7 +172,7 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--jitter", type=float, default=0.01, help="per-step position jitter, A")
     ap.add_argument("--sizes", default=",".join(s[0] for s in SIZES))
-    ap.add_argument("--variants", default="stock,frozen_compiled,frozen_cudagraph,frozen_compiled_cudagraph")
+    ap.add_argument("--variants", default=",".join(("stock",) + FROZEN))
     ap.add_argument("--anchors-out", default=None, help="save the float64 anchors (npz) for the TT leg")
     ap.add_argument("--precision", default="float32-high",
                     choices=["float32-high", "float32-highest"])
@@ -210,9 +212,12 @@ def main():
     m_eager, _ = load(device=dev, precision=args.precision, compile=False)
     m_cc, _ = load(device=dev, precision=args.precision, compile=False)
     m_cc.compile(mode="default", dynamic=False)  # frozen graph: one static shape per size
-    for m in (m_comp, m_eager, m_cc):
+    m_ro, _ = load(device=dev, precision=args.precision, compile=False)
+    m_ro.compile(mode="reduce-overhead", dynamic=False)
+    for m in (m_comp, m_eager, m_cc, m_ro):
         m.eval().disable_stress()
-    models = {"frozen_compiled": m_comp, "frozen_cudagraph": m_eager, "frozen_compiled_cudagraph": m_cc}
+    models = {"frozen_compiled": m_comp, "frozen_cudagraph": m_eager, "frozen_compiled_cudagraph": m_cc,
+              "frozen_reduce_overhead": m_ro}
     # One process walks four sizes and three compiled call paths; dynamo's default recompile cap (8 per
     # frame, 256 overall) was hit on H200 (11-27) and silently dropped frames to eager.
     torch._dynamo.config.cache_size_limit = 64
@@ -303,11 +308,11 @@ def main():
                                 torch.cuda.synchronize()
                                 if counters["frames"]["total"] == before:
                                     break
-                            torch._logging.set_logs(recompiles=False)
                         g = torch.cuda.CUDAGraph()
                         with torch.cuda.graph(g, capture_error_mode="thread_local"):
                             static_out = run()
                     finally:
+                        torch._logging.set_logs(recompiles=False)
                         feat.rotation_from_generator = exp_rot
                         torch.repeat_interleave, torch.Tensor.repeat_interleave = rep_t, rep_m
 
