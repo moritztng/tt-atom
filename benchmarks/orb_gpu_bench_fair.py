@@ -83,6 +83,22 @@ def rotation_capture_safe(generator):
     return eye + s + 0.5 * (s @ s)
 
 
+def sync_probe(run):
+    """Log the first host-syncing op of one eager call; a sync is what breaks a CUDA-graph capture."""
+    import traceback
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        run()
+        print("    sync probe: no host sync in the eager call", flush=True)
+    except RuntimeError as exc:
+        where = [f"{f.filename.split('site-packages/')[-1]}:{f.lineno} {f.line}"
+                 for f in traceback.extract_tb(exc.__traceback__)[-6:]]
+        print("    sync probe: " + str(exc)[:120] + "\n      " + "\n      ".join(where), flush=True)
+    finally:
+        torch.cuda.set_sync_debug_mode("default")
+        torch.cuda.synchronize()
+
+
 def time_steps(step, warm, n):
     for _ in range(warm):
         step()
@@ -187,8 +203,9 @@ def main():
                             for _ in range(3):
                                 run()
                         torch.cuda.current_stream().wait_stream(s)
+                        sync_probe(run)
                         g = torch.cuda.CUDAGraph()
-                        with torch.cuda.graph(g):
+                        with torch.cuda.graph(g, capture_error_mode="thread_local"):
                             static_out = run()
                     finally:
                         feat.rotation_from_generator = exp_rot
