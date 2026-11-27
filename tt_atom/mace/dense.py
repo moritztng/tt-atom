@@ -290,3 +290,39 @@ def plan_matrix(plan, a_in, a_out):
         for c in range(d):
             M[(ai + c) * mi:(ai + c + 1) * mi, (ao + c) * mo:(ao + c + 1) * mo] += W
     return M
+
+
+# ---- Whole model in the cm layout, and its hand-written backward (the device has no autograd).
+
+def product_cm(w, layer, x, element, elements, irreps_out, sc=None):
+    """products.<layer> + readouts.<layer> in cm: x [n, 16, 128] -> (features [n, a, 128], node energy [n])."""
+    from . import reference as ref
+    a = sum(2 * l + 1 for _, l in irreps_out)
+    tables = product_tables(w, layer, len(irreps_out), elements=elements)
+    _, parent, last = tables[0]
+    T = torch.cat([t for t, _, _ in tables], dim=-1)  # [E, c, F, a]
+    y = symmetric_contraction_gemm(x.transpose(1, 2), element, T, monomial_selectors(parent, last, x.shape[1]))
+    y = y.reshape(x.shape[0], 128, a).transpose(1, 2)  # [n, a, 128]
+    y = linear_cm(y, linear_plan(irreps_out, irreps_out, w[f"products.{layer}.linear.weight"]), a, 128)
+    if sc is not None:
+        y = y + sc
+    return y, ref.readout(w, layer, from_cm(y, irreps_out), irreps_out).squeeze(-1)
+
+
+def energy_cm(w, atomic_numbers, pos, edge_index, shifts):
+    """reference.energy through the cm-layout blocks (what the card runs), atoms in caller order."""
+    from . import reference as ref
+    el = ref.node_attrs(atomic_numbers, w["atomic_numbers"].long()).argmax(1)
+    elements = el.unique()
+    local = torch.searchsorted(elements, el)
+    attrs = ref.node_attrs(atomic_numbers, w["atomic_numbers"].long())
+    vec, r = ref.edge_vectors(pos, edge_index, shifts)
+    sh, ef = ref.spherical_harmonics(vec), ref.radial_embedding(r, atomic_numbers, edge_index, w)
+    node_e = ref.zbl(r, atomic_numbers, edge_index, w, len(pos))
+    feats, irreps = ref.node_embedding(attrs, w)[:, None, :], [(128, 0)]
+    for layer, (out_irreps, residual) in enumerate([([(128, 0), (128, 1)], False), ([(128, 0)], True)]):
+        x, sc = interaction_cm(w, layer, feats, local, elements, sh, ef, edge_index, irreps, residual)
+        feats, e = product_cm(w, layer, x, local, elements, out_irreps, sc)
+        node_e, irreps = node_e + e, out_irreps
+    node_e = w["scale_shift.scale"] * node_e + w["scale_shift.shift"]
+    return (attrs @ w["atomic_energies_fn.atomic_energies"]).sum() + node_e.sum()

@@ -73,3 +73,15 @@ def test_interaction_component_major(g, layer):  # noqa: F811
     if layer == 1:
         want_sc = t["a@interactions.1.out1"].double()
         assert (dense.from_cm(sc, [(128, 0)]) - want_sc).abs().max() < 1e-10 * want_sc.abs().max()
+
+
+@needs_golden
+def test_energy_forces_component_major(g):  # noqa: F811
+    """The whole model through the cm-layout blocks, forces by autograd, against the golden."""
+    t = g["t"]
+    pos = t["in@pos"].double().clone().requires_grad_(True)
+    e = dense.energy_cm(g["w"], g["Z"], pos, g["ei"], t["in@shifts"].double())
+    (gr,) = torch.autograd.grad(e, pos)
+    want_e, want_f = t["out@energy"].double().sum(), t["out@forces"].double()
+    assert abs(e.item() - want_e.item()) < 1e-9 * abs(want_e.item())
+    assert (-gr - want_f).abs().max() < 1e-9 * want_f.abs().max()
