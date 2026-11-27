@@ -54,3 +54,22 @@ def test_conv_tp_coupling_matrix(irreps):
     b = dense.conv_tp(ref.reshape_irreps(x, irreps), sh, w, C, ins_of_k)
     assert mid == mid_ref
     assert (a - b).abs().max() < 1e-12 * a.abs().max()
+
+
+@needs_golden
+@pytest.mark.parametrize("layer", [0, 1])
+def test_interaction_component_major(g, layer):  # noqa: F811
+    """The whole interaction block in the device layout ([rows, components, channels]) against the golden."""
+    w, t = g["w"], g["t"]
+    el = ref.node_attrs(g["Z"], w["atomic_numbers"].long()).argmax(1)
+    present = el.unique()
+    irreps = [(128, 0)] if layer == 0 else [(128, 0), (128, 1)]
+    feats = t["a@node_embedding.out0" if layer == 0 else "a@products.0.out0"].double()
+    x, sc = dense.interaction_cm(w, layer, dense.to_cm(feats, irreps), torch.searchsorted(present, el), present,
+                                 t["a@spherical_harmonics.out0"].double(), t["a@radial_embedding.out0"].double(),
+                                 g["ei"], irreps, residual=layer == 1)
+    want = t[f"a@interactions.{layer}.out0"].double()  # [n, mul, 16]
+    assert (x.transpose(1, 2) - want).abs().max() < 1e-10 * want.abs().max()
+    if layer == 1:
+        want_sc = t["a@interactions.1.out1"].double()
+        assert (dense.from_cm(sc, [(128, 0)]) - want_sc).abs().max() < 1e-10 * want_sc.abs().max()

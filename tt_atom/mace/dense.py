@@ -176,3 +176,106 @@ def conv_tp(x1, sh, w, C, ins_of_k):
         blocks.append(out[:, :, k:k + d].reshape(E, -1))
         k += d
     return torch.cat(blocks, dim=1)
+
+
+# ---- Component-major ("cm") layout for the whole layer: features [rows, A, mul], A = every irrep component
+# stacked (sum 2l+1), channels last. Channels (128) fill the tile lane axis, and an e3nn linear on any l is
+# one matmul over the channel axis of a contiguous component slice, so no layer needs a permute except the
+# symmetric contraction's (node, channel) rows.
+
+def to_cm(x, irreps):
+    """Reference layout [n, sum mul*(2l+1)] -> [n, A, mul] (equal multiplicities)."""
+    from . import reference as ref
+    return torch.cat([b.transpose(1, 2) for b in ref.split(x, irreps)], dim=1)
+
+
+def from_cm(x, irreps):
+    out, a = [], 0
+    for _, l in irreps:
+        d = 2 * l + 1
+        out.append(x[:, a:a + d, :].transpose(1, 2).reshape(x.shape[0], -1))
+        a += d
+    return torch.cat(out, dim=1)
+
+
+def _offsets(irreps):
+    a, out = 0, []
+    for _, l in irreps:
+        out.append(a)
+        a += 2 * l + 1
+    return out
+
+
+def linear_plan(irreps_in, irreps_out, weight):
+    """e3nn Linear as [(in component offset, out component offset, 2l+1, W [mi, mo] / sqrt(fan))], one per path."""
+    fan = [sum(mi for mi, li in irreps_in if li == l) for _, l in irreps_out]
+    ai, ao, plan, k = _offsets(irreps_in), _offsets(irreps_out), [], 0
+    for i, (mi, li) in enumerate(irreps_in):
+        for o, (mo, lo) in enumerate(irreps_out):
+            if li == lo:
+                plan.append((ai[i], ao[o], 2 * li + 1, weight[k:k + mi * mo].reshape(mi, mo) / fan[o] ** 0.5))
+                k += mi * mo
+    assert k == weight.numel()
+    return plan
+
+
+def linear_cm(x, plan, a_out, mo):
+    out = torch.zeros(x.shape[0], a_out, mo, dtype=x.dtype)
+    for ai, ao, d, W in plan:
+        out[:, ao:ao + d] += x[:, ai:ai + d] @ W
+    return out
+
+
+def skip_plan(irreps_in, n_el, irreps_out, weight, elements):
+    """Element-selector FullyConnectedTensorProduct (one-hot attrs) as a linear_plan per present element."""
+    fan = [sum(mi * n_el for mi, li in irreps_in if li == l) for _, l in irreps_out]
+    ai, ao, plans, k = _offsets(irreps_in), _offsets(irreps_out), [[] for _ in elements], 0
+    for i, (mi, li) in enumerate(irreps_in):
+        for o, (mo, lo) in enumerate(irreps_out):
+            if li == lo:
+                W = weight[k:k + mi * n_el * mo].reshape(mi, n_el, mo) / fan[o] ** 0.5
+                k += mi * n_el * mo
+                for p, e in zip(plans, elements.tolist()):
+                    p.append((ai[i], ao[o], 2 * li + 1, W[:, e]))
+    assert k == weight.numel()
+    return plans
+
+
+def skip_cm(x, element, plans, a_out, mo):
+    out = torch.zeros(x.shape[0], a_out, mo, dtype=x.dtype)
+    for e, plan in enumerate(plans):
+        rows = element == e
+        out[rows] = linear_cm(x[rows], plan, a_out, mo)
+    return out
+
+
+def conv_tp_cm(x1, sh, w, C, ins_of_k):
+    """x1 [E, A, mul], sh [E, B], w [E, n_ins, mul] -> [E, K, mul]: per-edge coupling (sh @ C)^T times x1,
+    each output component scaled by its instruction's weight."""
+    E = x1.shape[0]
+    MT = (sh @ C.permute(1, 2, 0).reshape(C.shape[1], -1)).reshape(E, C.shape[2], C.shape[0])  # [E, K, A]
+    return (MT @ x1) * w[:, ins_of_k, :]
+
+
+def interaction_cm(w, layer, feats, element, elements, sh, ef, edge_index, irreps_in, residual, sh_ls=(0, 1, 2, 3)):
+    """reference.density_interaction in cm layout. feats [n, A, mul]; element [n] indexes ``elements``
+    (the present species). Returns (x [n, 16, mul] for the product block, skip [n, 1, mul] or None)."""
+    from . import reference as ref
+    p, (sender, receiver), n = f"interactions.{layer}.", edge_index, feats.shape[0]
+    hidden = [(128, l) for l in range(4)]
+    n_el = len(w["atomic_numbers"])
+    sc_irreps = [(128, 0)] if residual else hidden
+    sk = skip_plan(irreps_in if residual else hidden, n_el, sc_irreps, w[p + "skip_tp.weight"], elements)
+    a_in = sum(2 * l + 1 for _, l in irreps_in)
+    sc = skip_cm(feats, element, sk, 1, 128) if residual else None
+    up = linear_cm(feats, linear_plan(irreps_in, irreps_in, w[p + "linear_up.weight"]), a_in, 128)
+    tp_w = ref.fc_net(ef, ref._layers(w, p + "conv_tp_weights")).reshape(ef.shape[0], -1, 128)
+    dens = torch.tanh(ref.fc_net(ef, ref._layers(w, p + "density_fn")) ** 2)
+    density = torch.zeros(n, 1, dtype=feats.dtype).index_add_(0, receiver, dens)
+    C, ins_of_k, mid = conv_tp_plan(irreps_in, list(sh_ls), [l for _, l in hidden])
+    m = conv_tp_cm(up[sender], sh, tp_w, C, ins_of_k)
+    msg = torch.zeros(n, *m.shape[1:], dtype=m.dtype).index_add_(0, receiver, m)
+    msg = linear_cm(msg, linear_plan(mid, hidden, w[p + "linear.weight"]), 16, 128) / (density + 1)[:, :, None]
+    if not residual:
+        msg = skip_cm(msg, element, sk, 16, 128)
+    return msg, sc
