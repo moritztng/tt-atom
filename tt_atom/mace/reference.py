@@ -7,8 +7,11 @@ golden by ``tests/test_mace_reference.py``.
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 
 import torch
+
+from tt_atom.equivariant import wigner_3j
 
 
 def edge_vectors(pos, edge_index, shifts):
@@ -97,30 +100,6 @@ def zbl(r, atomic_numbers, edge_index, w, n_nodes):
 # ---- e3nn building blocks. Irreps are lists of (mul, l) with the natural parity (-1)^l, which is all
 # MACE-MP uses; features are e3nn's layout, each block [mul, 2l+1] flattened mul-major.
 
-_W3J = {}
-
-
-def wigner_3j(l1, l2, l3):
-    """e3nn's unit-norm Wigner 3j for l1+l2+l3 even: the normalised Gaunt integral of our real SH.
-
-    Exact Gauss-Legendre x uniform-phi quadrature (degree <= 9); matches e3nn.o3.wigner_3j to 1e-15,
-    sign included, for every l <= 3 triple MACE-MP uses.
-    """
-    key = (l1, l2, l3)
-    if key not in _W3J:
-        import numpy as np
-        xg, wg = np.polynomial.legendre.leggauss(12)
-        ct = torch.tensor(xg, dtype=torch.float64)[:, None].expand(-1, 24)
-        ph = (torch.arange(24, dtype=torch.float64) * (2 * math.pi / 24))[None, :].expand(12, -1)
-        st = (1 - ct ** 2).sqrt()
-        Y = spherical_harmonics(torch.stack([st * ph.cos(), st * ph.sin(), ct], -1).reshape(-1, 3))
-        q = torch.tensor(wg, dtype=torch.float64)[:, None].expand(-1, 24).reshape(-1)
-        s = [Y[:, l * l:(l + 1) ** 2] for l in key]
-        G = torch.einsum("n,ni,nj,nk->ijk", q, *s)
-        _W3J[key] = G / G.norm()
-    return _W3J[key]
-
-
 def split(x, irreps):
     out, i = [], 0
     for mul, l in irreps:
@@ -158,12 +137,11 @@ def fc_net(x, weights, act=True):
     return x
 
 
+@lru_cache(maxsize=None)
 def _silu_2mom():
     """e3nn normalize2mom constant for SiLU: its own seed-0 Monte Carlo estimate, reproduced exactly."""
-    if "silu" not in _W3J:
-        z = torch.randn(1_000_000, generator=torch.Generator().manual_seed(0), dtype=torch.float64)
-        _W3J["silu"] = torch.nn.functional.silu(z).pow(2).mean().pow(-0.5).item()
-    return _W3J["silu"]
+    z = torch.randn(1_000_000, generator=torch.Generator().manual_seed(0), dtype=torch.float64)
+    return torch.nn.functional.silu(z).pow(2).mean().pow(-0.5).item()
 
 
 def conv_tp_irreps(irreps1, sh_ls, target_ls):

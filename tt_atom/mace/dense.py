@@ -15,6 +15,8 @@ from itertools import combinations_with_replacement, product
 
 import torch
 
+from tt_atom.equivariant import wigner_3j
+
 
 def monomials(ell, corr):
     """Sorted index tuples of every distinct monomial of degree 1..corr, plus the gather plan that builds
@@ -105,7 +107,7 @@ def conv_tp_plan(irreps1, sh_ls, target_ls):
     for n, (i, j, lo) in enumerate(ins):
         l1, l2 = irreps1[i][1], sh_ls[j]
         C[a0[i]:a0[i] + 2 * l1 + 1, b0[j]:b0[j] + 2 * l2 + 1, k:k + 2 * lo + 1] = \
-            ref.wigner_3j(l1, l2, lo) * (2 * lo + 1) ** 0.5
+            wigner_3j(l1, l2, lo) * (2 * lo + 1) ** 0.5
         ins_of_k[k:k + 2 * lo + 1] = n
         k += 2 * lo + 1
     return C, ins_of_k, irreps_mid
