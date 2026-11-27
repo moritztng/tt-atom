@@ -73,6 +73,16 @@ class ClockSampler:
         self._t.join()
 
 
+def rotation_capture_safe(generator):
+    """orb's `rotation_from_generator` without `torch.matrix_exp`, which syncs to the host and
+    so cannot be captured in a CUDA graph. orb always evaluates it at generator = 0, where
+    exp(S) and I + S + S@S/2 agree in value (I) and in first derivative, so energy, forces and
+    the rotational gradient are unchanged. Parity against the stock calculator is still checked."""
+    s = generator - generator.transpose(-2, -1)
+    eye = torch.eye(3, dtype=s.dtype, device=s.device).expand_as(s)
+    return eye + s + 0.5 * (s @ s)
+
+
 def time_steps(step, warm, n):
     for _ in range(warm):
         step()
@@ -167,15 +177,21 @@ def main():
                 return m.predict(batch)
             try:
                 if v == "frozen_cudagraph":
-                    s = torch.cuda.Stream()
-                    s.wait_stream(torch.cuda.current_stream())
-                    with torch.cuda.stream(s):
-                        for _ in range(3):
-                            run()
-                    torch.cuda.current_stream().wait_stream(s)
-                    g = torch.cuda.CUDAGraph()
-                    with torch.cuda.graph(g):
-                        static_out = run()
+                    feat = orb_models.common.atoms.featurization
+                    exp_rot = feat.rotation_from_generator
+                    feat.rotation_from_generator = rotation_capture_safe
+                    try:
+                        s = torch.cuda.Stream()
+                        s.wait_stream(torch.cuda.current_stream())
+                        with torch.cuda.stream(s):
+                            for _ in range(3):
+                                run()
+                        torch.cuda.current_stream().wait_stream(s)
+                        g = torch.cuda.CUDAGraph()
+                        with torch.cuda.graph(g):
+                            static_out = run()
+                    finally:
+                        feat.rotation_from_generator = exp_rot
 
                     def run():  # noqa: F811 -- replay replaces the eager call
                         g.replay()
