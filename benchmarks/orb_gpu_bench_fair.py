@@ -103,19 +103,28 @@ def sized_repeat(rep):
 
 
 def sync_probe(run):
-    """Log the first host-syncing op of one eager call; a sync is what breaks a CUDA-graph capture."""
+    """Log every host-syncing site of one eager call; any of them breaks a CUDA-graph capture."""
     import traceback
-    torch.cuda.set_sync_debug_mode("error")
+    import warnings
+    sites = []
+
+    def record(*_a, **_k):
+        frames = [f for f in traceback.extract_stack()[:-1] if "orb_models" in f.filename]
+        site = " <- ".join(f"{f.filename.split('site-packages/')[-1]}:{f.lineno}" for f in frames[-3:][::-1])
+        if site not in sites:
+            sites.append(site)
+    torch.cuda.set_sync_debug_mode("warn")
+    old, warnings.showwarning = warnings.showwarning, record
     try:
-        run()
-        print("    sync probe: no host sync in the eager call", flush=True)
-    except RuntimeError as exc:
-        where = [f"{f.filename.split('site-packages/')[-1]}:{f.lineno} {f.line}"
-                 for f in traceback.extract_tb(exc.__traceback__)[-6:]]
-        print("    sync probe: " + str(exc)[:120] + "\n      " + "\n      ".join(where), flush=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter("always")
+            warnings.showwarning = record
+            run()
     finally:
+        warnings.showwarning = old
         torch.cuda.set_sync_debug_mode("default")
         torch.cuda.synchronize()
+    print(f"    sync probe: {len(sites)} host-syncing site(s)" + "".join("\n      " + x for x in sites), flush=True)
 
 
 def time_steps(step, warm, n):
