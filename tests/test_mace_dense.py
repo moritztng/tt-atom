@@ -24,6 +24,8 @@ def test_symmetric_contraction_folded(g, layer, n_out):  # noqa: F811
         b = dense.symmetric_contraction(x, attrs.argmax(1), T, parent, last)
         assert T.shape[2] == 16 + 136 + 816
         assert (a - b).abs().max() < 1e-12 * a.abs().max()
+        c = dense.symmetric_contraction_gemm(x, attrs.argmax(1), T, dense.monomial_selectors(parent, last, 16))
+        assert (a - c).abs().max() < 1e-12 * a.abs().max()
 
 
 @needs_golden

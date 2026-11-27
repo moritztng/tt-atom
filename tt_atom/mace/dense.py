@@ -71,6 +71,54 @@ def symmetric_contraction(x, element, T, parent, last):
     return out.reshape(x.shape[0], -1)
 
 
+def monomial_selectors(parent, last, ell, dtype=torch.float64):
+    """0/1 matrices that build the monomials with GEMMs instead of a gather, one (Sp, Sl) per degree.
+
+    Degree nu = (degree nu-1 @ Sp) * (x @ Sl), rows = (node, channel). A 0/1 GEMM only selects, so it is
+    exact at any precision; this is the form a tile engine runs with stock matmul and multiply ops.
+    """
+    parent, last = parent.tolist(), last.tolist()
+    deg = [0] * len(parent)
+    for f, q in enumerate(parent):
+        deg[f] = 1 if q < 0 else deg[q] + 1
+    starts = [deg.index(nu) for nu in range(1, max(deg) + 1)] + [len(deg)]
+    sels = []
+    for nu in range(1, max(deg) + 1):
+        lo, hi = starts[nu - 1], starts[nu]
+        Sl = torch.zeros(ell, hi - lo, dtype=dtype)
+        Sl[torch.tensor(last[lo:hi]), torch.arange(hi - lo)] = 1.0
+        Sp = None
+        if nu > 1:
+            plo = starts[nu - 2]
+            Sp = torch.zeros(lo - plo, hi - lo, dtype=dtype)
+            Sp[torch.tensor(parent[lo:hi]) - plo, torch.arange(hi - lo)] = 1.0
+        sels.append((Sp, Sl))
+    return sels
+
+
+def symmetric_contraction_gemm(x, element, T, sels):
+    """``symmetric_contraction`` in stock tile ops only: selection GEMMs for the monomials, then per element
+    a broadcast multiply by its table and a sum over monomials (2L+1 is 1 or 3, too narrow for a matmul).
+
+    ``element`` must be constant over a run (it is: atoms keep their species), so the per-element row
+    groups are fixed at setup and cost nothing per step.
+    """
+    n, c, ell = x.shape
+    x2 = x.reshape(n * c, ell)
+    feats, prev = [], None
+    for Sp, Sl in sels:
+        xl = x2 @ Sl
+        prev = xl if Sp is None else (prev @ Sp) * xl
+        feats.append(prev)
+    P = torch.cat(feats, dim=1).reshape(n, c, -1)  # [n, c, F]
+    out = torch.zeros(n, c, T.shape[-1], dtype=x.dtype)
+    for e in element.unique().tolist():
+        rows = element == e
+        Pe = P[rows].unsqueeze(-1)  # [n_e, c, F, 1]
+        out[rows] = (Pe * T[e].unsqueeze(0)).sum(dim=2)  # [n_e, c, 2L+1]
+    return out.reshape(n, -1)
+
+
 def product_tables(w, layer, n_out, elements=None):
     """Fold every output irrep of ``products.<layer>``: [(T, parent, last)] in output order.
 
