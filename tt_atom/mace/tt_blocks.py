@@ -34,6 +34,14 @@ def mm(a, b, cfg):
     return ttnn.add(ttnn.add(f(ah, bh), f(ah, bl)), f(al, bh))
 
 
+def perm(x, dims):
+    """permute, float32-exact (see scatter.linear32)."""
+    import ttnn
+
+    from tt_atom import scatter
+    return scatter.linear32(ttnn, lambda t: ttnn.permute(t, dims), x)
+
+
 def symmetric_contraction_setup(dev, tables, element, dtype):
     """``tables`` = dense.product_tables(..., elements=present) for one layer: [(T, parent, last)] per output
     irrep, T [n_present, c, F, 2L+1]. ``element`` [n] indexes T's first axis and must be sorted (callers
@@ -69,7 +77,7 @@ def symmetric_contraction(x, plan, n, c):
         prev = xl if Sp is None else ttnn.multiply(mm(prev, Sp, cfg), xl)
         feats.append(prev)
     P = ttnn.concat(feats, dim=1)  # [n * c, F]
-    P = ttnn.permute(ttnn.reshape(P, (n, c, P.shape[-1])), (1, 0, 2))  # [c, n, F]
+    P = perm(ttnn.reshape(P, (n, c, P.shape[-1])), (1, 0, 2))  # [c, n, F]
     outs = []
     for (lo, hi), T in zip(plan["ranges"], plan["T"]):
         if hi > lo:
@@ -102,7 +110,7 @@ def conv_tp(x1, sh, w, plan):
 
     cfg, E = plan["cfg"], x1.shape[0]
     M = ttnn.reshape(mm(sh, plan["C"], cfg), (E, plan["A"], plan["K"]))
-    wk = mm(ttnn.permute(w, (0, 2, 1)), plan["G"], cfg)  # [E, mul, K]
+    wk = mm(perm(w, (0, 2, 1)), plan["G"], cfg)  # [E, mul, K]
     return ttnn.multiply(mm(x1, M, cfg), wk)
 
 
@@ -181,10 +189,10 @@ def interaction(feats, sh, ef, plan):
     sc = _per_element(feats, plan, plan["skip"]) if plan["residual"] else None
     up = mm(feats, plan["up"], cfg)  # [n, A * 128]
     x1 = scatter.embed_rows(ttnn, plan["sender"], ttnn.to_layout(up, ttnn.ROW_MAJOR_LAYOUT))  # [E, A * 128]
-    x1 = ttnn.permute(ttnn.to_layout(ttnn.reshape(x1, (E, A, 128)), ttnn.TILE_LAYOUT), (0, 2, 1))  # [E, 128, A]
+    x1 = perm(ttnn.to_layout(ttnn.reshape(x1, (E, A, 128)), ttnn.TILE_LAYOUT), (0, 2, 1))  # [E, 128, A]
     tw = ttnn.reshape(fc_net(ef, plan["tp_w"], plan["silu"]), (E, -1, 128))  # [E, n_ins, 128]
     m = conv_tp(x1, sh, tw, plan["tp"])  # [E, 128, K]
-    m = ttnn.reshape(ttnn.permute(m, (0, 2, 1)), (E, K * 128))
+    m = ttnn.reshape(perm(m, (0, 2, 1)), (E, K * 128))
     msg = scatter.segment_sum(ttnn, m, plan["recv"], plan["dmax"], n, K * 128)
     dens = fc_net(ef, plan["dens"], plan["silu"])
     dens = ttnn.tanh(ttnn.multiply(dens, dens))  # [E, 1]
@@ -220,9 +228,9 @@ def product(x, sc, plan, n):
     import ttnn
 
     cfg = plan["cfg"]
-    rows = ttnn.reshape(ttnn.permute(ttnn.reshape(x, (n, 16, 128)), (0, 2, 1)), (n * 128, 16))
+    rows = ttnn.reshape(perm(ttnn.reshape(x, (n, 16, 128)), (0, 2, 1)), (n * 128, 16))
     y = symmetric_contraction(rows, plan["sc"], n, 128)  # [128, n, a]
-    y = ttnn.reshape(ttnn.permute(y, (1, 2, 0)), (n, plan["a"] * 128))
+    y = ttnn.reshape(perm(y, (1, 2, 0)), (n, plan["a"] * 128))
     y = mm(y, plan["lin"], cfg)
     if sc is not None:
         y = ttnn.add(y, sc)

@@ -50,5 +50,5 @@ class MaceEnergy:
             y, e = tt_blocks.product(x, sc, prod, self.n)
             feats = y if self.pdtype == self.dtype else ttnn.typecast(y, self.dtype)
             node_e = e if node_e is None else ttnn.add(node_e, e)
-        readout = float(ttnn.to_torch(ttnn.sum(node_e)).double().sum())
+        readout = float(ttnn.to_torch(node_e).double().sum())  # [n, 1] to host: n numbers
         return self.e0 + self.scale * (float(zbl_node.sum()) + readout) + self.shift * self.n
