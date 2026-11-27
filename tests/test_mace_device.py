@@ -72,3 +72,36 @@ def test_conv_tp_device(g, device, layer, irreps, dt):  # noqa: F811
     err = rel(got, t[p + "conv_tp.out0"])
     print(f"conv_tp layer {layer} {dt}: rel err {err:.2e}")
     assert err < BAR[dt], err
+
+
+@pytest.mark.parametrize("dt", ["float32", "bfloat16"])
+@pytest.mark.parametrize("layer", [0, 1])
+def test_interaction_device(g, device, layer, dt):  # noqa: F811
+    """The whole interaction block on the card (gather, radial MLPs, conv_tp, scatter, density norm, linears,
+    element skip), atoms ordered by species and edges renumbered to match."""
+    import ttnn
+
+    w, t = g["w"], g["t"]
+    el = ref.node_attrs(g["Z"], w["atomic_numbers"].long()).argmax(1)
+    present = el.unique()
+    local = torch.searchsorted(present, el)
+    order = torch.argsort(local, stable=True)
+    inv = torch.empty_like(order)
+    inv[order] = torch.arange(len(order))
+    ei = inv[g["ei"]]
+    irreps = [(128, 0)] if layer == 0 else [(128, 0), (128, 1)]
+    plan = tt_blocks.interaction_setup(device, w, layer, local[order], present, ei, irreps, layer == 1, _dtype(dt))
+    feats = dense.to_cm(t["a@node_embedding.out0" if layer == 0 else "a@products.0.out0"].double(), irreps)[order]
+
+    def dev(a):
+        return ttnn.from_torch(a, dtype=_dtype(dt), layout=ttnn.TILE_LAYOUT, device=device)
+    x, sc = tt_blocks.interaction(dev(feats.reshape(len(order), -1)), dev(t["a@spherical_harmonics.out0"].double()),
+                                  dev(t["a@radial_embedding.out0"].double()), plan)
+    got = ttnn.to_torch(x).double().reshape(len(order), 16, 128).transpose(1, 2)
+    err = rel(got, t[f"a@interactions.{layer}.out0"].double()[order])
+    print(f"interaction layer {layer} {dt}: rel err {err:.2e}")
+    assert err < BAR[dt], err
+    if layer == 1:
+        err = rel(ttnn.to_torch(sc).double(), t["a@interactions.1.out1"].double()[order])
+        print(f"interaction skip layer 1 {dt}: rel err {err:.2e}")
+        assert err < BAR[dt], err

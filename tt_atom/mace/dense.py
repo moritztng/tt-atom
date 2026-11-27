@@ -279,3 +279,13 @@ def interaction_cm(w, layer, feats, element, elements, sh, ef, edge_index, irrep
     if not residual:
         msg = skip_cm(msg, element, sk, 16, 128)
     return msg, sc
+
+
+def plan_matrix(plan, a_in, a_out, mul=128):
+    """A linear_plan as one [a_in * mul, a_out * mul] matrix on the flattened cm layout (column a * mul + u):
+    each path is the block kron(I_{2l+1}, W). Block-sparse, so it spends flops for one plain GEMM."""
+    M = torch.zeros(a_in * mul, a_out * mul, dtype=torch.float64)
+    for ai, ao, d, W in plan:
+        for c in range(d):
+            M[(ai + c) * mul:(ai + c + 1) * mul, (ao + c) * mul:(ao + c + 1) * mul] += W
+    return M

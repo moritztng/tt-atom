@@ -91,3 +91,83 @@ def conv_tp_to_ref(out, ins_of_k):
         blocks.append(out[:, :, k:k + d].reshape(out.shape[0], -1))
         k += d
     return torch.cat(blocks, dim=1)
+
+
+def fc_net(x, Ws, act_scale):
+    """e3nn FullyConnectedNet on device; ``Ws`` already divided by sqrt(fan-in)."""
+    import ttnn
+
+    cfg = D.compute_kernel_config()
+    for i, W in enumerate(Ws):
+        x = ttnn.matmul(x, W, compute_kernel_config=cfg)
+        if i < len(Ws) - 1:
+            x = ttnn.multiply(ttnn.silu(x), act_scale)
+    return x
+
+
+def interaction_setup(dev, w, layer, element, elements, edge_index, irreps_in, residual, dtype, sh_ls=(0, 1, 2, 3)):
+    """Device constants and gather tables for one interaction block in the flattened cm layout [rows, A * 128].
+    ``element`` [n] indexes ``elements`` and must be sorted (atoms ordered by species at setup)."""
+    import ttnn
+
+    from tt_atom import scatter
+    from . import reference as ref
+
+    assert bool((element[1:] >= element[:-1]).all()), "sort atoms by species at setup"
+    p, n, E = f"interactions.{layer}.", len(element), edge_index.shape[1]
+    hidden = [(128, l) for l in range(4)]
+    a_in = sum(2 * l + 1 for _, l in irreps_in)
+    sk_in, sk_out = (irreps_in, [(128, 0)]) if residual else (hidden, hidden)
+    sk = dense.skip_plan(sk_in, len(w["atomic_numbers"]), sk_out, w[p + "skip_tp.weight"], elements)
+    a_sk = (sum(2 * l + 1 for _, l in sk_in), sum(2 * l + 1 for _, l in sk_out))
+    C, ins_of_k, mid = dense.conv_tp_plan(irreps_in, list(sh_ls), [l for _, l in hidden])
+    K = C.shape[2]
+    tdev = lambda a: D.to_dev(a, dev, dtype)  # noqa: E731
+    rdev = lambda a: D.to_dev(a, dev, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)  # noqa: E731
+    g_recv, dmax = scatter.build_gather(edge_index[1], n, E)
+    fcw = lambda name: [tdev(W / W.shape[0] ** 0.5) for W in ref._layers(w, p + name)]  # noqa: E731
+    return {
+        "n": n, "E": E, "a_in": a_in, "K": K, "residual": residual,
+        "up": tdev(dense.plan_matrix(dense.linear_plan(irreps_in, irreps_in, w[p + "linear_up.weight"]), a_in, a_in)),
+        "lin": tdev(dense.plan_matrix(dense.linear_plan(mid, hidden, w[p + "linear.weight"]), K, 16)),
+        "skip": [tdev(dense.plan_matrix(s, *a_sk)) for s in sk],
+        "ranges": [(int((element < e).sum()), int((element <= e).sum())) for e in range(len(elements))],
+        "tp_w": fcw("conv_tp_weights"), "dens": fcw("density_fn"), "silu": ref._silu_2mom(),
+        "tp": conv_tp_setup(dev, C, ins_of_k, dtype),
+        "sender": rdev(edge_index[0].to(torch.int32)),
+        "recv": rdev(torch.from_numpy(g_recv)), "dmax": dmax,
+        "cfg": D.compute_kernel_config(),
+    }
+
+
+def _per_element(x, plan, mats):
+    import ttnn
+
+    outs = [ttnn.matmul(x[lo:hi], M, compute_kernel_config=plan["cfg"]) for (lo, hi), M in zip(plan["ranges"], mats)
+            if hi > lo]
+    return outs[0] if len(outs) == 1 else ttnn.concat(outs, dim=0)
+
+
+def interaction(feats, sh, ef, plan):
+    """feats [n, A * 128], sh [E, 16], ef [E, 8] (device, tile) -> (x [n, 16 * 128] cm, skip [n, 128] or None)."""
+    import ttnn
+
+    from tt_atom import scatter
+
+    cfg, n, E, A, K = plan["cfg"], plan["n"], plan["E"], plan["a_in"], plan["K"]
+    sc = _per_element(feats, plan, plan["skip"]) if plan["residual"] else None
+    up = ttnn.matmul(feats, plan["up"], compute_kernel_config=cfg)  # [n, A * 128]
+    x1 = scatter.embed_rows(ttnn, plan["sender"], ttnn.to_layout(up, ttnn.ROW_MAJOR_LAYOUT))  # [E, A * 128]
+    x1 = ttnn.permute(ttnn.to_layout(ttnn.reshape(x1, (E, A, 128)), ttnn.TILE_LAYOUT), (0, 2, 1))  # [E, 128, A]
+    tw = ttnn.reshape(fc_net(ef, plan["tp_w"], plan["silu"]), (E, -1, 128))  # [E, n_ins, 128]
+    m = conv_tp(x1, sh, tw, plan["tp"])  # [E, 128, K]
+    m = ttnn.reshape(ttnn.permute(m, (0, 2, 1)), (E, K * 128))
+    msg = scatter.segment_sum(ttnn, m, plan["recv"], plan["dmax"], n, K * 128)
+    dens = fc_net(ef, plan["dens"], plan["silu"])
+    dens = ttnn.tanh(ttnn.multiply(dens, dens))  # [E, 1]
+    density = scatter.segment_sum(ttnn, dens, plan["recv"], plan["dmax"], n, 1)
+    msg = ttnn.multiply(ttnn.matmul(msg, plan["lin"], compute_kernel_config=cfg),
+                        ttnn.reciprocal(ttnn.add(density, 1.0)))
+    if not plan["residual"]:
+        msg = _per_element(msg, plan, plan["skip"])
+    return msg, sc

@@ -59,6 +59,23 @@ def build_gather(idx: torch.Tensor, num_nodes: int, E: int, sentinel=None, min_w
     return gather.reshape(-1).astype(np.int32), Dmax
 
 
+def embed_rows(ttnn, idx, table):
+    """``ttnn.embedding`` for any table dtype. The op takes bfloat16 tables only, so a float32 table is split
+    into three bfloat16 parts (8 mantissa bits each, 24 in all) that are gathered separately and summed back in
+    float32: a row select adds no error, so the gather stays float32 up to the split's own arithmetic. A
+    bfloat16 table takes the plain op, unchanged."""
+    if table.dtype == ttnn.bfloat16:
+        return ttnn.embedding(idx, table)
+    parts, rest = [], ttnn.to_layout(table, ttnn.TILE_LAYOUT)  # typecast wants tile-padded shapes
+    for _ in range(3):
+        hi = ttnn.typecast(rest, ttnn.bfloat16)
+        g = ttnn.embedding(idx, ttnn.to_layout(hi, ttnn.ROW_MAJOR_LAYOUT))
+        parts.append(ttnn.typecast(ttnn.to_layout(g, ttnn.TILE_LAYOUT), ttnn.float32))
+        rest = ttnn.subtract(rest, ttnn.typecast(hi, ttnn.float32))
+    out = ttnn.add(ttnn.add(parts[0], parts[1]), parts[2])
+    return out if table.layout == ttnn.TILE_LAYOUT else ttnn.to_layout(out, ttnn.ROW_MAJOR_LAYOUT)
+
+
 def segment_sum(ttnn, msg, gather_dev, Dmax, N, W):
     """``msg`` [E, W] (tile) -> ``out`` [N, W] with ``out[n] = sum over gathered edges of msg``.
 
@@ -84,6 +101,6 @@ def segment_sum(ttnn, msg, gather_dev, Dmax, N, W):
     msg_rm = ttnn.to_layout(msg, ttnn.ROW_MAJOR_LAYOUT)                # cheap tile->RM (no concat repack)
     zrow = ttnn.multiply(ttnn.slice(msg_rm, [0, 0], [1, W]), 0.0)      # [1,W] device zeros (trace-safe)
     mpad = ttnn.concat([msg_rm, zrow], dim=0)                          # [E+1, W] row append (RM, no repack)
-    g = ttnn.embedding(gather_dev, mpad)                               # [N*Dmax, W] row-select (RM)
+    g = embed_rows(ttnn, gather_dev, mpad)                             # [N*Dmax, W] row-select (RM)
     g = ttnn.reshape(g, (N, Dmax, W))                                  # metadata-only (RM contiguous)
     return ttnn.to_layout(ttnn.sum(g, dim=1), ttnn.TILE_LAYOUT)        # [N, W] tile (small out)
