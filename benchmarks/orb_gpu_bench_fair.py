@@ -85,20 +85,29 @@ def rotation_capture_safe(generator):
 
 def sized_repeat(rep):
     """`repeat_interleave` with a tensor of repeats reads its output size back to the host, which a
-    CUDA graph cannot capture. The graph here is frozen, so each size is a constant: the eager warmup
-    computes it once per repeats tensor (keyed by storage, shape and dim) and capture reuses it."""
-    sizes = {}
+    CUDA graph cannot capture. The graph here is frozen, so the forward makes the same calls with the
+    same sizes every time: the first eager run records each call's size in call order and later runs
+    (capture included) replay them. Call `begin()` before each forward. A call whose shape signature
+    differs from the recording falls back to computing its size, so a mismatch shows up in the sync
+    probe instead of silently reusing a wrong size."""
+    sizes, i = [], [0]
 
     def sized(x, repeats=None, dim=None, *, output_size=None):
         if output_size is None and isinstance(repeats, torch.Tensor):
             n = x.numel() if dim is None else x.shape[dim]
-            key = (repeats.data_ptr(), tuple(repeats.shape), dim, n)
-            if key not in sizes:  # one repeat broadcasts over the axis, several are summed
-                sizes[key] = int(repeats.sum()) if repeats.numel() > 1 else n * int(repeats)
-            output_size = sizes[key]
+            sig = (tuple(repeats.shape), dim, n)
+            k = i[0]; i[0] += 1
+            if k < len(sizes) and sizes[k][0] == sig:
+                output_size = sizes[k][1]
+            else:  # one repeat broadcasts over the axis, several are summed
+                output_size = int(repeats.sum()) if repeats.numel() > 1 else n * int(repeats)
+                if k == len(sizes):
+                    sizes.append((sig, output_size))
         if repeats is None:
             return rep(x, output_size=output_size)
         return rep(x, repeats, dim, output_size=output_size)
+
+    sized.begin = lambda: i.__setitem__(0, 0)
     return sized
 
 
@@ -225,7 +234,13 @@ def main():
                     exp_rot = feat.rotation_from_generator
                     feat.rotation_from_generator = rotation_capture_safe
                     rep_t, rep_m = torch.repeat_interleave, torch.Tensor.repeat_interleave
-                    torch.repeat_interleave, torch.Tensor.repeat_interleave = sized_repeat(rep_t)
+                    sized = sized_repeat(rep_t)
+                    torch.repeat_interleave = torch.Tensor.repeat_interleave = sized
+                    eager = run
+
+                    def run():  # noqa: F811 -- every forward replays the recorded sizes in order
+                        sized.begin()
+                        return eager()
                     try:
                         s = torch.cuda.Stream()
                         s.wait_stream(torch.cuda.current_stream())
