@@ -32,3 +32,21 @@ def test_edge_derivatives_closed_form(g, fn, deriv):  # noqa: F811
         want = torch.stack([torch.autograd.grad(out[:, k].sum(), r, retain_graph=True)[0][:, 0] for k in range(out.shape[1])], 1)
         got = getattr(backward, deriv)(r.detach(), Z, ei, w)
     assert (got - want).abs().max() < 1e-9 * want.abs().max()
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2, 3])
+def test_equivariance_fixed_edges(g, seed):  # noqa: F811
+    """Gate leg 1 (tt_atom.equivariant.gate) on the hand-written forces: rotate and translate the cell at a fixed
+    edge set (periodic shifts rotate as vectors). Energy is invariant, forces rotate. Seed 0 is the identity
+    control and must be exact."""
+    from tt_atom.equivariant import gate
+    t = g["t"]
+    pos, shifts = t["in@pos"].double(), t["in@shifts"].double()
+    R, tr = gate.rigid_transform(seed)
+    e0, f0 = backward.energy_forces(g["w"], g["Z"], pos, g["ei"], shifts)
+    e1, f1 = backward.energy_forces(g["w"], g["Z"], gate.apply_transform(pos, R, tr), g["ei"], gate.apply_transform(shifts, R))
+    _, de = gate.residual(e1.reshape(1), e0.reshape(1))
+    _, df = gate.residual(f1, gate.apply_transform(f0, R))
+    if seed == 0:
+        assert de == 0 and df == 0
+    assert de < 1e-12 and df < 1e-10, (de, df)
