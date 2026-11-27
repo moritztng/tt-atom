@@ -130,5 +130,21 @@ def test_product_readout_device(g, device, layer, dt):  # noqa: F811
     got = dense.from_cm(ttnn.to_torch(y).double().reshape(n, -1, 128), irreps)
     err = rel(got, t[f"a@products.{layer}.out0"].double()[order])
     err_e = rel(ttnn.to_torch(e).double(), t[f"a@readouts.{layer}.out0"].double()[order])
-    print(f"product layer {layer} {dt}: rel err {err:.2e}, readout {err_e:.2e}")
+    de = (ttnn.to_torch(e).double().sum() - t[f"a@readouts.{layer}.out0"].double().sum()).item()
+    print(f"product layer {layer} {dt}: rel err {err:.2e}, readout {err_e:.2e}, readout sum off {de:+.4f} eV")
     assert err < BAR[dt] and err_e < BAR[dt], (err, err_e)
+
+
+@pytest.mark.parametrize("dt,pdt", [("bfloat16", "bfloat16"), ("bfloat16", "float32"), ("float32", "float32")])
+def test_energy_device(g, device, dt, pdt):  # noqa: F811
+    """Total energy with both layers on the card; geometry features (sh, radial, ZBL) from the float64 reference."""
+    from tt_atom.mace.tt_model import MaceEnergy
+
+    w, t = g["w"], g["t"]
+    m = MaceEnergy(device, w, g["Z"], g["ei"], _dtype(dt), _dtype(pdt))
+    zbl = ref.zbl(g["r"], g["Z"], g["ei"], w, len(g["Z"]))
+    e = m.energy(t["a@spherical_harmonics.out0"].double(), t["a@radial_embedding.out0"].double(), zbl)
+    want = float(t["out@energy"].double().sum())
+    n = len(g["Z"])
+    print(f"energy {dt}/{pdt}: {e:.6f} vs {want:.6f} eV, dE/atom {abs(e - want) / n:.2e} eV")
+    assert abs(e - want) / n < 5e-3

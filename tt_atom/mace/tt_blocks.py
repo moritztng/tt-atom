@@ -11,6 +11,29 @@ from tt_atom import device as D
 from . import dense
 
 
+def mm(a, b, cfg):
+    """matmul that keeps float32 operands at float32 accuracy.
+
+    The matrix engine reads float32 operands through 19-bit source registers, i.e. truncated to a 10-bit
+    mantissa, and truncation is biased: MACE's per-atom energies came out ~9 meV/atom high from that alone.
+    For float32 inputs each operand is split into bfloat16 hi + lo parts and the three significant products
+    are summed (a bfloat16 x bfloat16 product is exact in the float32 accumulator), leaving ~2^-16 relative.
+    bfloat16 inputs take the plain matmul.
+    """
+    import ttnn
+
+    if a.dtype != ttnn.float32 and b.dtype != ttnn.float32:
+        return ttnn.matmul(a, b, compute_kernel_config=cfg)
+
+    def split(x):
+        hi = ttnn.typecast(x, ttnn.bfloat16)
+        return hi, ttnn.typecast(ttnn.subtract(x, ttnn.typecast(hi, ttnn.float32)), ttnn.bfloat16)
+
+    (ah, al), (bh, bl) = split(a), split(b)
+    f = lambda x, y: ttnn.matmul(x, y, compute_kernel_config=cfg, dtype=ttnn.float32)  # noqa: E731
+    return ttnn.add(ttnn.add(f(ah, bh), f(ah, bl)), f(al, bh))
+
+
 def symmetric_contraction_setup(dev, tables, element, dtype):
     """``tables`` = dense.product_tables(..., elements=present) for one layer: [(T, parent, last)] per output
     irrep, T [n_present, c, F, 2L+1]. ``element`` [n] indexes T's first axis and must be sorted (callers
@@ -42,15 +65,15 @@ def symmetric_contraction(x, plan, n, c):
 
     cfg, feats, prev = plan["cfg"], [], None
     for Sp, Sl in plan["sels"]:
-        xl = ttnn.matmul(x, Sl, compute_kernel_config=cfg)
-        prev = xl if Sp is None else ttnn.multiply(ttnn.matmul(prev, Sp, compute_kernel_config=cfg), xl)
+        xl = mm(x, Sl, cfg)
+        prev = xl if Sp is None else ttnn.multiply(mm(prev, Sp, cfg), xl)
         feats.append(prev)
     P = ttnn.concat(feats, dim=1)  # [n * c, F]
     P = ttnn.permute(ttnn.reshape(P, (n, c, P.shape[-1])), (1, 0, 2))  # [c, n, F]
     outs = []
     for (lo, hi), T in zip(plan["ranges"], plan["T"]):
         if hi > lo:
-            outs.append(ttnn.matmul(P[:, lo:hi, :], T, compute_kernel_config=cfg))  # [c, n_e, D]
+            outs.append(mm(P[:, lo:hi, :], T, cfg))  # [c, n_e, D]
     return outs[0] if len(outs) == 1 else ttnn.concat(outs, dim=1)
 
 
@@ -78,9 +101,9 @@ def conv_tp(x1, sh, w, plan):
     import ttnn
 
     cfg, E = plan["cfg"], x1.shape[0]
-    M = ttnn.reshape(ttnn.matmul(sh, plan["C"], compute_kernel_config=cfg), (E, plan["A"], plan["K"]))
-    wk = ttnn.matmul(ttnn.permute(w, (0, 2, 1)), plan["G"], compute_kernel_config=cfg)  # [E, mul, K]
-    return ttnn.multiply(ttnn.matmul(x1, M, compute_kernel_config=cfg), wk)
+    M = ttnn.reshape(mm(sh, plan["C"], cfg), (E, plan["A"], plan["K"]))
+    wk = mm(ttnn.permute(w, (0, 2, 1)), plan["G"], cfg)  # [E, mul, K]
+    return ttnn.multiply(mm(x1, M, cfg), wk)
 
 
 def conv_tp_to_ref(out, ins_of_k):
@@ -99,7 +122,7 @@ def fc_net(x, Ws, act_scale):
 
     cfg = D.compute_kernel_config()
     for i, W in enumerate(Ws):
-        x = ttnn.matmul(x, W, compute_kernel_config=cfg)
+        x = mm(x, W, cfg)
         if i < len(Ws) - 1:
             x = ttnn.multiply(ttnn.silu(x), act_scale)
     return x
@@ -143,7 +166,7 @@ def interaction_setup(dev, w, layer, element, elements, edge_index, irreps_in, r
 def _per_element(x, plan, mats):
     import ttnn
 
-    outs = [ttnn.matmul(x[lo:hi], M, compute_kernel_config=plan["cfg"]) for (lo, hi), M in zip(plan["ranges"], mats)
+    outs = [mm(x[lo:hi], M, plan["cfg"]) for (lo, hi), M in zip(plan["ranges"], mats)
             if hi > lo]
     return outs[0] if len(outs) == 1 else ttnn.concat(outs, dim=0)
 
@@ -156,7 +179,7 @@ def interaction(feats, sh, ef, plan):
 
     cfg, n, E, A, K = plan["cfg"], plan["n"], plan["E"], plan["a_in"], plan["K"]
     sc = _per_element(feats, plan, plan["skip"]) if plan["residual"] else None
-    up = ttnn.matmul(feats, plan["up"], compute_kernel_config=cfg)  # [n, A * 128]
+    up = mm(feats, plan["up"], cfg)  # [n, A * 128]
     x1 = scatter.embed_rows(ttnn, plan["sender"], ttnn.to_layout(up, ttnn.ROW_MAJOR_LAYOUT))  # [E, A * 128]
     x1 = ttnn.permute(ttnn.to_layout(ttnn.reshape(x1, (E, A, 128)), ttnn.TILE_LAYOUT), (0, 2, 1))  # [E, 128, A]
     tw = ttnn.reshape(fc_net(ef, plan["tp_w"], plan["silu"]), (E, -1, 128))  # [E, n_ins, 128]
@@ -166,7 +189,7 @@ def interaction(feats, sh, ef, plan):
     dens = fc_net(ef, plan["dens"], plan["silu"])
     dens = ttnn.tanh(ttnn.multiply(dens, dens))  # [E, 1]
     density = scatter.segment_sum(ttnn, dens, plan["recv"], plan["dmax"], n, 1)
-    msg = ttnn.multiply(ttnn.matmul(msg, plan["lin"], compute_kernel_config=cfg),
+    msg = ttnn.multiply(mm(msg, plan["lin"], cfg),
                         ttnn.reciprocal(ttnn.add(density, 1.0)))
     if not plan["residual"]:
         msg = _per_element(msg, plan, plan["skip"])
@@ -200,11 +223,11 @@ def product(x, sc, plan, n):
     rows = ttnn.reshape(ttnn.permute(ttnn.reshape(x, (n, 16, 128)), (0, 2, 1)), (n * 128, 16))
     y = symmetric_contraction(rows, plan["sc"], n, 128)  # [128, n, a]
     y = ttnn.reshape(ttnn.permute(y, (1, 2, 0)), (n, plan["a"] * 128))
-    y = ttnn.matmul(y, plan["lin"], compute_kernel_config=cfg)
+    y = mm(y, plan["lin"], cfg)
     if sc is not None:
         y = ttnn.add(y, sc)
     ro = plan["readout"]
-    e = ttnn.matmul(y, ro[0], compute_kernel_config=cfg)
+    e = mm(y, ro[0], cfg)
     if len(ro) > 1:
-        e = ttnn.matmul(ttnn.multiply(ttnn.silu(e), plan["silu"]), ro[1], compute_kernel_config=cfg)
+        e = mm(ttnn.multiply(ttnn.silu(e), plan["silu"]), ro[1], cfg)
     return y, e
