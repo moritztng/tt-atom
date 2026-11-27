@@ -39,11 +39,12 @@ def test_symmetric_contraction_device(g, device, layer, n_out, dt):  # noqa: F81
     local = torch.searchsorted(present, el)
     order = torch.argsort(local, stable=True)
     tables = dense.product_tables(w, layer, n_out, elements=present)
-    plan = tt_blocks.symmetric_contraction_setup(device, tables, local[order], _dtype(dt))
+    plan = tt_blocks.symmetric_contraction_setup(device, tables, _dtype(dt))
+    ranges = tt_blocks.species_ranges(local[order], len(present))
     x = t[f"a@interactions.{layer}.out0"].double()[order]  # [n, c, ell]
     n, c, ell = x.shape
     out = tt_blocks.symmetric_contraction(ttnn.from_torch(x.reshape(n * c, ell), dtype=_dtype(dt),
-                                                          layout=ttnn.TILE_LAYOUT, device=device), plan, n, c)
+                                                          layout=ttnn.TILE_LAYOUT, device=device), plan, ranges, n, c)
     got = tt_blocks.symmetric_contraction_to_ref(ttnn.to_torch(out), plan["widths"])
     want = t[f"a@products.{layer}.symmetric_contractions.out0"].double()[order]
     err = rel(got, want)
@@ -90,13 +91,14 @@ def test_interaction_device(g, device, layer, dt):  # noqa: F811
     inv[order] = torch.arange(len(order))
     ei = inv[g["ei"]]
     irreps = [(128, 0)] if layer == 0 else [(128, 0), (128, 1)]
-    plan = tt_blocks.interaction_setup(device, w, layer, local[order], present, ei, irreps, layer == 1, _dtype(dt))
+    plan = tt_blocks.interaction_setup(device, w, layer, present, irreps, layer == 1, _dtype(dt))
+    graph = tt_blocks.graph_setup(device, local[order], len(present), ei)
     feats = dense.to_cm(t["a@node_embedding.out0" if layer == 0 else "a@products.0.out0"].double(), irreps)[order]
 
     def dev(a):
         return ttnn.from_torch(a, dtype=_dtype(dt), layout=ttnn.TILE_LAYOUT, device=device)
     x, sc = tt_blocks.interaction(dev(feats.reshape(len(order), -1)), dev(t["a@spherical_harmonics.out0"].double()),
-                                  dev(t["a@radial_embedding.out0"].double()), plan)
+                                  dev(t["a@radial_embedding.out0"].double()), plan, graph)
     got = ttnn.to_torch(x).double().reshape(len(order), 16, 128).transpose(1, 2)
     err = rel(got, t[f"a@interactions.{layer}.out0"].double()[order])
     print(f"interaction layer {layer} {dt}: rel err {err:.2e}")
@@ -119,14 +121,15 @@ def test_product_readout_device(g, device, layer, dt):  # noqa: F811
     local = torch.searchsorted(present, el)
     order = torch.argsort(local, stable=True)
     irreps = [(128, 0), (128, 1)] if layer == 0 else [(128, 0)]
-    plan = tt_blocks.product_setup(device, w, layer, local[order], present, irreps, _dtype(dt))
+    plan = tt_blocks.product_setup(device, w, layer, present, irreps, _dtype(dt))
+    graph = {"n": len(order), "ranges": tt_blocks.species_ranges(local[order], len(present))}
     n = len(order)
 
     def dev(a):
         return ttnn.from_torch(a.reshape(n, -1), dtype=_dtype(dt), layout=ttnn.TILE_LAYOUT, device=device)
     x = t[f"a@interactions.{layer}.out0"].double()[order].transpose(1, 2)  # cm [n, 16, 128]
     sc = dev(t["a@interactions.1.out1"].double()[order]) if layer == 1 else None
-    y, e = tt_blocks.product(dev(x), sc, plan, n)
+    y, e = tt_blocks.product(dev(x), sc, plan, graph)
     got = dense.from_cm(ttnn.to_torch(y).double().reshape(n, -1, 128), irreps)
     err = rel(got, t[f"a@products.{layer}.out0"].double()[order])
     err_e = rel(ttnn.to_torch(e).double(), t[f"a@readouts.{layer}.out0"].double()[order])
@@ -141,9 +144,9 @@ def test_energy_device(g, device, dt, pdt):  # noqa: F811
     from tt_atom.mace.tt_model import MaceEnergy
 
     w, t = g["w"], g["t"]
-    m = MaceEnergy(device, w, g["Z"], g["ei"], _dtype(dt), _dtype(pdt))
+    m = MaceEnergy(device, w, _dtype(dt), _dtype(pdt))
     zbl = ref.zbl(g["r"], g["Z"], g["ei"], w, len(g["Z"]))
-    e = m.energy(t["a@spherical_harmonics.out0"].double(), t["a@radial_embedding.out0"].double(), zbl)
+    e = m.energy(g["Z"], g["ei"], t["a@spherical_harmonics.out0"].double(), t["a@radial_embedding.out0"].double(), zbl)
     want = float(t["out@energy"].double().sum())
     n = len(g["Z"])
     print(f"energy {dt}/{pdt}: {e:.6f} vs {want:.6f} eV, dE/atom {abs(e - want) / n:.2e} eV")
