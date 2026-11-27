@@ -3,7 +3,7 @@
 The card has no autograd, so this is the op list it runs: every backward step is the transpose of a forward
 GEMM, a gather where the forward scattered (and the reverse), or an elementwise derivative. The network part
 yields dE/d(sh) and dE/d(radial features) per edge; the per-edge geometry (spherical harmonics, Bessel radial,
-ZBL) is differentiated in closed form per edge by ``geometry_vjp``, then edges scatter to atoms.
+ZBL) is differentiated in closed form per edge by ``geometry_vjp``, then edges scatter to atoms. No autograd.
 Graded against autograd on ``dense.energy_cm`` in tests/test_mace_backward.py.
 """
 from __future__ import annotations
@@ -211,14 +211,63 @@ def energy_forces(w, atomic_numbers, pos, edge_index, shifts):
     return energy, -geometry_vjp(w, atomic_numbers, pos, edge_index, shifts, g_sh, g_ef, float(scale))
 
 
+def _cutoff_and_deriv(r, r_max, p):
+    t = r / r_max
+    env = 1.0 - (p + 1.0) * (p + 2.0) / 2.0 * t ** p + p * (p + 2.0) * t ** (p + 1) - p * (p + 1.0) / 2.0 * t ** (p + 2)
+    d = (-(p + 1.0) * (p + 2.0) / 2.0 * p * t ** (p - 1) + p * (p + 2.0) * (p + 1) * t ** p
+         - p * (p + 1.0) * (p + 2.0) / 2.0 * t ** (p + 1)) / r_max
+    inside = r < r_max
+    return env * inside, d * inside
+
+
+def radial_deriv(r, atomic_numbers, edge_index, w):
+    """d(reference.radial_embedding)/dr, closed form: Agnesi transform -> Bessel basis, times the cutoff."""
+    pre = "radial_embedding."
+    cut, dcut = _cutoff_and_deriv(r, w[pre + "cutoff_fn.r_max"], w[pre + "cutoff_fn.p"])
+    zu, zv = ref._pair_z(atomic_numbers, edge_index)
+    cov = w[pre + "distance_transform.covalent_radii"]
+    a, p, q = (w[pre + "distance_transform." + k] for k in "apq")
+    r0 = 0.5 * (cov[zu] + cov[zv])
+    t = r / r0
+    den = 1.0 + t ** (q - p)
+    D = a * t ** q / den
+    dD = a * (q * t ** (q - 1) * den - t ** q * (q - p) * t ** (q - p - 1)) / den ** 2
+    x = 1.0 / (1.0 + D)
+    dx = -dD / (1.0 + D) ** 2 / r0
+    bw, pf = w[pre + "bessel_fn.bessel_weights"], w[pre + "bessel_fn.prefactor"]
+    b = pf * torch.sin(bw * x) / x
+    db = pf * (bw * torch.cos(bw * x) * x - torch.sin(bw * x)) / x ** 2
+    return db * dx * cut + b * dcut
+
+
+def zbl_deriv(r, atomic_numbers, edge_index, w):
+    """d(per-edge ZBL energy)/dr, closed form (reference.zbl sums these onto receivers)."""
+    pre = "pair_repulsion_fn."
+    zu, zv = ref._pair_z(atomic_numbers, edge_index)
+    zu, zv = zu.to(r.dtype), zv.to(r.dtype)
+    a_exp = w.get(pre + "a_exp", torch.tensor(0.300, dtype=r.dtype))
+    a_pre = w.get(pre + "a_prefactor", torch.tensor(0.4543, dtype=r.dtype))
+    a = a_pre * 0.529 / (zu ** a_exp + zv ** a_exp)
+    c, k = w[pre + "c"], (3.2, 0.9423, 0.4028, 0.2016)
+    phi = sum(c[i] * torch.exp(-k[i] * r / a) for i in range(4))
+    dphi = sum(-c[i] * k[i] / a * torch.exp(-k[i] * r / a) for i in range(4))
+    cov = w[pre + "covalent_radii"]
+    zi_u, zi_v = ref._pair_z(atomic_numbers, edge_index)
+    env, denv = _cutoff_and_deriv(r, cov[zi_u] + cov[zi_v], w[pre + "p"])
+    K = 0.5 * 14.3996 * zu * zv
+    return K * (-phi * env / r ** 2 + dphi * env / r + phi * denv / r)
+
+
 def geometry_vjp(w, atomic_numbers, pos, edge_index, shifts, g_sh, g_ef, scale):
-    """dE/dpos from the per-edge feature gradients plus ZBL. Each edge's features depend on its own vector only,
-    so this is a per-edge closed form (here via torch's per-edge derivative), then a scatter to both atoms."""
-    vec = (pos[edge_index[1]] - pos[edge_index[0]] + shifts).detach().requires_grad_(True)
-    r = vec.norm(dim=-1, keepdim=True)
-    f = (ref.spherical_harmonics(vec) * g_sh).sum() + (ref.radial_embedding(r, atomic_numbers, edge_index, w) * g_ef).sum() \
-        + scale * ref.zbl(r, atomic_numbers, edge_index, w, len(pos)).sum()
-    (g_vec,) = torch.autograd.grad(f, vec)
+    """dE/dpos from the per-edge feature gradients plus ZBL, closed form per edge (the spherical-harmonic VJP is
+    Orb's, the same e3nn l <= 3 basis), then a scatter to both atoms of each edge."""
+    from tt_atom.orb_geometry import _spherical_harmonics_l3_vjp
+    vec, r = ref.edge_vectors(pos, edge_index, shifts)
+    unit = vec / r
+    g_unit = _spherical_harmonics_l3_vjp(unit, g_sh)
+    g_r = (g_ef * radial_deriv(r, atomic_numbers, edge_index, w)).sum(-1, keepdim=True) \
+        + scale * zbl_deriv(r, atomic_numbers, edge_index, w)
+    g_vec = (g_unit - unit * (unit * g_unit).sum(-1, keepdim=True)) / r + g_r * unit
     g = torch.zeros_like(pos)
     g.index_add_(0, edge_index[1], g_vec)
     g.index_add_(0, edge_index[0], -g_vec)
