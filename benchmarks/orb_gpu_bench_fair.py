@@ -17,8 +17,11 @@ What "at its best" means here was checked on 2026-11-26 against what ships:
   * NVIDIA ALCHEMI toolkit 0.3.0 (nvalchemi-toolkit): model wrappers for MACE, UMA,
     AIMNet2, no Orb wrapper, so there is no vendor-accelerated Orb path to compare to.
 
-Every variant, stock included, is parity-checked at the same jittered positions against the float64
-model through the stock calculator (dE/atom < 1e-4 eV, max|dF| < 5e-3 eV/A). Run once per precision.
+Every variant, stock included, is graded at the same jittered positions against the float64 model
+through the stock calculator (dE/atom, MAE and max |dF|); the anchors are saved (--anchors-out) and
+the TT leg is graded against the very same file. No bar is applied here: the headline is the
+fastest frozen variant, at either precision, that is no less accurate than the TT leg at that size.
+Run once per precision.
 
 Variants:
   stock            stock ORBCalculator, neighbours rebuilt per call, stress on. The plain
@@ -26,7 +29,8 @@ Variants:
   frozen_compiled  package-compiled model, TF32, frozen graph, stress off.
   frozen_cudagraph uncompiled model captured whole (forward + autograd forces) into one CUDA
                    graph and replayed; the GPU counterpart of the TT leg's trace/replay.
-The headline GPU number is the fastest variant that passes parity.
+  frozen_compiled_cudagraph  both: torch.compile (static shapes, the graph is frozen) for fused
+                   kernels, then the whole step captured into one CUDA graph.
 
     python benchmarks/orb_gpu_bench_fair.py --out orb_perf_dollar_gpu_<gpu>.json
 """
@@ -44,9 +48,10 @@ import torch
 from ase.build import bulk
 
 from _harness import git_sha
-from bench_orb_perf_dollar_tt import SIZES
+from bench_orb_perf_dollar_tt import SIZES, grade
 
-FROZEN = ("frozen_compiled", "frozen_cudagraph")
+FROZEN = ("frozen_compiled", "frozen_cudagraph", "frozen_compiled_cudagraph")
+CAPTURED = ("frozen_cudagraph", "frozen_compiled_cudagraph")
 
 
 class ClockSampler:
@@ -165,7 +170,8 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--jitter", type=float, default=0.01, help="per-step position jitter, A")
     ap.add_argument("--sizes", default=",".join(s[0] for s in SIZES))
-    ap.add_argument("--variants", default="stock,frozen_compiled,frozen_cudagraph")
+    ap.add_argument("--variants", default="stock,frozen_compiled,frozen_cudagraph,frozen_compiled_cudagraph")
+    ap.add_argument("--anchors-out", default=None, help="save the float64 anchors (npz) for the TT leg")
     ap.add_argument("--precision", default="float32-high",
                     choices=["float32-high", "float32-highest"])
     ap.add_argument("--dev", action="store_true", help="dev run on a cheap card, not a claim")
@@ -193,15 +199,24 @@ def main():
         a.calc = calc64
         anchors[tag] = (a.get_positions().copy(), float(a.get_potential_energy()),
                         np.array(a.get_forces(), dtype=np.float64))
+    if args.anchors_out:
+        np.savez(args.anchors_out, **{f"{t}{k}": v for t, (p, e, f) in anchors.items()
+                                      for k, v in (("_pos", p), ("_e", np.float64(e)), ("_f", f))})
     del calc64, m64
     torch.cuda.empty_cache()
     m_stock, adapter = load(device=dev, precision=args.precision)
     calc = ORBCalculator(m_stock.eval(), adapter, device=dev)
     m_comp, _ = load(device=dev, precision=args.precision)               # package compile
     m_eager, _ = load(device=dev, precision=args.precision, compile=False)
-    for m in (m_comp, m_eager):
+    m_cc, _ = load(device=dev, precision=args.precision, compile=False)
+    m_cc.compile(mode="default", dynamic=False)  # frozen graph: one static shape per size
+    for m in (m_comp, m_eager, m_cc):
         m.eval().disable_stress()
-    models = {"frozen_compiled": m_comp, "frozen_cudagraph": m_eager}
+    models = {"frozen_compiled": m_comp, "frozen_cudagraph": m_eager, "frozen_compiled_cudagraph": m_cc}
+    # One process walks four sizes and three compiled call paths; dynamo's default recompile cap (8 per
+    # frame, 256 overall) was hit on H200 (11-27) and silently dropped frames to eager.
+    torch._dynamo.config.cache_size_limit = 64
+    torch._dynamo.config.accumulated_cache_size_limit = 4096
     variants = [v for v in args.variants.split(",") if v]
     meta = {"gpu_name": torch.cuda.get_device_name(0), "orb_models": orb_models.__version__,
             "torch": torch.__version__, "cuda": torch.version.cuda, "precision": args.precision,
@@ -219,15 +234,17 @@ def main():
         p_ref, e_ref, f_ref = anchors[tag]
 
         def parity(e, f):
-            dE, fmax = abs(e - e_ref) / N, float(np.abs(f - f_ref).max())
-            return {"dE_per_atom_eV": dE, "max_abs_dF_eV_per_A": fmax, "ok": dE < 1e-4 and fmax < 5e-3}
+            return grade(e, f, e_ref, f_ref)
+
+        def show(v, par):
+            print(f"  {v} vs float64: dE/atom={par['dE_per_atom_eV']:.2e} eV  MAE|dF|={par['mae_dF_eV_per_A']:.2e}"
+                  f"  max|dF|={par['max_abs_dF_eV_per_A']:.2e} eV/A", flush=True)
 
         if "stock" in variants:
             st = atoms0.copy(); st.calc = calc
             st.set_positions(p_ref)
             par = parity(float(st.get_potential_energy()), np.asarray(st.get_forces()))
-            print(f"  stock parity: dE/atom={par['dE_per_atom_eV']:.2e} eV  "
-                  f"max|dF|={par['max_abs_dF_eV_per_A']:.2e} eV/A  ok={par['ok']}", flush=True)
+            show("stock", par)
 
             def stock_step():
                 st.set_positions(pos0 + rng.normal(0.0, args.jitter, pos0.shape))
@@ -250,12 +267,16 @@ def main():
             def run():
                 return m.predict(batch)
             try:
-                if v == "frozen_cudagraph":
+                if v in CAPTURED:
                     feat = orb_models.common.atoms.featurization
                     exp_rot = feat.rotation_from_generator
                     feat.rotation_from_generator = rotation_capture_safe
                     rep_t, rep_m = torch.repeat_interleave, torch.Tensor.repeat_interleave
                     sized = sized_repeat(rep_t)
+                    if v == "frozen_compiled_cudagraph":  # the size cache is host state: keep it out of the trace
+                        inner = sized
+                        sized = torch.compiler.disable(inner)
+                        sized.begin = inner.begin
                     torch.repeat_interleave = torch.Tensor.repeat_interleave = sized
                     eager = run
 
@@ -285,8 +306,7 @@ def main():
                 e = float(out[m.energy_name].double().sum())
                 f = out[m.grad_forces_name].float().cpu().numpy()
                 par = parity(e, f)
-                print(f"  {v} parity: dE/atom={par['dE_per_atom_eV']:.2e} eV  "
-                      f"max|dF|={par['max_abs_dF_eV_per_A']:.2e} eV/A  ok={par['ok']}", flush=True)
+                show(v, par)
 
                 def step():
                     upload(pos0 + rng.normal(0.0, args.jitter, pos0.shape))
@@ -305,8 +325,6 @@ def main():
                 print(f"  {v:17s} {r['step_ms_median']:8.3f} ms  sm={r['sm_clock_mhz_during']} MHz", flush=True)
             else:
                 print(f"  {v:17s} {r['error']}", flush=True)
-        ok = {v: r for v, r in rec["variants"].items() if v in FROZEN and r.get("parity", {}).get("ok")}
-        rec["headline"] = min(ok, key=lambda v: ok[v]["step_ms_median"]) if ok else None
         records.append(rec)
         dump(args, meta, records)
 

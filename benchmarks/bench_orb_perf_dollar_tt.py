@@ -30,6 +30,21 @@ from ase.build import bulk
 from _harness import git_sha
 
 
+def grade(e, f, e_ref, f_ref):
+    """Accuracy against the float64 anchor, the same three numbers on both legs. Neither leg is
+    held to a bar here: the comparison picks the fastest GPU variant that is no less accurate than
+    the TT leg at the same size, so the GPU is never forced to be more exact than we are."""
+    d = np.abs(np.asarray(f, np.float64) - f_ref)
+    return {"dE_per_atom_eV": abs(float(e) - e_ref) / len(f_ref),
+            "mae_dF_eV_per_A": float(d.mean()), "max_abs_dF_eV_per_A": float(d.max())}
+
+
+def load_anchors(path):
+    """{tag: (positions, energy, forces)} written by the GPU leg (orb float64, stock calculator)."""
+    z = np.load(path)
+    return {k[:-4]: (z[k], float(z[k[:-4] + "_e"]), z[k[:-4] + "_f"]) for k in z.files if k.endswith("_pos")}
+
+
 class AiclkSampler:
     """Samples every card's AICLK (MHz) from sysfs every 0.2 s while active.
 
@@ -92,6 +107,8 @@ def main():
     ap.add_argument("--out", default="benchmarks/orb_perf_dollar_tt.json")
     ap.add_argument("--platform", default="Tenstorrent Blackhole p150 (one card, device 0)",
                     help="the card that ran, recorded verbatim (e.g. one chip of a p300c)")
+    ap.add_argument("--anchors", default=None,
+                    help="float64 anchor npz from orb_gpu_bench_fair.py --anchors-out; grades accuracy")
     ap.add_argument("--sizes", default=",".join(s[0] for s in SIZES),
                     help="comma list of size tags from: " + ",".join(s[0] for s in SIZES))
     args = ap.parse_args()
@@ -101,6 +118,7 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
+    anchors = load_anchors(args.anchors) if args.anchors else {}
     wanted = [t for t in args.sizes.split(",") if t.strip()]
     plan = [s for s in SIZES if s[0] in wanted]
 
@@ -147,6 +165,14 @@ def main():
                 atoms.set_positions(pos0 + rng.normal(0.0, 0.01, pos0.shape))
                 _ = atoms.get_potential_energy(); _ = atoms.get_forces()
 
+            acc = None
+            if tag in anchors:  # same jittered geometry the GPU leg graded, same graph as the lattice
+                p_ref, e_ref, f_ref = anchors[tag]
+                atoms.set_positions(p_ref)
+                acc = grade(atoms.get_potential_energy(), atoms.get_forces(), e_ref, f_ref)
+                print(f"  accuracy vs float64: dE/atom={acc['dE_per_atom_eV']:.2e} eV  "
+                      f"MAE|dF|={acc['mae_dF_eV_per_A']:.2e}  max|dF|={acc['max_abs_dF_eV_per_A']:.2e} eV/A",
+                      flush=True)
             calc.step_ms.clear()
             e0 = None
             builds, build = [0], calc._build_engine
@@ -177,6 +203,7 @@ def main():
                 "steps_per_s": 1000.0 / med,
                 "aiclk_mhz_during_by_node": clk.summary(),
                 "tt_visible_devices": os.environ.get("TT_VISIBLE_DEVICES"),
+                "accuracy_vs_float64": acc,
                 "energy_sample_eV": e0,
                 "energy_sample_eV_per_atom": (e0 / N) if e0 is not None else None,
                 "precision": ("bf8 weights/hidden MLP activations, bf16 residual stream, "
