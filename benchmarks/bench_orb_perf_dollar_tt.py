@@ -113,7 +113,7 @@ def main():
             "neighbour_policy": "exact-cutoff graph checked each step; trace recaptured on change",
             "execution_model": "trace/replay (OrbTracedEngine) -- zero per-step host dispatch, bit-exact vs eager",
             "load_and_first_compile_excluded": True,
-            "positions_jittered_each_step": True,
+            "positions_jittered_each_step": "about the lattice, 0.01 A, no random walk",
             "orb_fused_silu_bw": os.environ.get("TT_ATOM_ORB_FUSED_SILU_BW", "auto"),
             "orb_minimal_matmul": os.environ.get("TT_ATOM_ORB_MINIMAL_MATMUL", "auto"),
             "git_sha": git_sha(),
@@ -139,17 +139,25 @@ def main():
             rng = np.random.default_rng(args.seed)
             atoms.set_positions(atoms.get_positions())
             _ = atoms.get_potential_energy(); _ = atoms.get_forces()
+            # Jitter about the lattice, never a random walk: a walk drifts ~0.1 A over the run, moves pairs across
+            # the cutoff and re-captures the trace (11-27: 9222 of 9936 edges left, ~1.2 s steps). The GPU leg
+            # jitters the same way, so both sides keep one graph.
+            pos0 = atoms0.get_positions()
             for _ in range(max(0, args.warmup - 1)):
-                p = atoms.get_positions() + rng.normal(0.0, 0.01, atoms.positions.shape)
-                atoms.set_positions(p)
+                atoms.set_positions(pos0 + rng.normal(0.0, 0.01, pos0.shape))
                 _ = atoms.get_potential_energy(); _ = atoms.get_forces()
 
             calc.step_ms.clear()
             e0 = None
+            builds, build = [0], calc._build_engine
+
+            def counted(*a, **k):
+                builds[0] += 1
+                return build(*a, **k)
+            calc._build_engine = counted
             with AiclkSampler() as clk:
                 for i in range(args.steps):
-                    p = atoms.get_positions() + rng.normal(0.0, 0.01, atoms.positions.shape)
-                    atoms.set_positions(p)
+                    atoms.set_positions(pos0 + rng.normal(0.0, 0.01, pos0.shape))
                     e = atoms.get_potential_energy()
                     _ = atoms.get_forces()
                     if i == 0:
@@ -160,6 +168,7 @@ def main():
             rec = {
                 "tag": tag, "nx": nx, "ny": ny, "nz": nz, "N": N,
                 "edges": int(calc.n_edges),
+                "trace_rebuilds_during_timing": builds[0],
                 "warmup": args.warmup, "timed_steps": args.steps,
                 "step_ms_raw": [round(x, 4) for x in raw],
                 "step_ms_median": med,
