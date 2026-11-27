@@ -17,7 +17,10 @@ What "at its best" means here was checked on 2026-11-26 against what ships:
   * NVIDIA ALCHEMI toolkit 0.3.0 (nvalchemi-toolkit): model wrappers for MACE, UMA,
     AIMNet2, no Orb wrapper, so there is no vendor-accelerated Orb path to compare to.
 
-Variants (each parity-checked against the stock calculator at the same positions):
+Every variant, stock included, is parity-checked at the same jittered positions against the float64
+model through the stock calculator (dE/atom < 1e-4 eV, max|dF| < 5e-3 eV/A). Run once per precision.
+
+Variants:
   stock            stock ORBCalculator, neighbours rebuilt per call, stress on. The plain
                    user path; reported for context, never the headline.
   frozen_compiled  package-compiled model, TF32, frozen graph, stress off.
@@ -175,6 +178,23 @@ def main():
 
     dev = "cuda"
     load = pretrained.orb_v3_conservative_inf_omat
+    plan = [s for s in SIZES if s[0] in args.sizes.split(",")]
+    rng = np.random.default_rng(args.seed)
+    # Parity anchor: the float64 model through the stock calculator, one jittered geometry per size.
+    # Done first and alone: orb's precision (default dtype, matmul precision) is process-global, and its
+    # float32-high default puts the edge geometry (unit_shifts @ cell) through TF32. On an H200 that made
+    # stock and frozen float32-high disagree by 0.1-0.2 eV/A (11-27), so neither may serve as the anchor.
+    m64, adapter = load(device=dev, precision="float64", compile=False)
+    calc64 = ORBCalculator(m64.eval(), adapter, device=dev)
+    anchors = {}
+    for tag, nx, ny, nz in plan:
+        a = bulk(args.element, "diamond", a=args.a, cubic=True) * (nx, ny, nz)
+        a.set_positions(a.get_positions() + rng.normal(0.0, args.jitter, (len(a), 3)))
+        a.calc = calc64
+        anchors[tag] = (a.get_positions().copy(), float(a.get_potential_energy()),
+                        np.array(a.get_forces(), dtype=np.float64))
+    del calc64, m64
+    torch.cuda.empty_cache()
     m_stock, adapter = load(device=dev, precision=args.precision)
     calc = ORBCalculator(m_stock.eval(), adapter, device=dev)
     m_comp, _ = load(device=dev, precision=args.precision)               # package compile
@@ -183,13 +203,11 @@ def main():
         m.eval().disable_stress()
     models = {"frozen_compiled": m_comp, "frozen_cudagraph": m_eager}
     variants = [v for v in args.variants.split(",") if v]
-    plan = [s for s in SIZES if s[0] in args.sizes.split(",")]
     meta = {"gpu_name": torch.cuda.get_device_name(0), "orb_models": orb_models.__version__,
             "torch": torch.__version__, "cuda": torch.version.cuda, "precision": args.precision,
-            "dev_run": args.dev}
+            "dev_run": args.dev, "parity_anchor": "orb float64, stock calculator, fresh graph"}
     print(meta, flush=True)
 
-    rng = np.random.default_rng(args.seed)
     records = []
     for tag, nx, ny, nz in plan:
         atoms0 = bulk(args.element, "diamond", a=args.a, cubic=True) * (nx, ny, nz)
@@ -198,20 +216,23 @@ def main():
         rec = {"tag": tag, "N": N, "variants": {}}
         print(f"\n=== {tag}  N={N} ===", flush=True)
 
-        # parity anchor: stock calculator at one jittered geometry
-        ref_atoms = atoms0.copy(); ref_atoms.calc = calc
-        p_ref = pos0 + rng.normal(0.0, args.jitter, pos0.shape)
-        ref_atoms.set_positions(p_ref)
-        e_ref = float(ref_atoms.get_potential_energy())
-        f_ref = np.asarray(ref_atoms.get_forces())
+        p_ref, e_ref, f_ref = anchors[tag]
+
+        def parity(e, f):
+            dE, fmax = abs(e - e_ref) / N, float(np.abs(f - f_ref).max())
+            return {"dE_per_atom_eV": dE, "max_abs_dF_eV_per_A": fmax, "ok": dE < 1e-4 and fmax < 5e-3}
 
         if "stock" in variants:
             st = atoms0.copy(); st.calc = calc
+            st.set_positions(p_ref)
+            par = parity(float(st.get_potential_energy()), np.asarray(st.get_forces()))
+            print(f"  stock parity: dE/atom={par['dE_per_atom_eV']:.2e} eV  "
+                  f"max|dF|={par['max_abs_dF_eV_per_A']:.2e} eV/A  ok={par['ok']}", flush=True)
 
             def stock_step():
                 st.set_positions(pos0 + rng.normal(0.0, args.jitter, pos0.shape))
                 st.get_potential_energy(); st.get_forces()
-            rec["variants"]["stock"] = time_steps(stock_step, args.warmup, args.steps)
+            rec["variants"]["stock"] = {**time_steps(stock_step, args.warmup, args.steps), "parity": par}
 
         graph = adapter.from_ase_atoms(atoms0).to(dev)
         rec["edges"] = int(graph.n_edge.item())
@@ -263,16 +284,15 @@ def main():
                 out = run()
                 e = float(out[m.energy_name].double().sum())
                 f = out[m.grad_forces_name].float().cpu().numpy()
-                dE = abs(e - e_ref) / N
-                fmax = float(np.abs(f - f_ref).max())
-                ok = dE < 1e-4 and fmax < 5e-3
-                print(f"  {v} parity: dE/atom={dE:.2e} eV  max|dF|={fmax:.2e} eV/A  ok={ok}", flush=True)
+                par = parity(e, f)
+                print(f"  {v} parity: dE/atom={par['dE_per_atom_eV']:.2e} eV  "
+                      f"max|dF|={par['max_abs_dF_eV_per_A']:.2e} eV/A  ok={par['ok']}", flush=True)
 
                 def step():
                     upload(pos0 + rng.normal(0.0, args.jitter, pos0.shape))
                     run()
                 r = time_steps(step, args.warmup, args.steps)
-                r["parity"] = {"dE_per_atom_eV": dE, "max_abs_dF_eV_per_A": fmax, "ok": ok}
+                r["parity"] = par
                 rec["variants"][v] = r
             except Exception as exc:  # noqa: BLE001 -- a variant that cannot run is a recorded result
                 import traceback  # the failing package line, so a capture break is fixable from the log
