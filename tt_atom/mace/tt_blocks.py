@@ -157,13 +157,18 @@ def interaction_setup(dev, w, layer, element, elements, edge_index, irreps_in, r
     rdev = lambda a: D.to_dev(a, dev, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)  # noqa: E731
     g_recv, dmax = scatter.build_gather(edge_index[1], n, E)
     fcw = lambda name: [tdev(W / W.shape[0] ** 0.5) for W in ref._layers(w, p + name)]  # noqa: E731
+    # The density MLP ends in one column. Widen it to 32 zero-padded columns (tanh(0^2) = 0): a width-1 row-major
+    # tensor through to_layout/typecast hung two Galaxy chips (11-27), so nothing here is narrower than a tile.
+    dens = ref._layers(w, p + "density_fn")
+    dens[-1] = torch.nn.functional.pad(dens[-1], (0, 31))
+    dens = [tdev(W / W.shape[0] ** 0.5) for W in dens]
     return {
         "n": n, "E": E, "a_in": a_in, "K": K, "residual": residual,
         "up": tdev(dense.plan_matrix(dense.linear_plan(irreps_in, irreps_in, w[p + "linear_up.weight"]), a_in, a_in)),
         "lin": tdev(dense.plan_matrix(dense.linear_plan(mid, hidden, w[p + "linear.weight"]), K, 16)),
         "skip": [tdev(dense.plan_matrix(s, *a_sk)) for s in sk],
         "ranges": [(int((element < e).sum()), int((element <= e).sum())) for e in range(len(elements))],
-        "tp_w": fcw("conv_tp_weights"), "dens": fcw("density_fn"), "silu": ref._silu_2mom(),
+        "tp_w": fcw("conv_tp_weights"), "dens": dens, "silu": ref._silu_2mom(),
         "tp": conv_tp_setup(dev, C, ins_of_k, dtype),
         "sender": rdev(edge_index[0].to(torch.int32)),
         "recv": rdev(torch.from_numpy(g_recv)), "dmax": dmax,
@@ -195,8 +200,8 @@ def interaction(feats, sh, ef, plan):
     m = ttnn.reshape(perm(m, (0, 2, 1)), (E, K * 128))
     msg = scatter.segment_sum(ttnn, m, plan["recv"], plan["dmax"], n, K * 128)
     dens = fc_net(ef, plan["dens"], plan["silu"])
-    dens = ttnn.tanh(ttnn.multiply(dens, dens))  # [E, 1]
-    density = scatter.segment_sum(ttnn, dens, plan["recv"], plan["dmax"], n, 1)
+    dens = ttnn.tanh(ttnn.multiply(dens, dens))  # [E, 32], columns 1.. are zero
+    density = scatter.segment_sum(ttnn, dens, plan["recv"], plan["dmax"], n, 32)[:, :1]
     msg = ttnn.multiply(mm(msg, plan["lin"], cfg),
                         ttnn.reciprocal(ttnn.add(density, 1.0)))
     if not plan["residual"]:
