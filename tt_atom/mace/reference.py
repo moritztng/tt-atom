@@ -34,24 +34,11 @@ def node_embedding(attrs, w):
     return attrs @ W / math.sqrt(n)
 
 
-def spherical_harmonics(vec, lmax=3):
-    """e3nn real spherical harmonics, normalize=True, component normalisation, e3nn's (x, y, z) order."""
-    u = torch.nn.functional.normalize(vec, dim=-1)
-    x, y, z = u.unbind(-1)
-    s3 = math.sqrt(3.0)
-    out = [torch.ones_like(x), x, y, z]
-    if lmax >= 2:
-        y2, x2z2 = y * y, x * x + z * z
-        s20, s24 = s3 * x * z, s3 / 2.0 * (z * z - x * x)
-        out += [s20, s3 * x * y, y2 - 0.5 * x2z2, s3 * y * z, s24]
-    if lmax >= 3:
-        out += [math.sqrt(5.0 / 6.0) * (s20 * z + s24 * x), math.sqrt(5.0) * s20 * y,
-                math.sqrt(3.0 / 8.0) * (4.0 * y2 - x2z2) * x, 0.5 * y * (2.0 * y2 - 3.0 * x2z2),
-                math.sqrt(3.0 / 8.0) * z * (4.0 * y2 - x2z2), math.sqrt(5.0) * s24 * y,
-                math.sqrt(5.0 / 6.0) * (s24 * z - s20 * x)]
-    sh = torch.stack(out, dim=-1)
-    norm = torch.cat([torch.full((2 * l + 1,), math.sqrt(2 * l + 1), dtype=sh.dtype) for l in range(lmax + 1)])
-    return sh * norm
+def spherical_harmonics(vec):
+    """e3nn real spherical harmonics to l = 3, normalize=True, component normalisation, e3nn's (x, y, z) order:
+    the same basis Orb uses, so one implementation (and one closed-form VJP) serves both."""
+    from tt_atom.orb_geometry import spherical_harmonics_l3
+    return spherical_harmonics_l3(torch.nn.functional.normalize(vec, dim=-1))
 
 
 def polynomial_cutoff(r, r_max, p):
