@@ -139,9 +139,11 @@ partly idle. Someone screening small structures would batch them until the GPU i
 per-dollar column credits each GPU with its best measured rate, the 2016-atom one, at every size.
 On that basis one GPU does 8 to 11 times the work of one TT chip, and the TT chip delivers 4.1 to 4.7 times the throughput per dollar of an H200 and 4.6
 to 5.3 times that of a B200, priced at $1,399 per chip against one eighth of an 8-GPU system
-($51,250 for H200, $68,750 for B200). Batching several structures into one GPU step is not
-measured here. From 1000 to 2016 atoms the GPU rate rose 6%, so a batched run may land a little
-higher than the rate used.
+($51,250 for H200, $68,750 for B200). Batching several structures into one GPU step
+has only been measured on an RTX 3090, where it raised the best rate by 10% (9,470 atoms/s for 16
+cells of 216 atoms against 8,640 for one 2016-atom cell, same TF32 CUDA-graph setting). The same
+gain on the larger GPUs would bring the ranges to 3.7 to 4.3 times for H200 and 4.2 to 4.8 times
+for B200. That arm has not been run on those GPUs.
 
 Every leg is graded against the same float64 forces. TT bf16 has a force MAE of 6.0 to 6.7 meV/Å.
 B200 in TF32 sits at 0.4 meV/Å, so the GPU numbers above are also the more accurate ones. H200 in
@@ -151,7 +153,7 @@ sizes; the table still uses that faster setting rather than charging the H200 fo
 
 The protocol is in `benchmarks/orb_gpu_bench_fair.py`, the comparison in
 `benchmarks/orb_fair_compare.py`, and the raw results, clocks and float64 anchors in
-`benchmarks/orb_fair/`. An earlier version of this section compared TT's traced path to the stock
+`benchmarks/orb_fair/` (the RTX 3090 batching run is `gpu_rtx3090_float32-high_packed.json`). An earlier version of this section compared TT's traced path to the stock
 H200 calculator and quoted 4.4x to 9.1x per dollar; that was not one protocol on both sides. A
 later one compared size by size and quoted up to 7.4x, which charged the GPU for running a single
 small structure.

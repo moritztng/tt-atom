@@ -1,0 +1,1549 @@
+{
+ "tt_chip_price_usd": 1399.0,
+ "gpus": {
+  "RTX3090": {
+   "price_usd": null,
+   "runs": [
+    {
+     "gpu_name": "NVIDIA GeForce RTX 3090",
+     "model": "mace-mp medium-0b3",
+     "mace": "0.3.17",
+     "packages": {
+      "mace-torch": "0.3.17",
+      "e3nn": "0.4.4",
+      "cuequivariance-torch": "0.11.1",
+      "cuequivariance-ops-torch-cu12": null,
+      "cuequivariance-ops-torch-cu13": "0.10.0",
+      "openequivariance": "0.8.3"
+     },
+     "torch": "2.15.0+cu132",
+     "cuda": "13.2",
+     "precision": "float32-high",
+     "dev_run": true,
+     "parity_anchor": "mace-torch float64, stock calculator, fresh graph",
+     "git_sha": null,
+     "timestamp_utc": "2026-11-28T03:39:06.039287+00:00",
+     "warmup": 20,
+     "steps": 100
+    },
+    {
+     "gpu_name": "NVIDIA GeForce RTX 3090",
+     "model": "mace-mp medium-0b3",
+     "mace": "0.3.17",
+     "packages": {
+      "mace-torch": "0.3.17",
+      "e3nn": "0.4.4",
+      "cuequivariance-torch": "0.11.1",
+      "cuequivariance-ops-torch-cu12": null,
+      "cuequivariance-ops-torch-cu13": "0.10.0",
+      "openequivariance": "0.8.3"
+     },
+     "torch": "2.15.0+cu132",
+     "cuda": "13.2",
+     "precision": "float32-high",
+     "dev_run": true,
+     "parity_anchor": "mace-torch float64, stock calculator, fresh graph",
+     "git_sha": null,
+     "timestamp_utc": "2026-11-28T03:43:58.118434+00:00",
+     "warmup": 20,
+     "steps": 100
+    },
+    {
+     "gpu_name": "NVIDIA GeForce RTX 3090",
+     "model": "mace-mp medium-0b3",
+     "mace": "0.3.17",
+     "packages": {
+      "mace-torch": "0.3.17",
+      "e3nn": "0.4.4",
+      "cuequivariance-torch": "0.11.1",
+      "cuequivariance-ops-torch-cu12": null,
+      "cuequivariance-ops-torch-cu13": "0.10.0",
+      "openequivariance": "0.8.3"
+     },
+     "torch": "2.15.0+cu132",
+     "cuda": "13.2",
+     "precision": "float32-high",
+     "dev_run": true,
+     "parity_anchor": "mace-torch float64, stock calculator, fresh graph",
+     "git_sha": null,
+     "timestamp_utc": "2026-11-28T02:49:30.868737+00:00",
+     "warmup": 20,
+     "steps": 100
+    },
+    {
+     "gpu_name": "NVIDIA GeForce RTX 3090",
+     "model": "mace-mp medium-0b3",
+     "mace": "0.3.17",
+     "packages": {
+      "mace-torch": "0.3.17",
+      "e3nn": "0.4.4",
+      "cuequivariance-torch": "0.11.1",
+      "cuequivariance-ops-torch-cu12": null,
+      "cuequivariance-ops-torch-cu13": "0.10.0",
+      "openequivariance": "0.8.3"
+     },
+     "torch": "2.15.0+cu132",
+     "cuda": "13.2",
+     "precision": "float32-high",
+     "dev_run": true,
+     "parity_anchor": "mace-torch float64, stock calculator, fresh graph",
+     "git_sha": null,
+     "timestamp_utc": "2026-11-28T02:58:05.071597+00:00",
+     "warmup": 20,
+     "steps": 100
+    },
+    {
+     "gpu_name": "NVIDIA GeForce RTX 3090",
+     "model": "mace-mp medium-0b3",
+     "mace": "0.3.17",
+     "packages": {
+      "mace-torch": "0.3.17",
+      "e3nn": "0.4.4",
+      "cuequivariance-torch": "0.11.1",
+      "cuequivariance-ops-torch-cu12": null,
+      "cuequivariance-ops-torch-cu13": "0.10.0",
+      "openequivariance": "0.8.3"
+     },
+     "torch": "2.15.0+cu132",
+     "cuda": "13.2",
+     "precision": "float32-high",
+     "dev_run": true,
+     "parity_anchor": "mace-torch float64, stock calculator, fresh graph",
+     "git_sha": null,
+     "timestamp_utc": "2026-11-28T03:07:26.096514+00:00",
+     "warmup": 20,
+     "steps": 100
+    },
+    {
+     "gpu_name": "NVIDIA GeForce RTX 3090",
+     "model": "mace-mp medium-0b3",
+     "mace": "0.3.17",
+     "packages": {
+      "mace-torch": "0.3.17",
+      "e3nn": "0.4.4",
+      "cuequivariance-torch": "0.11.1",
+      "cuequivariance-ops-torch-cu12": null,
+      "cuequivariance-ops-torch-cu13": "0.10.0",
+      "openequivariance": "0.8.3"
+     },
+     "torch": "2.15.0+cu132",
+     "cuda": "13.2",
+     "precision": "float64",
+     "dev_run": true,
+     "parity_anchor": "mace-torch float64, stock calculator, fresh graph",
+     "git_sha": null,
+     "timestamp_utc": "2026-11-28T03:09:13.215107+00:00",
+     "warmup": 20,
+     "steps": 100
+    },
+    {
+     "gpu_name": "NVIDIA GeForce RTX 3090",
+     "model": "mace-mp medium-0b3",
+     "mace": "0.3.17",
+     "packages": {
+      "mace-torch": "0.3.17",
+      "e3nn": "0.4.4",
+      "cuequivariance-torch": "0.11.1",
+      "cuequivariance-ops-torch-cu12": null,
+      "cuequivariance-ops-torch-cu13": "0.10.0",
+      "openequivariance": "0.8.3"
+     },
+     "torch": "2.15.0+cu132",
+     "cuda": "13.2",
+     "precision": "float64",
+     "dev_run": true,
+     "parity_anchor": "mace-torch float64, stock calculator, fresh graph",
+     "git_sha": null,
+     "timestamp_utc": "2026-11-28T03:13:07.891414+00:00",
+     "warmup": 20,
+     "steps": 100
+    },
+    {
+     "gpu_name": "NVIDIA GeForce RTX 3090",
+     "model": "mace-mp medium-0b3",
+     "mace": "0.3.17",
+     "packages": {
+      "mace-torch": "0.3.17",
+      "e3nn": "0.4.4",
+      "cuequivariance-torch": "0.11.1",
+      "cuequivariance-ops-torch-cu12": null,
+      "cuequivariance-ops-torch-cu13": "0.10.0",
+      "openequivariance": "0.8.3"
+     },
+     "torch": "2.15.0+cu132",
+     "cuda": "13.2",
+     "precision": "float64",
+     "dev_run": true,
+     "parity_anchor": "mace-torch float64, stock calculator, fresh graph",
+     "git_sha": null,
+     "timestamp_utc": "2026-11-28T03:18:27.335277+00:00",
+     "warmup": 20,
+     "steps": 100
+    },
+    {
+     "gpu_name": "NVIDIA GeForce RTX 3090",
+     "model": "mace-mp medium-0b3",
+     "mace": "0.3.17",
+     "packages": {
+      "mace-torch": "0.3.17",
+      "e3nn": "0.4.4",
+      "cuequivariance-torch": "0.11.1",
+      "cuequivariance-ops-torch-cu12": null,
+      "cuequivariance-ops-torch-cu13": "0.10.0",
+      "openequivariance": "0.8.3"
+     },
+     "torch": "2.15.0+cu132",
+     "cuda": "13.2",
+     "precision": "float64",
+     "dev_run": true,
+     "parity_anchor": "mace-torch float64, stock calculator, fresh graph",
+     "git_sha": null,
+     "timestamp_utc": "2026-11-28T03:22:03.203300+00:00",
+     "warmup": 20,
+     "steps": 100
+    }
+   ],
+   "sizes": {
+    "2x2x2": {
+     "float32-high": {
+      "N": 64,
+      "edges": 2944,
+      "variants": {
+       "cueq_eager": {
+        "step_ms_median": 56.52944196481258,
+        "atoms_per_s": 1132.1534014051927,
+        "sm_clock_mhz_during": 1755,
+        "sm_clock_mhz_min_max": [
+         1755,
+         1755
+        ],
+        "peak_mem_gb": 0.17046213150024414,
+        "parity": {
+         "dE_per_atom_eV": 1.1786992176965327e-05,
+         "mae_dF_eV_per_A": 0.00042389317179016977,
+         "max_abs_dF_eV_per_A": 0.0015366231510313636
+        }
+       },
+       "cueq_compiled": {
+        "step_ms_median": 19.41082696430385,
+        "atoms_per_s": 3297.1289743448233,
+        "sm_clock_mhz_during": 1755,
+        "sm_clock_mhz_min_max": [
+         1755,
+         1755
+        ],
+        "peak_mem_gb": 0.23453617095947266,
+        "parity": {
+         "dE_per_atom_eV": 7.495457753137202e-06,
+         "mae_dF_eV_per_A": 0.00043550003867917473,
+         "max_abs_dF_eV_per_A": 0.001554051176266058
+        }
+       },
+       "cueq_reduce_overhead": {
+        "step_ms_median": 2.847227966412902,
+        "atoms_per_s": 22478.00343174867,
+        "sm_clock_mhz_during": 1755,
+        "sm_clock_mhz_min_max": [
+         1755,
+         1755
+        ],
+        "peak_mem_gb": 0.2679934501647949,
+        "parity": {
+         "dE_per_atom_eV": 7.018620594934077e-06,
+         "mae_dF_eV_per_A": 0.00042926868675790256,
+         "max_abs_dF_eV_per_A": 0.0015283786191073179
+        }
+       },
+       "hybrid_reduce_overhead": {
+        "step_ms_median": 4.269454511813819,
+        "atoms_per_s": 14990.205381719941,
+        "sm_clock_mhz_during": 1755,
+        "sm_clock_mhz_min_max": [
+         1755,
+         1755
+        ],
+        "peak_mem_gb": 0.2876739501953125,
+        "parity": {
+         "dE_per_atom_eV": 7.018620594934077e-06,
+         "mae_dF_eV_per_A": 0.0004274988533024637,
+         "max_abs_dF_eV_per_A": 0.0015606992377367734
+        }
+       },
+       "cueq_cudagraph": {
+        "step_ms_median": 2.052965108305216,
+        "atoms_per_s": 31174.421689433348,
+        "sm_clock_mhz_during": 1755,
+        "sm_clock_mhz_min_max": [
+         1755,
+         1755
+        ],
+        "peak_mem_gb": 0.26941967010498047,
+        "parity": {
+         "dE_per_atom_eV": 1.1310155018762202e-05,
+         "mae_dF_eV_per_A": 0.00042338084166949186,
+         "max_abs_dF_eV_per_A": 0.0015093349351015806
+        }
+       },
+       "cueq_reduce_overhead x4": {
+        "step_ms_median": 4.138244548812509,
+        "atoms_per_s": 61861.97963420518,
+        "sm_clock_mhz_during": 1965,
+        "sm_clock_mhz_min_max": [
+         1965,
+         1965
+        ],
+        "peak_mem_gb": 0.4894390106201172,
+        "parity": {
+         "dE_per_atom_eV": 0.0001832394055281128,
+         "mae_dF_eV_per_A": 0.0004297971953435617,
+         "max_abs_dF_eV_per_A": 0.001530807508381915
+        }
+       },
+       "cueq_reduce_overhead x16": {
+        "step_ms_median": 11.218648520298302,
+        "atoms_per_s": 91276.59166317941,
+        "sm_clock_mhz_during": 1875,
+        "sm_clock_mhz_min_max": [
+         1785,
+         1965
+        ],
+        "peak_mem_gb": 1.2372803688049316,
+        "parity": {
+         "dE_per_atom_eV": 0.00016750377930740967,
+         "mae_dF_eV_per_A": 0.00045797820883986684,
+         "max_abs_dF_eV_per_A": 0.001624506009968829
+        }
+       },
+       "cueq_reduce_overhead x64": {
+        "step_ms_median": 36.16967657580972,
+        "atoms_per_s": 113244.03167982445,
+        "sm_clock_mhz_during": 1432,
+        "sm_clock_mhz_min_max": [
+         1380,
+         1965
+        ],
+        "peak_mem_gb": 4.201743125915527,
+        "parity": {
+         "dE_per_atom_eV": 0.00015367550171951905,
+         "mae_dF_eV_per_A": 0.0004705001289846162,
+         "max_abs_dF_eV_per_A": 0.0014791931207622233
+        }
+       }
+      },
+      "fastest_single": {
+       "variant": "cueq_cudagraph",
+       "step_ms": 2.052965108305216,
+       "atoms_per_s": 31174.421689433348
+      },
+      "best_throughput": {
+       "variant": "cueq_reduce_overhead x64",
+       "atoms_per_s": 113244.03167982445
+      }
+     },
+     "float64": {
+      "N": 64,
+      "edges": 2944,
+      "variants": {
+       "cueq_cudagraph": {
+        "step_ms_median": 14.667378505691886,
+        "atoms_per_s": 4363.424587097407,
+        "sm_clock_mhz_during": 1920,
+        "sm_clock_mhz_min_max": [
+         1920,
+         1920
+        ],
+        "peak_mem_gb": 0.25577878952026367,
+        "parity": {
+         "dE_per_atom_eV": 0.0,
+         "mae_dF_eV_per_A": 5.530741157301159e-16,
+         "max_abs_dF_eV_per_A": 1.7486012637846216e-15
+        }
+       },
+       "cueq_reduce_overhead": {
+        "step_ms_median": 15.161200426518917,
+        "atoms_per_s": 4221.301625170501,
+        "sm_clock_mhz_during": 1920,
+        "sm_clock_mhz_min_max": [
+         1920,
+         1920
+        ],
+        "peak_mem_gb": 0.39225006103515625,
+        "parity": {
+         "dE_per_atom_eV": 8.881784197001252e-16,
+         "mae_dF_eV_per_A": 1.6662820844613967e-15,
+         "max_abs_dF_eV_per_A": 5.447031714567174e-15
+        }
+       },
+       "e3nn_cudagraph": {
+        "step_ms_median": 84.2497122939676,
+        "atoms_per_s": 759.6465110371954,
+        "sm_clock_mhz_during": 1920,
+        "sm_clock_mhz_min_max": [
+         1920,
+         1920
+        ],
+        "peak_mem_gb": 0.773958683013916,
+        "parity": {
+         "dE_per_atom_eV": 2.6645352591003757e-15,
+         "mae_dF_eV_per_A": 4.915366074234595e-16,
+         "max_abs_dF_eV_per_A": 2.131975151975496e-15
+        }
+       },
+       "cueq_cudagraph x4": {
+        "step_ms_median": 42.56636439822614,
+        "atoms_per_s": 6014.138243168079,
+        "sm_clock_mhz_during": 1920,
+        "sm_clock_mhz_min_max": [
+         1920,
+         1920
+        ],
+        "peak_mem_gb": 0.725440502166748,
+        "parity": {
+         "dE_per_atom_eV": 8.881784197001252e-16,
+         "mae_dF_eV_per_A": 4.85913438030954e-16,
+         "max_abs_dF_eV_per_A": 2.1094237467877974e-15
+        }
+       }
+      },
+      "fastest_single": {
+       "variant": "cueq_cudagraph",
+       "step_ms": 14.667378505691886,
+       "atoms_per_s": 4363.424587097407
+      },
+      "best_throughput": {
+       "variant": "cueq_cudagraph x4",
+       "atoms_per_s": 6014.138243168079
+      }
+     }
+    },
+    "3x3x3": {
+     "float32-high": {
+      "N": 216,
+      "edges": 9936,
+      "variants": {
+       "cueq_eager": {
+        "step_ms_median": 56.55712797306478,
+        "atoms_per_s": 3819.1472541333706,
+        "sm_clock_mhz_during": 1755,
+        "sm_clock_mhz_min_max": [
+         1755,
+         1755
+        ],
+        "peak_mem_gb": 0.2953357696533203,
+        "parity": {
+         "dE_per_atom_eV": 0.00023502451696799653,
+         "mae_dF_eV_per_A": 0.00043044885922130207,
+         "max_abs_dF_eV_per_A": 0.0019059459234263285
+        }
+       },
+       "cueq_compiled": {
+        "step_ms_median": 19.24950652755797,
+        "atoms_per_s": 11221.066872066054,
+        "sm_clock_mhz_during": 1755,
+        "sm_clock_mhz_min_max": [
+         1755,
+         1755
+        ],
+        "peak_mem_gb": 0.3855276107788086,
+        "parity": {
+         "dE_per_atom_eV": 0.00023728507831058914,
+         "mae_dF_eV_per_A": 0.00042519920104724013,
+         "max_abs_dF_eV_per_A": 0.002051262047388731
+        }
+       },
+       "cueq_reduce_overhead": {
+        "step_ms_median": 3.736478043720126,
+        "atoms_per_s": 57808.44888491443,
+        "sm_clock_mhz_during": 1837,
+        "sm_clock_mhz_min_max": [
+         1755,
+         1920
+        ],
+        "peak_mem_gb": 0.41936540603637695,
+        "parity": {
+         "dE_per_atom_eV": 0.0002333290959610521,
+         "mae_dF_eV_per_A": 0.000422057789496313,
+         "max_abs_dF_eV_per_A": 0.002059479106464563
+        }
+       },
+       "hybrid_reduce_overhead": {
+        "step_ms_median": 5.555661977268755,
+        "atoms_per_s": 38879.25523254904,
+        "sm_clock_mhz_during": 1852,
+        "sm_clock_mhz_min_max": [
+         1755,
+         1950
+        ],
+        "peak_mem_gb": 0.4259219169616699,
+        "parity": {
+         "dE_per_atom_eV": 0.0002321988152897558,
+         "mae_dF_eV_per_A": 0.0004259285916810205,
+         "max_abs_dF_eV_per_A": 0.002016955849030195
+        }
+       },
+       "cueq_cudagraph": {
+        "step_ms_median": 3.514401614665985,
+        "atoms_per_s": 61461.38765091849,
+        "sm_clock_mhz_during": 1882,
+        "sm_clock_mhz_min_max": [
+         1800,
+         1965
+        ],
+        "peak_mem_gb": 0.4000239372253418,
+        "parity": {
+         "dE_per_atom_eV": 0.0002333290959610521,
+         "mae_dF_eV_per_A": 0.0004328166106782053,
+         "max_abs_dF_eV_per_A": 0.0018880310023810251
+        }
+       },
+       "cueq_reduce_overhead x4": {
+        "step_ms_median": 8.685525972396135,
+        "atoms_per_s": 99475.84092729878,
+        "sm_clock_mhz_during": 1965,
+        "sm_clock_mhz_min_max": [
+         1965,
+         1965
+        ],
+        "peak_mem_gb": 1.0813789367675781,
+        "parity": {
+         "dE_per_atom_eV": 0.0003751793202087373,
+         "mae_dF_eV_per_A": 0.00045226576659384134,
+         "max_abs_dF_eV_per_A": 0.0019462759161974772
+        }
+       },
+       "cueq_reduce_overhead x16": {
+        "step_ms_median": 30.56788060348481,
+        "atoms_per_s": 113059.85013583205,
+        "sm_clock_mhz_during": 1432,
+        "sm_clock_mhz_min_max": [
+         1365,
+         1500
+        ],
+        "peak_mem_gb": 3.5939817428588867,
+        "parity": {
+         "dE_per_atom_eV": 0.00020337665817170023,
+         "mae_dF_eV_per_A": 0.000426350953665015,
+         "max_abs_dF_eV_per_A": 0.0016954996178533419
+        }
+       },
+       "cueq_reduce_overhead x64": {
+        "step_ms_median": 109.48490956798196,
+        "atoms_per_s": 126263.97605431026,
+        "sm_clock_mhz_during": 1350,
+        "sm_clock_mhz_min_max": [
+         1065,
+         1470
+        ],
+        "peak_mem_gb": 13.615556716918945,
+        "parity": {
+         "dE_per_atom_eV": 0.0002028115178360521,
+         "mae_dF_eV_per_A": 0.0004122419313138431,
+         "max_abs_dF_eV_per_A": 0.0018147079760815485
+        }
+       }
+      },
+      "fastest_single": {
+       "variant": "cueq_cudagraph",
+       "step_ms": 3.514401614665985,
+       "atoms_per_s": 61461.38765091849
+      },
+      "best_throughput": {
+       "variant": "cueq_reduce_overhead x64",
+       "atoms_per_s": 126263.97605431026
+      }
+     }
+    },
+    "4x4x4": {
+     "float32-high": {
+      "N": 512,
+      "edges": 23552,
+      "variants": {
+       "stock": {
+        "step_ms_median": 72.40218110382557,
+        "atoms_per_s": 7071.610166906244,
+        "sm_clock_mhz_during": 1755,
+        "sm_clock_mhz_min_max": [
+         1695,
+         1890
+        ],
+        "peak_mem_gb": 3.7510485649108887,
+        "parity": {
+         "dE_per_atom_eV": 0.00021865987199554127,
+         "mae_dF_eV_per_A": 0.00044066509190934523,
+         "max_abs_dF_eV_per_A": 0.001751639467451365
+        }
+       },
+       "e3nn_eager": {
+        "step_ms_median": 56.54882127419114,
+        "atoms_per_s": 9054.123294939069,
+        "sm_clock_mhz_during": 1755,
+        "sm_clock_mhz_min_max": [
+         1710,
+         1830
+        ],
+        "peak_mem_gb": 1.98875093460083,
+        "parity": {
+         "dE_per_atom_eV": 0.00021579884904632252,
+         "mae_dF_eV_per_A": 0.0004352187045891344,
+         "max_abs_dF_eV_per_A": 0.001758406588885042
+        }
+       },
+       "e3nn_compiled": {
+        "step_ms_median": 32.60965854860842,
+        "atoms_per_s": 15700.869705115296,
+        "sm_clock_mhz_during": 1732,
+        "sm_clock_mhz_min_max": [
+         1635,
+         1755
+        ],
+        "peak_mem_gb": 2.8609237670898438,
+        "parity": {
+         "dE_per_atom_eV": 0.00022581242936858814,
+         "mae_dF_eV_per_A": 0.0004309421024912303,
+         "max_abs_dF_eV_per_A": 0.001675748171022201
+        }
+       },
+       "e3nn_reduce_overhead": {
+        "step_ms_median": 32.096153823658824,
+        "atoms_per_s": 15952.067117231749,
+        "sm_clock_mhz_during": 1725,
+        "sm_clock_mhz_min_max": [
+         1635,
+         1740
+        ],
+        "peak_mem_gb": 2.8986124992370605,
+        "parity": {
+         "dE_per_atom_eV": 0.0002229514064193694,
+         "mae_dF_eV_per_A": 0.00042696078447038746,
+         "max_abs_dF_eV_per_A": 0.0016997837223996642
+        }
+       },
+       "e3nn_cudagraph": {
+        "step_ms_median": 51.70183628797531,
+        "atoms_per_s": 9902.936467250385,
+        "sm_clock_mhz_during": 1725,
+        "sm_clock_mhz_min_max": [
+         1680,
+         1845
+        ],
+        "peak_mem_gb": 2.0631799697875977,
+        "parity": {
+         "dE_per_atom_eV": 0.0002210440577865569,
+         "mae_dF_eV_per_A": 0.0004355178934594796,
+         "max_abs_dF_eV_per_A": 0.001773812318135587
+        }
+       },
+       "cueq_eager": {
+        "step_ms_median": 48.24540298432112,
+        "atoms_per_s": 10612.410060423595,
+        "sm_clock_mhz_during": 1695,
+        "sm_clock_mhz_min_max": [
+         1695,
+         1695
+        ],
+        "peak_mem_gb": 0.6946315765380859,
+        "parity": {
+         "dE_per_atom_eV": 0.00023868703264007252,
+         "mae_dF_eV_per_A": 0.0004377582693188332,
+         "max_abs_dF_eV_per_A": 0.001864895831097363
+        }
+       },
+       "cueq_compiled": {
+        "step_ms_median": 18.427188973873854,
+        "atoms_per_s": 27785.030083856836,
+        "sm_clock_mhz_during": 1695,
+        "sm_clock_mhz_min_max": [
+         1695,
+         1695
+        ],
+        "peak_mem_gb": 0.8173618316650391,
+        "parity": {
+         "dE_per_atom_eV": 0.0002343954982162444,
+         "mae_dF_eV_per_A": 0.00042990811558337306,
+         "max_abs_dF_eV_per_A": 0.0019781148538482174
+        }
+       },
+       "cueq_reduce_overhead": {
+        "step_ms_median": 5.919735180214047,
+        "atoms_per_s": 86490.35546578064,
+        "sm_clock_mhz_during": 1815,
+        "sm_clock_mhz_min_max": [
+         1710,
+         1815
+        ],
+        "peak_mem_gb": 0.8513665199279785,
+        "parity": {
+         "dE_per_atom_eV": 0.00023201131242522877,
+         "mae_dF_eV_per_A": 0.00042978732733552923,
+         "max_abs_dF_eV_per_A": 0.0019370919570815548
+        }
+       },
+       "cueq_cudagraph": {
+        "step_ms_median": 6.7036275286227465,
+        "atoms_per_s": 76376.55848477456,
+        "sm_clock_mhz_during": 1770,
+        "sm_clock_mhz_min_max": [
+         1770,
+         1770
+        ],
+        "peak_mem_gb": 0.7658143043518066,
+        "parity": {
+         "dE_per_atom_eV": 0.00023725652116546314,
+         "mae_dF_eV_per_A": 0.0004347637915899027,
+         "max_abs_dF_eV_per_A": 0.0016767090663802608
+        }
+       },
+       "oeq_reduce_overhead": {
+        "step_ms_median": 24.609590647742152,
+        "atoms_per_s": 20804.897055326448,
+        "sm_clock_mhz_during": 1875,
+        "sm_clock_mhz_min_max": [
+         1830,
+         1890
+        ],
+        "peak_mem_gb": 1.2086377143859863,
+        "parity": {
+         "dE_per_atom_eV": 0.00022342824357757252,
+         "mae_dF_eV_per_A": 0.0004266745632289222,
+         "max_abs_dF_eV_per_A": 0.001970560173033667
+        }
+       },
+       "hybrid_reduce_overhead": {
+        "step_ms_median": 7.474288577213883,
+        "atoms_per_s": 68501.50281337588,
+        "sm_clock_mhz_during": 1770,
+        "sm_clock_mhz_min_max": [
+         1740,
+         1815
+        ],
+        "peak_mem_gb": 0.8695425987243652,
+        "parity": {
+         "dE_per_atom_eV": 0.0002305808009506194,
+         "mae_dF_eV_per_A": 0.00043534944892458595,
+         "max_abs_dF_eV_per_A": 0.0018251989725125706
+        }
+       },
+       "cueq_cudagraph x4": {
+        "step_ms_median": 22.749391151592135,
+        "atoms_per_s": 90024.38730570901,
+        "sm_clock_mhz_during": 1635,
+        "sm_clock_mhz_min_max": [
+         1620,
+         1635
+        ],
+        "peak_mem_gb": 2.1375160217285156,
+        "parity": {
+         "dE_per_atom_eV": 0.00034835957902679127,
+         "mae_dF_eV_per_A": 0.00043653415682662995,
+         "max_abs_dF_eV_per_A": 0.0020305520400893673
+        }
+       },
+       "cueq_cudagraph x16": {
+        "step_ms_median": 86.75271389074624,
+        "atoms_per_s": 94429.32252605676,
+        "sm_clock_mhz_during": 1605,
+        "sm_clock_mhz_min_max": [
+         1545,
+         1635
+        ],
+        "peak_mem_gb": 7.328810691833496,
+        "parity": {
+         "dE_per_atom_eV": 0.00020721578019866627,
+         "mae_dF_eV_per_A": 0.00043401305324382885,
+         "max_abs_dF_eV_per_A": 0.00165975137977728
+        }
+       },
+       "cueq_cudagraph x64": {
+        "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 1.39 GiB. GPU 0 has a total capacity of 23.56 GiB of which 817.00 MiB is free. Including non-PyTorch memory, this process has 22.75 GiB memory in use. Of the allo"
+       },
+       "cueq_eager x4": {
+        "step_ms_median": 49.12347556091845,
+        "atoms_per_s": 41690.86117410926,
+        "sm_clock_mhz_during": 1920,
+        "sm_clock_mhz_min_max": [
+         1920,
+         1920
+        ],
+        "peak_mem_gb": 2.135875701904297,
+        "parity": {
+         "dE_per_atom_eV": 0.000347405904710385,
+         "mae_dF_eV_per_A": 0.00043682488020319255,
+         "max_abs_dF_eV_per_A": 0.0019055312976729855
+        }
+       },
+       "cueq_eager x16": {
+        "step_ms_median": 90.54684545844793,
+        "atoms_per_s": 90472.50578993742,
+        "sm_clock_mhz_during": 1590,
+        "sm_clock_mhz_min_max": [
+         1440,
+         1650
+        ],
+        "peak_mem_gb": 7.326059818267822,
+        "parity": {
+         "dE_per_atom_eV": 0.0002057852687240569,
+         "mae_dF_eV_per_A": 0.00043690480518676324,
+         "max_abs_dF_eV_per_A": 0.0018345792534840977
+        }
+       },
+       "cueq_eager x64": {
+        "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 1.39 GiB. GPU 0 has a total capacity of 23.56 GiB of which 925.00 MiB is free. Including non-PyTorch memory, this process has 22.65 GiB memory in use. Of the allo"
+       },
+       "cueq_reduce_overhead x4": {
+        "step_ms_median": 17.048088600859046,
+        "atoms_per_s": 120130.76937533056,
+        "sm_clock_mhz_during": 1605,
+        "sm_clock_mhz_min_max": [
+         1605,
+         1755
+        ],
+        "peak_mem_gb": 2.412003993988037,
+        "parity": {
+         "dE_per_atom_eV": 0.0003507437648178069,
+         "mae_dF_eV_per_A": 0.0004325331895567804,
+         "max_abs_dF_eV_per_A": 0.0018346776757591013
+        }
+       },
+       "cueq_reduce_overhead x16": {
+        "step_ms_median": 64.09807479940355,
+        "atoms_per_s": 127804.15052459936,
+        "sm_clock_mhz_during": 1522,
+        "sm_clock_mhz_min_max": [
+         1425,
+         1560
+        ],
+        "peak_mem_gb": 8.348110675811768,
+        "parity": {
+         "dE_per_atom_eV": 0.00020054005998382252,
+         "mae_dF_eV_per_A": 0.0004358922525144478,
+         "max_abs_dF_eV_per_A": 0.0017726649287236607
+        }
+       },
+       "cueq_reduce_overhead x64": {
+        "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 256.00 MiB. GPU 0 has a total capacity of 23.56 GiB of which 89.00 MiB is free. Including non-PyTorch memory, this process has 23.46 GiB memory in use. Of the all"
+       }
+      },
+      "fastest_single": {
+       "variant": "cueq_reduce_overhead",
+       "step_ms": 5.919735180214047,
+       "atoms_per_s": 86490.35546578064
+      },
+      "best_throughput": {
+       "variant": "cueq_reduce_overhead x16",
+       "atoms_per_s": 127804.15052459936
+      }
+     },
+     "float64": {
+      "N": 512,
+      "edges": 23552,
+      "variants": {
+       "cueq_cudagraph": {
+        "step_ms_median": 79.0572443511337,
+        "atoms_per_s": 6476.319838899846,
+        "sm_clock_mhz_during": 1920,
+        "sm_clock_mhz_min_max": [
+         1920,
+         1920
+        ],
+        "peak_mem_gb": 1.0180835723876953,
+        "parity": {
+         "dE_per_atom_eV": 8.881784197001252e-16,
+         "mae_dF_eV_per_A": 5.210987984364634e-16,
+         "max_abs_dF_eV_per_A": 2.345346139520643e-15
+        }
+       },
+       "cueq_reduce_overhead": {
+        "step_ms_median": 81.37897355481982,
+        "atoms_per_s": 6291.551461448433,
+        "sm_clock_mhz_during": 1920,
+        "sm_clock_mhz_min_max": [
+         1920,
+         1920
+        ],
+        "peak_mem_gb": 1.3254523277282715,
+        "parity": {
+         "dE_per_atom_eV": 3.552713678800501e-15,
+         "mae_dF_eV_per_A": 1.7933549907066314e-15,
+         "max_abs_dF_eV_per_A": 7.299716386910404e-15
+        }
+       },
+       "e3nn_cudagraph": {
+        "step_ms_median": 619.8063571937382,
+        "atoms_per_s": 826.0644539338917,
+        "sm_clock_mhz_during": 1935,
+        "sm_clock_mhz_min_max": [
+         1875,
+         1935
+        ],
+        "peak_mem_gb": 3.964919090270996,
+        "parity": {
+         "dE_per_atom_eV": 1.7763568394002505e-15,
+         "mae_dF_eV_per_A": 4.750412760503924e-16,
+         "max_abs_dF_eV_per_A": 2.0816681711721685e-15
+        }
+       },
+       "cueq_cudagraph x4": {
+        "step_ms_median": 306.3930990174413,
+        "atoms_per_s": 6684.223654408805,
+        "sm_clock_mhz_during": 1935,
+        "sm_clock_mhz_min_max": [
+         1935,
+         1935
+        ],
+        "peak_mem_gb": 3.754326820373535,
+        "parity": {
+         "dE_per_atom_eV": 1.7763568394002505e-15,
+         "mae_dF_eV_per_A": 7.187601129601614e-16,
+         "max_abs_dF_eV_per_A": 3.344546861683284e-15
+        }
+       }
+      },
+      "fastest_single": {
+       "variant": "cueq_cudagraph",
+       "step_ms": 79.0572443511337,
+       "atoms_per_s": 6476.319838899846
+      },
+      "best_throughput": {
+       "variant": "cueq_cudagraph x4",
+       "atoms_per_s": 6684.223654408805
+      }
+     }
+    },
+    "5x5x5": {
+     "float32-high": {
+      "N": 1000,
+      "edges": 46000,
+      "variants": {
+       "stock": {
+        "step_ms_median": 125.28680684044957,
+        "atoms_per_s": 7981.686381978602,
+        "sm_clock_mhz_during": 1725,
+        "sm_clock_mhz_min_max": [
+         1665,
+         1890
+        ],
+        "peak_mem_gb": 7.208067417144775,
+        "parity": {
+         "dE_per_atom_eV": 0.0001763606263530164,
+         "mae_dF_eV_per_A": 0.00045378759530693486,
+         "max_abs_dF_eV_per_A": 0.001961623637702914
+        }
+       },
+       "e3nn_eager": {
+        "step_ms_median": 104.34260941110551,
+        "atoms_per_s": 9583.812458245528,
+        "sm_clock_mhz_during": 1725,
+        "sm_clock_mhz_min_max": [
+         1650,
+         1815
+        ],
+        "peak_mem_gb": 3.71476411819458,
+        "parity": {
+         "dE_per_atom_eV": 0.0001734309388530164,
+         "mae_dF_eV_per_A": 0.0004556326583001883,
+         "max_abs_dF_eV_per_A": 0.001996224133995028
+        }
+       },
+       "e3nn_compiled": {
+        "step_ms_median": 61.19807297363877,
+        "atoms_per_s": 16340.383796573995,
+        "sm_clock_mhz_during": 1695,
+        "sm_clock_mhz_min_max": [
+         1665,
+         1740
+        ],
+        "peak_mem_gb": 5.3603129386901855,
+        "parity": {
+         "dE_per_atom_eV": 0.00016708328260301643,
+         "mae_dF_eV_per_A": 0.0004571006056960522,
+         "max_abs_dF_eV_per_A": 0.001991959052942527
+        }
+       },
+       "e3nn_reduce_overhead": {
+        "step_ms_median": 60.78121461905539,
+        "atoms_per_s": 16452.45173640364,
+        "sm_clock_mhz_during": 1695,
+        "sm_clock_mhz_min_max": [
+         1665,
+         1725
+        ],
+        "peak_mem_gb": 5.414800643920898,
+        "parity": {
+         "dE_per_atom_eV": 0.00016659500135301643,
+         "mae_dF_eV_per_A": 0.0004563845116042559,
+         "max_abs_dF_eV_per_A": 0.0018508727786957918
+        }
+       },
+       "e3nn_cudagraph": {
+        "step_ms_median": 99.4354288559407,
+        "atoms_per_s": 10056.777664717194,
+        "sm_clock_mhz_during": 1710,
+        "sm_clock_mhz_min_max": [
+         1680,
+         1740
+        ],
+        "peak_mem_gb": 3.794790744781494,
+        "parity": {
+         "dE_per_atom_eV": 0.0001744075013530164,
+         "mae_dF_eV_per_A": 0.00045627044130694443,
+         "max_abs_dF_eV_per_A": 0.002065115278779753
+        }
+       },
+       "cueq_eager": {
+        "step_ms_median": 57.358168764039874,
+        "atoms_per_s": 17434.308339127798,
+        "sm_clock_mhz_during": 1695,
+        "sm_clock_mhz_min_max": [
+         1695,
+         1695
+        ],
+        "peak_mem_gb": 1.1099696159362793,
+        "parity": {
+         "dE_per_atom_eV": 0.00039559890760301644,
+         "mae_dF_eV_per_A": 0.0004556888739871063,
+         "max_abs_dF_eV_per_A": 0.0018625782305741884
+        }
+       },
+       "cueq_compiled": {
+        "step_ms_median": 19.11217928864062,
+        "atoms_per_s": 52322.65692454827,
+        "sm_clock_mhz_during": 1920,
+        "sm_clock_mhz_min_max": [
+         1920,
+         1920
+        ],
+        "peak_mem_gb": 1.2865447998046875,
+        "parity": {
+         "dE_per_atom_eV": 0.00039364578260301644,
+         "mae_dF_eV_per_A": 0.0004548383750790149,
+         "max_abs_dF_eV_per_A": 0.0020388925676693426
+        }
+       },
+       "cueq_reduce_overhead": {
+        "step_ms_median": 9.525163332000375,
+        "atoms_per_s": 104985.0763860855,
+        "sm_clock_mhz_during": 1695,
+        "sm_clock_mhz_min_max": [
+         1680,
+         1740
+        ],
+        "peak_mem_gb": 1.3284931182861328,
+        "parity": {
+         "dE_per_atom_eV": 0.00039364578260301644,
+         "mae_dF_eV_per_A": 0.0004593349691122655,
+         "max_abs_dF_eV_per_A": 0.002071623099523967
+        }
+       },
+       "cueq_cudagraph": {
+        "step_ms_median": 11.928927386179566,
+        "atoms_per_s": 83829.83378359438,
+        "sm_clock_mhz_during": 1680,
+        "sm_clock_mhz_min_max": [
+         1665,
+         1695
+        ],
+        "peak_mem_gb": 1.1812105178833008,
+        "parity": {
+         "dE_per_atom_eV": 0.0003975520326030164,
+         "mae_dF_eV_per_A": 0.0004557401946191688,
+         "max_abs_dF_eV_per_A": 0.0018448184947498364
+        }
+       },
+       "oeq_reduce_overhead": {
+        "step_ms_median": 46.76995798945427,
+        "atoms_per_s": 21381.24648787328,
+        "sm_clock_mhz_during": 1830,
+        "sm_clock_mhz_min_max": [
+         1665,
+         1920
+        ],
+        "peak_mem_gb": 1.9906558990478516,
+        "parity": {
+         "dE_per_atom_eV": 0.00016757156385301643,
+         "mae_dF_eV_per_A": 0.0004555009762296413,
+         "max_abs_dF_eV_per_A": 0.0019126161200209366
+        }
+       },
+       "hybrid_reduce_overhead": {
+        "step_ms_median": 14.193693874403834,
+        "atoms_per_s": 70453.82328580072,
+        "sm_clock_mhz_during": 1717,
+        "sm_clock_mhz_min_max": [
+         1605,
+         1725
+        ],
+        "peak_mem_gb": 1.3062949180603027,
+        "parity": {
+         "dE_per_atom_eV": 0.00039071609510301644,
+         "mae_dF_eV_per_A": 0.00045535178105583687,
+         "max_abs_dF_eV_per_A": 0.001995329154211467
+        }
+       },
+       "cueq_cudagraph x4": {
+        "step_ms_median": 43.448890559375286,
+        "atoms_per_s": 92062.18958649314,
+        "sm_clock_mhz_during": 1605,
+        "sm_clock_mhz_min_max": [
+         1575,
+         1620
+        ],
+        "peak_mem_gb": 3.7851734161376953,
+        "parity": {
+         "dE_per_atom_eV": 0.0002344660951030164,
+         "mae_dF_eV_per_A": 0.00045720964661528874,
+         "max_abs_dF_eV_per_A": 0.0019264544790034352
+        }
+       },
+       "cueq_cudagraph x16": {
+        "step_ms_median": 166.2167184986174,
+        "atoms_per_s": 96259.87171761598,
+        "sm_clock_mhz_during": 1515,
+        "sm_clock_mhz_min_max": [
+         1350,
+         1620
+        ],
+        "peak_mem_gb": 13.934232234954834,
+        "parity": {
+         "dE_per_atom_eV": 0.0002315364076030164,
+         "mae_dF_eV_per_A": 0.00045359197623788414,
+         "max_abs_dF_eV_per_A": 0.002095523046479919
+        }
+       },
+       "cueq_eager x4": {
+        "step_ms_median": 54.525190498679876,
+        "atoms_per_s": 73360.58734351135,
+        "sm_clock_mhz_during": 1725,
+        "sm_clock_mhz_min_max": [
+         1575,
+         1830
+        ],
+        "peak_mem_gb": 3.7833895683288574,
+        "parity": {
+         "dE_per_atom_eV": 0.0002320246888530164,
+         "mae_dF_eV_per_A": 0.00045432191412837336,
+         "max_abs_dF_eV_per_A": 0.0019756376241688786
+        }
+       },
+       "cueq_eager x16": {
+        "step_ms_median": 169.6603351738304,
+        "atoms_per_s": 94306.07327049506,
+        "sm_clock_mhz_during": 1545,
+        "sm_clock_mhz_min_max": [
+         1410,
+         1635
+        ],
+        "peak_mem_gb": 13.928469181060791,
+        "parity": {
+         "dE_per_atom_eV": 0.0002325129701030164,
+         "mae_dF_eV_per_A": 0.00045113848026055454,
+         "max_abs_dF_eV_per_A": 0.0020230736007554317
+        }
+       },
+       "cueq_reduce_overhead x4": {
+        "step_ms_median": 31.983261462301016,
+        "atoms_per_s": 125065.41913228077,
+        "sm_clock_mhz_during": 1567,
+        "sm_clock_mhz_min_max": [
+         1440,
+         1590
+        ],
+        "peak_mem_gb": 4.302462100982666,
+        "parity": {
+         "dE_per_atom_eV": 0.00021835281385301642,
+         "mae_dF_eV_per_A": 0.0004573468221879969,
+         "max_abs_dF_eV_per_A": 0.0020301679377903448
+        }
+       },
+       "cueq_reduce_overhead x16": {
+        "step_ms_median": 121.10270373523235,
+        "atoms_per_s": 132119.2632906108,
+        "sm_clock_mhz_during": 1440,
+        "sm_clock_mhz_min_max": [
+         1155,
+         1590
+        ],
+        "peak_mem_gb": 15.91288137435913,
+        "parity": {
+         "dE_per_atom_eV": 0.00022128250135301642,
+         "mae_dF_eV_per_A": 0.00044897225015010344,
+         "max_abs_dF_eV_per_A": 0.0018864314682068284
+        }
+       }
+      },
+      "fastest_single": {
+       "variant": "cueq_reduce_overhead",
+       "step_ms": 9.525163332000375,
+       "atoms_per_s": 104985.0763860855
+      },
+      "best_throughput": {
+       "variant": "cueq_reduce_overhead x16",
+       "atoms_per_s": 132119.2632906108
+      }
+     },
+     "float64": {
+      "N": 1000,
+      "edges": 46000,
+      "variants": {
+       "cueq_cudagraph": {
+        "step_ms_median": 156.4037858042866,
+        "atoms_per_s": 6393.707127085365,
+        "sm_clock_mhz_during": 1920,
+        "sm_clock_mhz_min_max": [
+         1920,
+         1920
+        ],
+        "peak_mem_gb": 1.8418827056884766,
+        "parity": {
+         "dE_per_atom_eV": 9.094947017729283e-16,
+         "mae_dF_eV_per_A": 4.840656774434774e-16,
+         "max_abs_dF_eV_per_A": 2.2499363483419188e-15
+        }
+       },
+       "cueq_reduce_overhead": {
+        "step_ms_median": 157.8325261361897,
+        "atoms_per_s": 6335.829657425145,
+        "sm_clock_mhz_during": 1920,
+        "sm_clock_mhz_min_max": [
+         1920,
+         1920
+        ],
+        "peak_mem_gb": 2.337862014770508,
+        "parity": {
+         "dE_per_atom_eV": 2.7284841053187848e-15,
+         "mae_dF_eV_per_A": 1.80853386375542e-15,
+         "max_abs_dF_eV_per_A": 9.048317650695026e-15
+        }
+       },
+       "e3nn_cudagraph": {
+        "step_ms_median": 1213.440720923245,
+        "atoms_per_s": 824.1028859153097,
+        "sm_clock_mhz_during": 1935,
+        "sm_clock_mhz_min_max": [
+         1770,
+         1935
+        ],
+        "peak_mem_gb": 7.419355392456055,
+        "parity": {
+         "dE_per_atom_eV": 9.094947017729283e-16,
+         "mae_dF_eV_per_A": 4.393196508979911e-16,
+         "max_abs_dF_eV_per_A": 2.220446049250313e-15
+        }
+       },
+       "cueq_cudagraph x4": {
+        "step_ms_median": 617.5945175345987,
+        "atoms_per_s": 6476.741432174247,
+        "sm_clock_mhz_during": 1920,
+        "sm_clock_mhz_min_max": [
+         1920,
+         1920
+        ],
+        "peak_mem_gb": 7.058616638183594,
+        "parity": {
+         "dE_per_atom_eV": 9.094947017729283e-16,
+         "mae_dF_eV_per_A": 4.808482713565542e-16,
+         "max_abs_dF_eV_per_A": 1.9984014443252818e-15
+        }
+       }
+      },
+      "fastest_single": {
+       "variant": "cueq_cudagraph",
+       "step_ms": 156.4037858042866,
+       "atoms_per_s": 6393.707127085365
+      },
+      "best_throughput": {
+       "variant": "cueq_cudagraph x4",
+       "atoms_per_s": 6476.741432174247
+      }
+     }
+    },
+    "6x6x7": {
+     "float32-high": {
+      "N": 2016,
+      "edges": 92736,
+      "variants": {
+       "stock": {
+        "step_ms_median": 238.9003182761371,
+        "atoms_per_s": 8438.666028354852,
+        "sm_clock_mhz_during": 1710,
+        "sm_clock_mhz_min_max": [
+         1650,
+         1920
+        ],
+        "peak_mem_gb": 14.425000667572021,
+        "parity": {
+         "dE_per_atom_eV": 0.00019233782686407203,
+         "mae_dF_eV_per_A": 0.0004488070425542856,
+         "max_abs_dF_eV_per_A": 0.002157915989769943
+        }
+       },
+       "e3nn_eager": {
+        "step_ms_median": 205.64061356708407,
+        "atoms_per_s": 9803.510916594016,
+        "sm_clock_mhz_during": 1695,
+        "sm_clock_mhz_min_max": [
+         1620,
+         1785
+        ],
+        "peak_mem_gb": 7.323692798614502,
+        "parity": {
+         "dE_per_atom_eV": 0.00019088460885811963,
+         "mae_dF_eV_per_A": 0.0004500248533733653,
+         "max_abs_dF_eV_per_A": 0.002101591802257108
+        }
+       },
+       "e3nn_compiled": {
+        "step_ms_median": 121.12217489629984,
+        "atoms_per_s": 16644.351058970184,
+        "sm_clock_mhz_during": 1695,
+        "sm_clock_mhz_min_max": [
+         1575,
+         1770
+        ],
+        "peak_mem_gb": 10.577707290649414,
+        "parity": {
+         "dE_per_atom_eV": 0.00018507173683431012,
+         "mae_dF_eV_per_A": 0.0004529847892148456,
+         "max_abs_dF_eV_per_A": 0.002086730630983802
+        }
+       },
+       "e3nn_reduce_overhead": {
+        "step_ms_median": 120.8167215809226,
+        "atoms_per_s": 16686.431924488952,
+        "sm_clock_mhz_during": 1695,
+        "sm_clock_mhz_min_max": [
+         1560,
+         1755
+        ],
+        "peak_mem_gb": 10.620208740234375,
+        "parity": {
+         "dE_per_atom_eV": 0.00018361851882835772,
+         "mae_dF_eV_per_A": 0.00044982163268474307,
+         "max_abs_dF_eV_per_A": 0.002113791139711829
+        }
+       },
+       "e3nn_cudagraph": {
+        "step_ms_median": 199.7574686538428,
+        "atoms_per_s": 10092.23842084974,
+        "sm_clock_mhz_during": 1695,
+        "sm_clock_mhz_min_max": [
+         1635,
+         1740
+        ],
+        "peak_mem_gb": 7.407573699951172,
+        "parity": {
+         "dE_per_atom_eV": 0.00019282223286605615,
+         "mae_dF_eV_per_A": 0.0004488377888823687,
+         "max_abs_dF_eV_per_A": 0.0019847005426541497
+        }
+       },
+       "cueq_eager": {
+        "step_ms_median": 48.83912252262235,
+        "atoms_per_s": 41278.382900228935,
+        "sm_clock_mhz_during": 1935,
+        "sm_clock_mhz_min_max": [
+         1920,
+         1935
+        ],
+        "peak_mem_gb": 1.9664454460144043,
+        "parity": {
+         "dE_per_atom_eV": 0.0003570358675386752,
+         "mae_dF_eV_per_A": 0.00044827305179603703,
+         "max_abs_dF_eV_per_A": 0.0020376462060112677
+        }
+       },
+       "cueq_compiled": {
+        "step_ms_median": 19.78962542489171,
+        "atoms_per_s": 101871.55930016961,
+        "sm_clock_mhz_during": 1717,
+        "sm_clock_mhz_min_max": [
+         1620,
+         1785
+        ],
+        "peak_mem_gb": 2.2679495811462402,
+        "parity": {
+         "dE_per_atom_eV": 0.00035994230355057994,
+         "mae_dF_eV_per_A": 0.0004486796679012959,
+         "max_abs_dF_eV_per_A": 0.0022175330239433966
+        }
+       },
+       "cueq_reduce_overhead": {
+        "step_ms_median": 17.33747194521129,
+        "atoms_per_s": 116279.92860613283,
+        "sm_clock_mhz_during": 1620,
+        "sm_clock_mhz_min_max": [
+         1605,
+         1635
+        ],
+        "peak_mem_gb": 2.306687831878662,
+        "parity": {
+         "dE_per_atom_eV": 0.0003589734915466117,
+         "mae_dF_eV_per_A": 0.00044743258979240225,
+         "max_abs_dF_eV_per_A": 0.002136781793798559
+        }
+       },
+       "cueq_cudagraph": {
+        "step_ms_median": 22.785227512940764,
+        "atoms_per_s": 88478.37919788258,
+        "sm_clock_mhz_during": 1635,
+        "sm_clock_mhz_min_max": [
+         1590,
+         1650
+        ],
+        "peak_mem_gb": 2.0390501022338867,
+        "parity": {
+         "dE_per_atom_eV": 0.00035800467954264344,
+         "mae_dF_eV_per_A": 0.00044817879504602785,
+         "max_abs_dF_eV_per_A": 0.002066712027648271
+        }
+       },
+       "oeq_reduce_overhead": {
+        "step_ms_median": 78.51933967322111,
+        "atoms_per_s": 25675.203184210597,
+        "sm_clock_mhz_during": 1725,
+        "sm_clock_mhz_min_max": [
+         1680,
+         1770
+        ],
+        "peak_mem_gb": 3.606353759765625,
+        "parity": {
+         "dE_per_atom_eV": 0.00018943139085216725,
+         "mae_dF_eV_per_A": 0.0004526823549984153,
+         "max_abs_dF_eV_per_A": 0.0022384840565819464
+        }
+       },
+       "hybrid_reduce_overhead": {
+        "step_ms_median": 27.80887857079506,
+        "atoms_per_s": 72494.83271566396,
+        "sm_clock_mhz_during": 1680,
+        "sm_clock_mhz_min_max": [
+         1635,
+         1710
+        ],
+        "peak_mem_gb": 2.1985573768615723,
+        "parity": {
+         "dE_per_atom_eV": 0.00035848908554462756,
+         "mae_dF_eV_per_A": 0.00045048187587909606,
+         "max_abs_dF_eV_per_A": 0.002138367868083524
+        }
+       },
+       "cueq_cudagraph x4": {
+        "step_ms_median": 86.89242671243846,
+        "atoms_per_s": 92804.40545971834,
+        "sm_clock_mhz_during": 1515,
+        "sm_clock_mhz_min_max": [
+         1425,
+         1590
+        ],
+        "peak_mem_gb": 7.222355365753174,
+        "parity": {
+         "dE_per_atom_eV": 0.0002170425329652625,
+         "mae_dF_eV_per_A": 0.0004421828115172628,
+         "max_abs_dF_eV_per_A": 0.00215166989146659
+        }
+       },
+       "cueq_cudagraph x16": {
+        "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 1.37 GiB. GPU 0 has a total capacity of 23.56 GiB of which 1.15 GiB is free. Including non-PyTorch memory, this process has 22.40 GiB memory in use. Of the alloca"
+       },
+       "cueq_eager x4": {
+        "step_ms_median": 90.65039968118072,
+        "atoms_per_s": 88957.1367402819,
+        "sm_clock_mhz_during": 1560,
+        "sm_clock_mhz_min_max": [
+         1440,
+         1650
+        ],
+        "peak_mem_gb": 7.220976829528809,
+        "parity": {
+         "dE_per_atom_eV": 0.00021655812696327837,
+         "mae_dF_eV_per_A": 0.00044488669969575356,
+         "max_abs_dF_eV_per_A": 0.0021822779470083613
+        }
+       },
+       "cueq_eager x16": {
+        "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 1.37 GiB. GPU 0 has a total capacity of 23.56 GiB of which 1.22 GiB is free. Including non-PyTorch memory, this process has 22.33 GiB memory in use. Of the alloca"
+       },
+       "cueq_reduce_overhead x4": {
+        "step_ms_median": 64.31643734686077,
+        "atoms_per_s": 125380.07906922097,
+        "sm_clock_mhz_during": 1477,
+        "sm_clock_mhz_min_max": [
+         1365,
+         1515
+        ],
+        "peak_mem_gb": 8.23314380645752,
+        "parity": {
+         "dE_per_atom_eV": 0.00022382421699304028,
+         "mae_dF_eV_per_A": 0.0004413178058587599,
+         "max_abs_dF_eV_per_A": 0.0023206233543304105
+        }
+       },
+       "cueq_reduce_overhead x16": {
+        "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 252.00 MiB. GPU 0 has a total capacity of 23.56 GiB of which 103.00 MiB is free. Including non-PyTorch memory, this process has 23.45 GiB memory in use. Of the al"
+       }
+      },
+      "fastest_single": {
+       "variant": "cueq_reduce_overhead",
+       "step_ms": 17.33747194521129,
+       "atoms_per_s": 116279.92860613283
+      },
+      "best_throughput": {
+       "variant": "cueq_reduce_overhead x4",
+       "atoms_per_s": 125380.07906922097
+      }
+     },
+     "float64": {
+      "N": 2016,
+      "edges": 92736,
+      "variants": {
+       "cueq_cudagraph": {
+        "error": "RuntimeError: CUDA error encountered at: file=/home/jenkins/agent/workspace/build-lib/cuequivariance_ops/cuda/equivariance/uniform1d/../common/kernel.cuh line=859: call='cudaMallocAsync(&d_result, sizeof(unsigned l"
+       },
+       "cueq_reduce_overhead": {
+        "step_ms_median": 311.40802009031177,
+        "atoms_per_s": 6473.82170637525,
+        "sm_clock_mhz_during": 1920,
+        "sm_clock_mhz_min_max": [
+         1920,
+         1935
+        ],
+        "peak_mem_gb": 4.441773414611816,
+        "parity": {
+         "dE_per_atom_eV": 2.7068294695622863e-15,
+         "mae_dF_eV_per_A": 1.8563778704429328e-15,
+         "max_abs_dF_eV_per_A": 1.1035443392426458e-14
+        }
+       },
+       "e3nn_cudagraph": {
+        "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 906.00 MiB. GPU 0 has a total capacity of 23.56 GiB of which 735.00 MiB is free. Including non-PyTorch memory, this process has 22.83 GiB memory in use. Of the al"
+       },
+       "cueq_cudagraph x4": {
+        "step_ms_median": 1188.5385850910097,
+        "atoms_per_s": 6784.802867281348,
+        "sm_clock_mhz_during": 1920,
+        "sm_clock_mhz_min_max": [
+         1920,
+         1920
+        ],
+        "peak_mem_gb": 13.920348644256592,
+        "parity": {
+         "dE_per_atom_eV": 1.804552979708191e-15,
+         "mae_dF_eV_per_A": 4.82210559554711e-16,
+         "max_abs_dF_eV_per_A": 2.3314683517128287e-15
+        }
+       }
+      },
+      "fastest_single": {
+       "variant": "cueq_reduce_overhead",
+       "step_ms": 311.40802009031177,
+       "atoms_per_s": 6473.82170637525
+      },
+      "best_throughput": {
+       "variant": "cueq_cudagraph x4",
+       "atoms_per_s": 6784.802867281348
+      }
+     }
+    }
+   }
+  }
+ }
+}

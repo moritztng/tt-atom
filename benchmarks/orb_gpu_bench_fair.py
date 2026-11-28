@@ -34,53 +34,25 @@ Variants:
   frozen_reduce_overhead  torch.compile(mode="reduce-overhead", dynamic=False): PyTorch's own
                    CUDA graphs per compiled region, the package-level way to get both.
 
+Packing (--pack <variants>): one cell does not fill a GPU, so the named variants are timed again
+with B copies of the cell in one batch, B doubled until atoms/s stops rising. atoms/s there is
+B x N per step, graded on the first cell.
+
     python benchmarks/orb_gpu_bench_fair.py --out orb_perf_dollar_gpu_<gpu>.json
 """
 from __future__ import annotations
 
 import argparse
-import json
-import subprocess
-import threading
-import time
-from datetime import datetime, timezone
 
 import numpy as np
 import torch
 from ase.build import bulk
 
-from _harness import git_sha
+from _gpu_fair import capture, dump, pack_sweep, time_steps
 from bench_orb_perf_dollar_tt import SIZES, grade
 
 FROZEN = ("frozen_compiled", "frozen_cudagraph", "frozen_compiled_cudagraph", "frozen_reduce_overhead")
 CAPTURED = ("frozen_cudagraph", "frozen_compiled_cudagraph")
-
-
-class ClockSampler:
-    """Samples the SM clock (MHz) via nvidia-smi every 0.2 s while active."""
-
-    def __init__(self):
-        self.mhz, self._stop = [], threading.Event()
-        self._t = threading.Thread(target=self._run, daemon=True)
-
-    def _run(self):
-        while not self._stop.is_set():
-            try:
-                out = subprocess.run(
-                    ["nvidia-smi", "-i", "0", "--query-gpu=clocks.sm", "--format=csv,noheader,nounits"],
-                    capture_output=True, text=True, timeout=5).stdout.strip()
-                self.mhz.append(int(out.split()[0]))
-            except Exception:  # noqa: BLE001 -- a missing sample must not kill the timing
-                pass
-            self._stop.wait(0.2)
-
-    def __enter__(self):
-        self._t.start()
-        return self
-
-    def __exit__(self, *exc):
-        self._stop.set()
-        self._t.join()
 
 
 def rotation_capture_safe(generator):
@@ -121,48 +93,6 @@ def sized_repeat(rep):
     return sized
 
 
-def sync_probe(run):
-    """Log every host-syncing site of one eager call; any of them breaks a CUDA-graph capture."""
-    import traceback
-    import warnings
-    sites = []
-
-    def record(*_a, **_k):
-        frames = [f for f in traceback.extract_stack()[:-1] if "orb_models" in f.filename]
-        site = " <- ".join(f"{f.filename.split('site-packages/')[-1]}:{f.lineno}" for f in frames[-3:][::-1])
-        if site not in sites:
-            sites.append(site)
-    torch.cuda.set_sync_debug_mode("warn")
-    old, warnings.showwarning = warnings.showwarning, record
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("always")
-            warnings.showwarning = record
-            run()
-    finally:
-        warnings.showwarning = old
-        torch.cuda.set_sync_debug_mode("default")
-        torch.cuda.synchronize()
-    print(f"    sync probe: {len(sites)} host-syncing site(s)" + "".join("\n      " + x for x in sites), flush=True)
-
-
-def time_steps(step, warm, n):
-    for _ in range(warm):
-        step()
-    torch.cuda.synchronize()
-    ts = []
-    with ClockSampler() as clk:
-        for _ in range(n):
-            t0 = time.perf_counter()
-            step()
-            torch.cuda.synchronize()
-            ts.append((time.perf_counter() - t0) * 1e3)
-    return {"step_ms_raw": [round(x, 4) for x in ts], "step_ms_median": float(np.median(ts)),
-            "steps_per_s": 1e3 / float(np.median(ts)),
-            "sm_clock_mhz_during": (int(np.median(clk.mhz)) if clk.mhz else None),
-            "sm_clock_mhz_min_max": ([min(clk.mhz), max(clk.mhz)] if clk.mhz else None)}
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--element", default="Si")
@@ -173,6 +103,9 @@ def main():
     ap.add_argument("--jitter", type=float, default=0.01, help="per-step position jitter, A")
     ap.add_argument("--sizes", default=",".join(s[0] for s in SIZES))
     ap.add_argument("--variants", default=",".join(("stock",) + FROZEN))
+    ap.add_argument("--pack", default="", help="comma list of frozen variants to also time packed: B copies of "
+                    "the cell in one batch, B doubled until atoms/s stops rising")
+    ap.add_argument("--pack-max-atoms", type=int, default=200_000)
     ap.add_argument("--anchors-out", default=None, help="save the float64 anchors (npz) for the TT leg")
     ap.add_argument("--precision", default="float32-high",
                     choices=["float32-high", "float32-highest"])
@@ -233,7 +166,7 @@ def main():
         atoms0 = bulk(args.element, "diamond", a=args.a, cubic=True) * (nx, ny, nz)
         N = len(atoms0)
         pos0 = atoms0.get_positions()
-        rec = {"tag": tag, "N": N, "variants": {}}
+        rec = {"tag": tag, "N": N, "variants": {}, "packed": {}}
         print(f"\n=== {tag}  N={N} ===", flush=True)
 
         p_ref, e_ref, f_ref = anchors[tag]
@@ -258,16 +191,19 @@ def main():
 
         graph = adapter.from_ase_atoms(atoms0).to(dev)
         rec["edges"] = int(graph.n_edge.item())
-        for v in [v for v in variants if v in FROZEN]:
+
+        def frozen(v, copies=1):
+            """Time variant `v` on a frozen graph of `copies` identical cells, graded on cell 0."""
             m = models[v]
-            batch = adapter.from_ase_atoms(atoms0).to(dev)
+            batch = (adapter.from_ase_atoms(atoms0) if copies == 1
+                     else adapter.from_ase_atoms_list([atoms0] * copies)).to(dev)
             pos = batch.node_features["positions"]
             host = torch.empty(N, 3, dtype=pos.dtype).pin_memory()
 
             def upload(p):  # predict marks positions requires_grad in place
                 host.copy_(torch.as_tensor(p, dtype=pos.dtype))
                 with torch.no_grad():
-                    pos.copy_(host, non_blocking=True)
+                    pos.view(copies, N, 3).copy_(host.to(dev, non_blocking=True))
 
             def run():
                 return m.predict(batch)
@@ -288,71 +224,59 @@ def main():
                     def run():  # noqa: F811 -- every forward replays the recorded sizes in order
                         sized.begin()
                         return eager()
-                    try:
-                        s = torch.cuda.Stream()
-                        s.wait_stream(torch.cuda.current_stream())
-                        with torch.cuda.stream(s):
-                            for _ in range(3):
+
+                    def settle(stream):
+                        # Dynamo may not compile inside a capture: log why a frame recompiles and keep
+                        # calling (the probe ran on the default stream) until a call compiles nothing.
+                        from torch._dynamo.utils import counters
+                        torch._logging.set_logs(recompiles=True)
+                        for _ in range(8):
+                            before = counters["frames"]["total"]
+                            with torch.cuda.stream(stream):
                                 run()
-                        torch.cuda.current_stream().wait_stream(s)
-                        sync_probe(run)
-                        if v == "frozen_compiled_cudagraph":
-                            # Dynamo may not compile inside a capture: log why a frame recompiles and keep
-                            # calling (the probe ran on the default stream) until a call compiles nothing.
-                            from torch._dynamo.utils import counters
-                            torch._logging.set_logs(recompiles=True)
-                            for _ in range(8):
-                                before = counters["frames"]["total"]
-                                with torch.cuda.stream(s):
-                                    run()
-                                torch.cuda.synchronize()
-                                if counters["frames"]["total"] == before:
-                                    break
-                        g = torch.cuda.CUDAGraph()
-                        with torch.cuda.graph(g, capture_error_mode="thread_local"):
-                            static_out = run()
+                            torch.cuda.synchronize()
+                            if counters["frames"]["total"] == before:
+                                break
+                    try:
+                        replay = capture(run, "orb_models", settle if v == "frozen_compiled_cudagraph" else None)
                     finally:
                         torch._logging.set_logs(recompiles=False)
                         feat.rotation_from_generator = exp_rot
                         torch.repeat_interleave, torch.Tensor.repeat_interleave = rep_t, rep_m
-
-                    def run():  # noqa: F811 -- replay replaces the eager call
-                        g.replay()
-                        return static_out
+                    run = replay
                 upload(p_ref)
                 out = run()
-                e = float(out[m.energy_name].double().sum())
-                f = out[m.grad_forces_name].float().cpu().numpy()
+                e = float(out[m.energy_name].double().reshape(-1)[0])
+                f = out[m.grad_forces_name][:N].float().cpu().numpy()
                 par = parity(e, f)
-                show(v, par)
+                show(v if copies == 1 else f"{v} x{copies}", par)
 
                 def step():
                     upload(pos0 + rng.normal(0.0, args.jitter, pos0.shape))
                     run()
-                r = time_steps(step, args.warmup, args.steps)
-                r["parity"] = par
-                rec["variants"][v] = r
+                r = time_steps(step, *((args.warmup, args.steps) if copies == 1 else (5, 30)))
+                return {**r, "atoms_per_s": copies * N * r["steps_per_s"], "parity": par}
             except Exception as exc:  # noqa: BLE001 -- a variant that cannot run is a recorded result
                 import traceback  # the failing package line, so a capture break is fixable from the log
                 where = [f"{f.filename.split('site-packages/')[-1]}:{f.lineno} {f.line}"
                          for f in traceback.extract_tb(exc.__traceback__)[-4:]]
-                rec["variants"][v] = {"error": f"{type(exc).__name__}: {str(exc)[:160]}", "where": where}
                 print("    " + "\n    ".join(where), flush=True)
-        for v, r in rec["variants"].items():
+                torch.cuda.empty_cache()
+                return {"error": f"{type(exc).__name__}: {str(exc)[:160]}", "where": where}
+
+        for v in [v for v in variants if v in FROZEN]:
+            rec["variants"][v] = frozen(v)
+        for v in [v for v in args.pack.split(",") if v]:
+            rec["packed"][v] = pack_sweep(lambda b: frozen(v, b), N, args.pack_max_atoms)  # noqa: B023
+        for v, r in [*rec["variants"].items(),
+                     *((f"{v} x{b}", r) for v, rs in rec["packed"].items() for b, r in rs.items())]:
             if "step_ms_median" in r:
-                print(f"  {v:17s} {r['step_ms_median']:8.3f} ms  sm={r['sm_clock_mhz_during']} MHz", flush=True)
+                print(f"  {v:30s} {r['step_ms_median']:8.3f} ms  {r.get('atoms_per_s', 0):8.0f} atoms/s  "
+                      f"sm={r['sm_clock_mhz_during']} MHz", flush=True)
             else:
-                print(f"  {v:17s} {r['error']}", flush=True)
+                print(f"  {v:30s} {r['error']}", flush=True)
         records.append(rec)
-        dump(args, meta, records)
-
-
-def dump(args, meta, records):
-    with open(args.out, "w") as fh:
-        json.dump({**meta, "git_sha": git_sha(),
-                   "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                   "protocol": __doc__, "warmup": args.warmup, "steps": args.steps,
-                   "records": records}, fh, indent=1)
+        dump(args.out, meta, records, __doc__, args.warmup, args.steps)
 
 
 if __name__ == "__main__":
