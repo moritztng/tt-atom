@@ -95,23 +95,18 @@ TT_VISIBLE_DEVICES=0 PYTHONPATH=.:benchmarks python benchmarks/bench_mace_tt.py 
   --weights ~/.ttatom_run/goldens_real/si_mace_mp0b3.npz --sizes 2x2x2,3x3x3,4x4x4,5x5x5
 ```
 
-Use it from Python:
+Use it from ASE:
 
 ```python
-import numpy as np
-import torch
-import ttnn
+from ase.build import bulk
+from tt_atom import MaceCalculator
 
-from tt_atom import device as D
-from tt_atom.mace.tt_model import Mace
-
-z = np.load("si_mace_mp0b3.npz")
-weights = {k[2:]: torch.from_numpy(z[k]) for k in z.files if k.startswith("w@")}
-weights = {k: v.double() if v.is_floating_point() else v for k, v in weights.items()}
-with D.device(0, trace_region_size=400_000_000) as dev:
-    model = Mace(dev, weights, ttnn.float32, trace=True)
-    energy, forces = model.energy_forces(atomic_numbers, positions, edge_index, shifts)
+atoms = bulk("Si", "diamond", a=5.43, cubic=True) * (2, 2, 2)
+atoms.calc = MaceCalculator("si_mace_mp0b3.npz")  # the state dict stored in the golden
+print(atoms.get_potential_energy(), atoms.get_forces())
+atoms.calc.close()
 ```
 
-`edge_index` is (sender, receiver) and `shifts`
-the periodic shift vectors in A, as from `ase.neighborlist.neighbor_list("ijS", ...)`.
+The calculator rebuilds the neighbour list every call. While the list is unchanged the device
+tables and the captured trace are reused; when it changes they are rebuilt, which costs a compile
+for a new edge count.

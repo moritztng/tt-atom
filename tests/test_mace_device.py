@@ -158,3 +158,23 @@ def test_energy_forces_device(g, device, trace):  # noqa: F811
     print(f"energy+forces float32 trace={trace}: dE/atom {abs(e - want_e) / len(g['Z']):.2e} eV, force MAE {d.mean():.2e} "
           f"max {d.max():.2e} eV/A (max |F| {want_f.abs().max():.2e})")
     assert abs(e - want_e) / len(g["Z"]) < 5e-3 and d.mean() < 7e-3
+
+
+def test_calculator_device(g, device):  # noqa: F811
+    """The ASE calculator builds its own neighbour list from positions and cell and lands on the golden; a second
+    call at moved positions replays the captured step."""
+    from ase import Atoms
+    from tt_atom import MaceCalculator
+
+    t = g["t"]
+    atoms = Atoms(numbers=g["Z"].numpy(), positions=t["in@pos"].double().numpy(), cell=t["in@cell"].double().numpy().reshape(3, 3), pbc=True)
+    atoms.calc = MaceCalculator(g["w"], device=device)
+    e, f = atoms.get_potential_energy(), torch.from_numpy(atoms.get_forces())
+    want_e, want_f = float(t["out@energy"].double().sum()), t["out@forces"].double()
+    d = (f - want_f).abs()
+    print(f"calculator: dE/atom {abs(e - want_e) / len(atoms):.2e} eV, force MAE {d.mean():.2e} eV/A")
+    assert abs(e - want_e) / len(atoms) < 5e-3 and d.mean() < 7e-3
+    atoms.rattle(0.01, seed=0)
+    e2 = atoms.get_potential_energy()
+    assert e2 != e and abs(e2 - e) / len(atoms) < 0.05
+    atoms.calc.close()

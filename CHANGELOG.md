@@ -10,6 +10,11 @@ smoke (see `RELEASING.md`).
 Behaviour changes are all in the knobs and the caches, not in the models: every numeric path is
 byte-identical to 0.3.0.
 
+### Added
+- MACE-MP-0b3 medium (MIT weights), energy and forces on one Blackhole chip: `MaceCalculator`,
+  `docs/mace-port.md`. An accuracy port (1.2 meV/atom, 1.7 meV/A force MAE against float64 on the
+  golden); about 1.1 ms per atom per step, no per-dollar claim.
+
 ### Changed
 - The Orb GPU comparison in `docs/orb-port.md` is redone as one protocol on both sides. The GPU now
   runs at its fastest setting (TF32, whole step in one CUDA graph, frozen neighbour list) instead
