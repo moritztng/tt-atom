@@ -12,49 +12,8 @@ from __future__ import annotations
 import torch
 
 from tt_atom import device as D
+from tt_atom.scatter import const, mm
 from . import dense
-
-
-def const(t, dev, dtype):
-    """A constant matmul operand on the card. At float32 it is split on the host into its bfloat16 hi + lo
-    parts (see ``mm``), once, instead of on the card at every call."""
-    import ttnn
-
-    t = t.contiguous()
-    if dtype != ttnn.float32:
-        return D.to_dev(t, dev, dtype)
-    hi = t.to(torch.bfloat16)
-    lo = (t - hi.to(t.dtype)).to(torch.bfloat16)
-    return tuple(D.to_dev(part.float(), dev, ttnn.bfloat16) for part in (hi, lo))
-
-
-def mm(a, b, cfg):
-    """matmul that keeps float32 operands at float32 accuracy.
-
-    The matrix engine reads float32 operands through 19-bit source registers, i.e. truncated to a 10-bit
-    mantissa, and truncation is biased: MACE's per-atom energies came out ~9 meV/atom high from that alone.
-    So a float32 operand is split into bfloat16 hi + lo parts and the significant products are summed (a
-    bfloat16 x bfloat16 product is exact in the float32 accumulator), leaving ~2^-16 relative. A constant from
-    ``const`` arrives already split. A bfloat16 operand is taken as exact (0/1 selectors are uploaded that way)
-    and is not split: two matmuls instead of three. Two bfloat16 operands take the plain matmul.
-    """
-    import ttnn
-
-    def parts(x):
-        if isinstance(x, tuple) or x.dtype != ttnn.float32:
-            return x if isinstance(x, tuple) else (x,)
-        hi = ttnn.typecast(x, ttnn.bfloat16)
-        return hi, ttnn.typecast(ttnn.subtract(x, ttnn.typecast(hi, ttnn.float32)), ttnn.bfloat16)
-
-    a, b = parts(a), parts(b)
-    if len(a) == len(b) == 1:
-        return ttnn.matmul(a[0], b[0], compute_kernel_config=cfg)
-    out = None
-    for i, x in enumerate(a):
-        for y in b[:2 - i]:  # lo x lo is below float32
-            term = ttnn.matmul(x, y, compute_kernel_config=cfg, dtype=ttnn.float32)
-            out = term if out is None else ttnn.add(out, term)
-    return out
 
 
 def perm(x, dims):

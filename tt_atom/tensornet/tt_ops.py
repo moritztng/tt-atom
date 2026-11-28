@@ -25,6 +25,9 @@ class TtOps:
     def up(self, t):
         return self.tt.from_torch(t.float().contiguous(), dtype=self.dtype, layout=self.tt.TILE_LAYOUT, device=self.dev)
 
+    def weight(self, t):                           # a matmul operand: pre-split for an exact float32 product
+        return SC.const(t.float(), self.dev, self.dtype) if self.dtype == self.tt.float32 else self.up(t)
+
     def cast(self, x):
         return x if x.dtype == self.dtype else self.tt.typecast(x, self.dtype)
 
@@ -36,7 +39,7 @@ class TtOps:
         return [self.tt.slice(x, [0] * (len(shape) - 1) + [c * w], shape[:-1] + [(c + 1) * w]) for c in range(k)]
 
     def usum(self, x):
-        return self.tt.sum(x, dim=-1, keepdim=True)
+        return SC.linear32(self.tt, lambda p: self.tt.sum(p, dim=-1, keepdim=True), x)
 
     def scale(self, x, s):
         return self.tt.multiply(x, float(s))
@@ -46,7 +49,7 @@ class TtOps:
         return self.tt.multiply(s, self.tt.add(self.tt.multiply(x, self.tt.add(self.tt.neg(s), 1.0)), 1.0))
 
     def linear(self, x, w, b=None):
-        y = self.tt.matmul(x, w, compute_kernel_config=self.cfg)
+        y = SC.mm(x, w, self.cfg, self.tt)
         return y if b is None else self.tt.add(y, b)
 
     def comp(self, x, i, j):                       # [3, 3, N, U] -> component (i, j) as [1, 1, N, U]
@@ -112,8 +115,8 @@ class TtOps:
 
     def slot_sum(self, x, n):
         tt = self.tt
-        g = tt.reshape(tt.to_layout(x, tt.ROW_MAJOR_LAYOUT), (n, self.d, x.shape[-1]))
-        return tt.to_layout(tt.reshape(tt.sum(g, dim=1), (n, x.shape[-1])), tt.TILE_LAYOUT)
+        rm = lambda p: tt.reshape(tt.to_layout(p, tt.ROW_MAJOR_LAYOUT), (n, self.d, x.shape[-1]))
+        return SC.linear32(tt, lambda p: tt.to_layout(tt.reshape(tt.sum(rm(p), dim=1), (n, x.shape[-1])), tt.TILE_LAYOUT), x)
 
     def slot_spread(self, x, d):
         return self.gather(self.recv, x)
@@ -126,18 +129,18 @@ class TtOps:
 
 def to_device(o, w):
     """Weights from layer.weights -> device tensors (node weights as [1, 1, U, U], biases as [1, out])."""
-    node = lambda m: o.up(m[None, None])
-    return {"edge": [(o.up(wt), o.up(b[None])) for wt, b in w["edge"]], "edge_t": [o.up(m) for m in w["edge_t"]],
+    node = lambda m: o.weight(m[None, None])
+    return {"edge": [(o.weight(wt), o.up(b[None])) for wt, b in w["edge"]], "edge_t": [o.weight(m) for m in w["edge_t"]],
             "node": [node(m) for m in w["node"]], "node_t": [node(m) for m in w["node_t"]]}
 
 
 def model_to_device(o, ol, w):
     """Weights from model.weights -> device tensors: embedding and readout through `o`, layers through `ol`.
     Matrices that meet [.., .., N, U] tensors go up as [1, 1, in, out], their biases as [1, 1, 1, out]."""
-    m4, b4, t = (lambda m: o.up(m[None, None])), (lambda b: o.up(b[None, None, None])), o.up
+    m4, b4, t = (lambda m: o.weight(m[None, None])), (lambda b: o.up(b[None, None, None])), o.weight
     e, r = w["embed"], w["readout"]
     chain = lambda ws: [(m4(wt), b4(b)) for wt, b in ws]
-    return {"embed": {"proj": [(t(wt), t(b[None])) for wt, b in e["proj"]], "proj_t": [t(m) for m in e["proj_t"]],
+    return {"embed": {"proj": [(t(wt), o.up(b[None])) for wt, b in e["proj"]], "proj_t": [t(m) for m in e["proj_t"]],
                       "scalar": chain(e["scalar"]), "scalar_t": [m4(m) for m in e["scalar_t"]],
                       "node": [m4(m) for m in e["node"]], "node_t": [m4(m) for m in e["node_t"]], "ln": tuple(b4(v) for v in e["ln"])},
             "layers": [to_device(ol, wl) for wl in w["layers"]],
