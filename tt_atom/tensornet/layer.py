@@ -30,6 +30,22 @@ class TorchOps:
         return s * (1 + x * (1 - s))
 
     @staticmethod
+    def rsqrt(x):
+        return x.rsqrt()
+
+    @staticmethod
+    def cat(xs):                                   # along the last dim
+        return torch.cat(xs, -1)
+
+    @staticmethod
+    def split(x, k):                               # last dim into k equal blocks
+        return list(x.chunk(k, -1))
+
+    @staticmethod
+    def usum(x):                                   # sum over the last dim, kept
+        return x.sum(-1, keepdim=True)
+
+    @staticmethod
     def linear(x, w, b=None):                      # w [in, out]
         y = x @ w
         return y if b is None else y + b

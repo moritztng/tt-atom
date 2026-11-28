@@ -16,7 +16,7 @@ class TtOps:
         self.dtype = dtype or ttnn.bfloat16
         self.cfg = D.compute_kernel_config() if ttnn.__name__ == "ttnn" else None
         self.add, self.sub, self.mul = ttnn.add, ttnn.subtract, ttnn.multiply
-        self.silu, self.recip = ttnn.silu, ttnn.reciprocal
+        self.silu, self.recip, self.rsqrt = ttnn.silu, ttnn.reciprocal, ttnn.rsqrt
         self.recv = self.index(torch.arange(n).repeat_interleave(d))
 
     def index(self, idx):
@@ -24,6 +24,16 @@ class TtOps:
 
     def up(self, t):
         return self.tt.from_torch(t.float().contiguous(), dtype=self.dtype, layout=self.tt.TILE_LAYOUT, device=self.dev)
+
+    def cat(self, xs):
+        return self.tt.concat(xs, dim=-1)
+
+    def split(self, x, k):
+        shape, w = list(x.shape), x.shape[-1] // k
+        return [self.tt.slice(x, [0] * (len(shape) - 1) + [c * w], shape[:-1] + [(c + 1) * w]) for c in range(k)]
+
+    def usum(self, x):
+        return self.tt.sum(x, dim=-1, keepdim=True)
 
     def scale(self, x, s):
         return self.tt.multiply(x, float(s))

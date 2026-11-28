@@ -45,7 +45,8 @@ class FakeTtnn:
     bfloat16, float32, uint32, TILE_LAYOUT, ROW_MAJOR_LAYOUT = torch.float64, torch.float32, None, None, None
     add, subtract, multiply, matmul = torch.add, torch.sub, torch.mul, lambda a, b, **k: a @ b
     silu, sigmoid, reciprocal, neg, reshape = torch.nn.functional.silu, torch.sigmoid, torch.reciprocal, torch.neg, torch.reshape
-    concat, sum = (lambda xs, dim: torch.cat(xs, dim)), (lambda x, dim: x.sum(dim))
+    concat, sum = (lambda xs, dim: torch.cat(xs, dim)), (lambda x, dim, keepdim=False: x.sum(dim, keepdim=keepdim))
+    rsqrt = torch.rsqrt
     to_layout = staticmethod(lambda x, layout: x)
     embedding = staticmethod(lambda idx, table, **k: table[idx])
     from_torch = staticmethod(lambda t, **k: t.long() if not t.is_floating_point() else t.double())
@@ -118,3 +119,53 @@ def test_layer_matches_matgl1(which, backend):
         return mod(g2, x)
 
     check(mod, want, ei, r, rbf, x.detach().double(), backend, own=True)
+
+
+@pytest.mark.skipif(OLD, reason="needs matgl >= 3")
+@pytest.mark.parametrize("backend", ["torch", "tt"])
+def test_embedding_matches_matgl(backend):
+    """Embedding block: output and the gradients of the radial basis, the distance and the edge vector."""
+    from tt_atom.tensornet import embed as E
+
+    from ase.build import bulk
+    from matgl.ext.ase import PESCalculator
+
+    pot = matgl.load_model(MODEL).double()
+    pot.calc_stresses = False
+    atoms = bulk("Si", "diamond", a=5.43, cubic=True) * (2, 2, 2)
+    atoms.positions += np.random.default_rng(0).normal(0, 0.05, atoms.positions.shape)
+    emb, calls = pot.model.tensor_embedding, []
+    h = emb.register_forward_hook(lambda mod, args, kw, out: calls.append((args, kw)), with_kwargs=True)
+    atoms.calc = PESCalculator(pot)
+    atoms.get_potential_energy()
+    h.remove()
+    a = dict(zip(("z", "edge_index", "edge_attr", "edge_weight", "edge_vec"), calls[0][0]), **calls[0][1])
+    z, ei = a["z"], a["edge_index"]
+    rbf, r, vec = [a[k].detach().clone().requires_grad_(True) for k in ("edge_attr", "edge_weight", "edge_vec")]
+    want = emb(z, ei, rbf, r, vec)[0]
+    g_out = torch.randn(want.shape, dtype=torch.float64, generator=torch.Generator().manual_seed(1))
+    wrbf, wr, wvec = torch.autograd.grad((want * g_out).sum(), (rbf, r, vec))
+
+    n, e = len(z), ei.shape[1]
+    edge, _, _, d = L.slots(ei, n, min_width=32)
+    o = L.TorchOps if backend == "torch" else TtOps(None, n, d, emb.units, ttnn=FakeTtnn)
+    pad = lambda t: torch.cat([t, torch.zeros_like(t[:1])])[edge]
+    cut = torch.where(r <= emb.cutoff, 0.5 * (torch.cos(torch.pi * r / emb.cutoff) + 1), 0.0)[:, None]
+    geo = E.geometry(vec)
+    w = E.weights(emb)
+    if backend == "tt":
+        up2 = lambda pair: (o.up(pair[0]), o.up(pair[1][None]))
+        w = {"proj": [up2(p) for p in w["proj"]], "scalar": [up2(p) for p in w["scalar"]], "ln": w["ln"],
+             "proj_t": w["proj_t"], "scalar_t": w["scalar_t"], "node": [m[None, None] for m in w["node"]],
+             "node_t": [m[None, None] for m in w["node_t"]]}
+    got, tape = E.forward(o, w, pad(E.pair(emb, z, ei)), pad(rbf.detach()), pad(cut.detach()),
+                          list(pad(geo.detach()).split(1, -1)), n)
+    assert torch.allclose(got.permute(2, 3, 0, 1), want, rtol=1e-10, atol=1e-12)
+
+    grbf, gcut, ggeo = E.backward(o, w, tape, g_out.permute(2, 3, 0, 1), d)
+    real = edge < e
+    unpad = lambda t: torch.zeros(e, *t.shape[1:], dtype=t.dtype).index_copy(0, edge[real], t[real])
+    assert torch.allclose(unpad(grbf), wrbf, rtol=1e-9, atol=1e-12)
+    gr, gvec = torch.autograd.grad((cut * unpad(gcut)).sum() + (geo * unpad(ggeo)).sum(), (r, vec))
+    assert torch.allclose(gr, wr, rtol=1e-9, atol=1e-12)
+    assert torch.allclose(gvec, wvec, rtol=1e-9, atol=1e-11)
