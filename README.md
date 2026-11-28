@@ -102,6 +102,9 @@ steps; see [`custom_kernels/README.md`](custom_kernels/README.md) for measured p
 
 - Models: UMA's `uma-s-1` and all four Orb-v3/OrbMol checkpoints (`orb-v3-{conservative,direct}-{omat,omol}`).
   See [Model coverage](#model-coverage) for what else exists upstream and why this build doesn't run it.
+- MACE-MP-0b3 medium (MIT weights) runs too, energy and forces through `MaceCalculator`. It matches the
+  float64 reference to 0.5 meV/A on forces but is much slower than MACE on a GPU today, so use it for
+  accuracy work, not throughput. See [docs/mace-port.md](docs/mace-port.md).
 - Tasks: UMA: `omol`, `omat`, `oc20`, `odac`, `omc`. Orb-v3/OrbMol: `omat`, `omol`.
 - Systems: isolated molecules and periodic cells, both model families. Charge and spin: `Calculator(
   atoms, charge=-1, spin=2)` (all UMA tasks); `Calculator(atoms, "orb-v3-conservative-omol",

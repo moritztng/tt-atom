@@ -10,6 +10,11 @@ smoke (see `RELEASING.md`).
 Behaviour changes are all in the knobs and the caches, not in the models: every numeric path is
 byte-identical to 0.3.0.
 
+### Added
+- MACE-MP-0b3 medium (MIT weights), energy and forces on one Blackhole chip: `MaceCalculator`,
+  `docs/mace-port.md`. An accuracy port (1.2 meV/atom, 1.7 meV/A force MAE against float64 on the
+  golden); about 0.9 ms per atom per step, no per-dollar claim.
+
 ### Changed
 - Orb's `--fast` (bf8 hidden activations) is removed. It was 4.5% faster at 1000 atoms for about
   three times the force error, no faster at 216 and 512, and it crashed at 2016. The flag and the
