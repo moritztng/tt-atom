@@ -76,6 +76,8 @@ def main():
     ap.add_argument("--anchors", default=None, help="float64 anchors npz from mace_gpu_bench_fair.py --anchors-out")
     ap.add_argument("--platform", default="Tenstorrent Blackhole, one chip")
     ap.add_argument("--out", default="benchmarks/mace_perf_dollar_tt.json")
+    ap.add_argument("--eager", action="store_true", help="no trace replay: every op dispatched from the host")
+    ap.add_argument("--trace-region", type=int, default=400_000_000)
     ap.add_argument("--profile", action="store_true",
                     help="device-synced inclusive time per block function (slows the step; not a timing run)")
     args = ap.parse_args()
@@ -102,11 +104,19 @@ def main():
             json.dump({"model": "MACE-MP-0b3 medium", "precision": "float32", "platform": args.platform,
                        "git_sha": git_sha(), "utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                        "protocol": {"jitter_A": args.jitter, "warmup": args.warmup, "steps": args.steps,
-                                    "neighbour_list": "frozen", "quantity": "energy + forces"},
+                                    "neighbour_list": "frozen", "quantity": "energy + forces",
+                                    "mode": "eager" if args.eager else "trace replay"},
                        "results": records}, f, indent=1)
 
-    with D.device(0) as dev:
-        model = Mace(dev, w, ttnn.float32)
+    with D.device(0, trace_region_size=0 if args.eager else args.trace_region) as dev:
+        model = Mace(dev, w, ttnn.float32, trace=not args.eager)
+        card, replay = [], ttnn.execute_trace  # the replay is the card's share of a traced step
+
+        def timed_replay(*a, **k):
+            t0 = time.perf_counter()
+            replay(*a, **k)
+            card.append((time.perf_counter() - t0) * 1e3)
+        ttnn.execute_trace = timed_replay
         prof = profile(dev) if args.profile else None
         # the /dev node this process opened: the AICLK that counts (node number != TT_VISIBLE_DEVICES index)
         fds = (os.path.realpath(f"/proc/self/fd/{fd}") for fd in os.listdir("/proc/self/fd"))
@@ -123,7 +133,9 @@ def main():
                 ref_src = "mace-torch float64 (NVIDIA leg anchors)"
             else:
                 p_ref = pos0 + rng.normal(0.0, args.jitter, pos0.shape)
+                torch.set_num_threads(8)  # the float64 reference is not timed
                 e, f = backward.energy_forces(w, Z, torch.from_numpy(p_ref), ei, shifts)
+                torch.set_num_threads(1)
                 e_ref, f_ref, ref_src = float(e), f.numpy(), "tt_atom.mace float64 reference"
             t0 = time.perf_counter()
             e, f = model.energy_forces(Z, torch.from_numpy(p_ref), ei, shifts)
@@ -132,6 +144,7 @@ def main():
             for _ in range(args.warmup):
                 model.energy_forces(Z, torch.from_numpy(pos0 + rng.normal(0.0, args.jitter, pos0.shape)), ei, shifts)
             ms = []
+            card.clear()
             if prof is not None:
                 prof.clear()
             with AiclkSampler() as clk:
@@ -146,12 +159,14 @@ def main():
                     sorted(prof.items(), key=lambda kv: -kv[1][0])), flush=True)
             records.append({"size": tag, "atoms": len(atoms), "edges": int(ei.shape[1]), "first_call_s": first,
                             "ms_per_step_median": float(np.median(ms)), "ms_per_step_min": min(ms), "ms_raw": ms,
+                            "card_ms_per_step_median": float(np.median(card)) if card else None,
                             "reference": ref_src, **acc, "opened_nodes": nodes,
                             "host_load1": os.getloadavg()[0], "aiclk_mhz_during_by_node": clk.summary()})
             dump()
             mine = {k: v for k, v in clk.summary().items() if k in nodes} or clk.summary()
             busy = min(mine.items(), key=lambda kv: kv[1]["min"])
-            print(f"{tag} {len(atoms)} atoms {ei.shape[1]} edges: {np.median(ms):.1f} ms/step (min {min(ms):.1f}), "
+            print(f"{tag} {len(atoms)} atoms {ei.shape[1]} edges: {np.median(ms):.1f} ms/step (min {min(ms):.1f}"
+                  + (f", on card {np.median(card):.1f}" if card else "") + "), "
                   f"dE/atom {acc['dE_per_atom_eV']:.2e} eV, force MAE {acc['mae_dF_eV_per_A']:.2e} eV/A, "
                   f"AICLK node {busy[0]} median {busy[1]['median']} min {busy[1]['min']}, host load {os.getloadavg()[0]:.0f}",
                   flush=True)

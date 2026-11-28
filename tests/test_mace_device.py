@@ -77,8 +77,8 @@ def test_interaction_device(g, device, layer, dt):  # noqa: F811
 
     def edges(a):
         return dev(tt_blocks.pad_edges(graph, a.double()))
-    sh = tt_blocks.edge_sh(device, graph, t["a@spherical_harmonics.out0"].double(), _dtype(dt))
-    x, sc = tt_blocks.interaction(dev(feats.reshape(len(order), -1)), sh,
+    sh = tt_blocks.pad_edges(graph, t["a@spherical_harmonics.out0"].double()).reshape(len(order), graph["D"], 16)
+    x, sc = tt_blocks.interaction(dev(feats.reshape(len(order), -1)), (dev(sh), dev(sh.transpose(1, 2).contiguous())),
                                   edges(t["a@radial_embedding.out0"]), plan, graph)
     got = ttnn.to_torch(x).double().reshape(len(order), 16, 128).transpose(1, 2)
     err = rel(got, t[f"a@interactions.{layer}.out0"].double()[order])
@@ -140,16 +140,21 @@ def test_energy_device(g, device, dt, pdt):  # noqa: F811
     assert abs(e - want) / n < 5e-3
 
 
-def test_energy_forces_device(g, device):  # noqa: F811
+@pytest.mark.parametrize("trace", [False, True])
+def test_energy_forces_device(g, device, trace):  # noqa: F811
     """Energy and forces with both layers and their reverse passes on the card at float32; host float64 geometry.
-    The force bar is Orb's shipped bfloat16 error against float64 (6-7 meV/A MAE)."""
+    The force bar is Orb's shipped bfloat16 error against float64 (6-7 meV/A MAE). Traced: the second call is a
+    replay with refreshed inputs, at positions moved off the capture's and back."""
     import ttnn
     from tt_atom.mace.tt_model import Mace
 
     t = g["t"]
-    e, f = Mace(device, g["w"], ttnn.float32).energy_forces(g["Z"], t["in@pos"].double(), g["ei"], t["in@shifts"].double())
+    m, pos, shifts = Mace(device, g["w"], ttnn.float32, trace=trace), t["in@pos"].double(), t["in@shifts"].double()
+    if trace:
+        m.energy_forces(g["Z"], pos + 0.05 * torch.randn_like(pos), g["ei"], shifts)
+    e, f = m.energy_forces(g["Z"], pos, g["ei"], shifts)
     want_e, want_f = float(t["out@energy"].double().sum()), t["out@forces"].double()
     d = (f - want_f).abs()
-    print(f"energy+forces float32: dE/atom {abs(e - want_e) / len(g['Z']):.2e} eV, force MAE {d.mean():.2e} "
+    print(f"energy+forces float32 trace={trace}: dE/atom {abs(e - want_e) / len(g['Z']):.2e} eV, force MAE {d.mean():.2e} "
           f"max {d.max():.2e} eV/A (max |F| {want_f.abs().max():.2e})")
     assert abs(e - want_e) / len(g["Z"]) < 5e-3 and d.mean() < 7e-3

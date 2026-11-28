@@ -228,13 +228,6 @@ def pad_edges(graph, x):
     return torch.cat([x, x.new_zeros(1, x.shape[1])])[graph["slot_edge"]]
 
 
-def edge_sh(dev, graph, sh, dtype):
-    """Per-edge spherical harmonics [E, 16] (host) -> device ([n, D, 16], its transpose [n, 16, D]): the edge
-    sum multiplies from the left by one and the reverse pass by the other, and the host transposes for free."""
-    sh = pad_edges(graph, sh).reshape(graph["n"], graph["D"], -1)
-    return D.to_dev(sh, dev, dtype), D.to_dev(sh.transpose(1, 2).contiguous(), dev, dtype)
-
-
 def _per_node(plan, key, n):
     """The constant ``plan[key]`` [p, q] (host) as a device [n, p, q] matmul operand, built once per atom count:
     matmul has no shared left operand, and a left multiply keeps the layer in the cm layout without permutes."""
@@ -298,7 +291,7 @@ def _per_element(x, ranges, mats, cfg):
 
 
 def interaction(feats, sh, ef, plan, graph, tape=None):
-    """feats [n, A * 128], sh = edge_sh(...), ef [n * D, n_radial] (device, tile, padded receiver layout)
+    """feats [n, A * 128], sh = ([n, D, 16], its transpose [n, 16, D]), ef [n * D, n_radial] (device, tile, padded receiver layout)
     -> (x [n, 16 * 128] cm, skip [n, 128] or None)."""
     import ttnn
 
