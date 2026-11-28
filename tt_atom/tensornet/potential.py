@@ -29,7 +29,7 @@ def torch_run(w, units, dtype=torch.float64):
 def energy_forces(run, pair, atoms, cutoff, max_n, scale=1.0, shift=0.0, min_width=32, own=False):
     """(energy in eV, forces [N, 3] in eV/A). `pair(edge_index)` is the species part of each edge's message [E, U];
     scale and shift are the model's energy normalisation, shift already summed over the atoms."""
-    n, (ei, off) = len(atoms), edges(atoms, cutoff)
+    n, (ei, off) = -(-len(atoms) // 32) * 32, edges(atoms, cutoff)   # rows padded to whole tiles; a pad atom has no edge
     pos = torch.from_numpy(atoms.positions).double().requires_grad_(True)
     vec = pos[ei[1]] + off - pos[ei[0]]
     r = vec.norm(dim=1)
@@ -40,7 +40,7 @@ def energy_forces(run, pair, atoms, cutoff, max_n, scale=1.0, shift=0.0, min_wid
     unpad = lambda t: torch.zeros(ei.shape[1], *t.shape[1:], dtype=torch.float64).index_copy(0, edge[real], t[real].double())
     en, grbf, gcut, ggeo = run(pad(pair(ei)), pad(rbf), pad(cut), pad(geo), send, table, n, d)
     grad = torch.autograd.grad((rbf * unpad(grbf)).sum() + (cut * unpad(gcut)).sum() + (geo * unpad(ggeo)).sum(), pos)[0]
-    return scale * float(en.double().sum()) + shift, -(scale * grad).numpy()
+    return scale * float(en.double()[:len(atoms)].sum()) + shift, -(scale * grad).numpy()
 
 
 def export(pot, own=False):

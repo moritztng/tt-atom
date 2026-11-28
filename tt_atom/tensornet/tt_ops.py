@@ -17,7 +17,6 @@ class TtOps:
         self.cfg = D.compute_kernel_config() if ttnn.__name__ == "ttnn" else None
         self.add, self.sub, self.mul = ttnn.add, ttnn.subtract, ttnn.multiply
         self.silu, self.recip, self.rsqrt, self.sigmoid = ttnn.silu, ttnn.reciprocal, ttnn.rsqrt, ttnn.sigmoid
-        self.recv = self.index(torch.arange(n).repeat_interleave(d))
 
     def index(self, idx):
         return self.tt.from_torch(idx.to(torch.int32), dtype=self.tt.uint32, layout=self.tt.ROW_MAJOR_LAYOUT, device=self.dev)
@@ -129,19 +128,18 @@ class TtOps:
         return self._sum(self._cols(x, 3, 9 * self.u))
 
     def slot_sum(self, x, n):
-        """Sum of each node's slots, accumulated slot by slot in float32. On a near-symmetric lattice the vector and
-        tensor parts cancel ~100x over the neighbours; ttnn.sum is good to ~1e-4 of the summands (bfloat16: 4e-3),
+        """Sum of each node's slots: the D row blocks of N added in float32. On a near-symmetric lattice the vector
+        and tensor parts cancel ~100x over the neighbours; ttnn.sum is good to ~1e-4 of the summands (bfloat16: 4e-3),
         which is percent of such a result, while float32 adds are exact to rounding."""
-        tt, w = self.tt, x.shape[-1]
-        g, acc = tt.reshape(tt.to_layout(x, tt.ROW_MAJOR_LAYOUT), (n, self.d, w)), None
+        tt, w, acc = self.tt, x.shape[-1], None
         for k in range(self.d):
-            s = tt.to_layout(tt.reshape(tt.slice(g, [0, k, 0], [n, k + 1, w]), (n, w)), tt.TILE_LAYOUT)
+            s = tt.slice(x, [k * n, 0], [(k + 1) * n, w])
             s = s if s.dtype == tt.float32 else tt.typecast(s, tt.float32)
             acc = s if acc is None else tt.add(acc, s)
         return self.cast(acc)
 
     def slot_spread(self, x, d):
-        return self.gather(self.recv, x)
+        return self.tt.concat([x] * d, dim=0)
 
     def scatter(self, x, table, n):
         width = x.shape[-1]

@@ -101,12 +101,12 @@ class TorchOps:
         return x.reshape(s, 3, -1).sum(1)
 
     @staticmethod
-    def slot_sum(x, n):                            # [N D, W] -> [N, W]
-        return x.reshape(n, -1, x.shape[-1]).sum(1)
+    def slot_sum(x, n):                            # [D N, W] -> [N, W]
+        return x.reshape(-1, n, x.shape[-1]).sum(0)
 
     @staticmethod
-    def slot_spread(x, d):                         # [N, W] -> [N D, W]
-        return x.repeat_interleave(d, 0)
+    def slot_spread(x, d):                         # [N, W] -> [D N, W]
+        return x.repeat(d, 1)
 
     @staticmethod
     def scatter(x, table, n):                      # rows of x summed onto nodes; table [N D'] of row ids, len(x) = none
@@ -127,7 +127,8 @@ def weights(layer, dtype=torch.float64):
 
 
 def slots(edge_index, n, min_width=0, own=False):
-    """Edge list (receiver row 0, sender row 1) -> (edge [S] edge id of each receiver slot, E in pad slots;
+    """Edge list (receiver row 0, sender row 1) -> (edge [S] edge id of each receiver slot, E in pad slots, slot k
+    of node i in row k N + i so that a node's slots are D row blocks of N;
     send [S] sender node, 0 in pad slots; table [N D'] slot ids grouped by sender, S = none; D).
     own=True is the message of weights trained before matgl 3 (v2025.1): row 1 receives, and the features an
     edge carries are the receiver's own. The loader sets it."""
@@ -136,7 +137,7 @@ def slots(edge_index, n, min_width=0, own=False):
     if not own:
         recv, sender = edge_index
     edge, d = build_gather(recv, n, e, min_width=min_width)
-    edge = torch.from_numpy(edge.astype(np.int64))
+    edge = torch.from_numpy(edge.astype(np.int64)).reshape(n, d).T.reshape(-1)   # slot-major: row k N + i
     real = (edge < e).nonzero()[:, 0]
     send = torch.zeros(n * d, dtype=torch.long)
     send[real] = sender[edge[real]]
