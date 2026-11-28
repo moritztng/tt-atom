@@ -82,8 +82,12 @@ class Mace:
     def energy(self, atomic_numbers, edge_index, sh, ef, zbl_node):
         """sh [E, 16], ef [E, 8] (torch, edge order of the caller), zbl_node [n] -> total energy (float)."""
         g = self.graph(atomic_numbers, edge_index)
-        dev = lambda a: D.to_dev(tt_blocks.pad_edges(g["dev"], a), self.dev, self.dtype)  # noqa: E731
-        return self._total(g, self._forward(g, dev(sh), dev(ef)), zbl_node)
+        return self._total(g, self._forward(g, *self._edges(g, sh, ef)), zbl_node)
+
+    def _edges(self, g, sh, ef):
+        """Per-edge host features -> the card's padded receiver layout."""
+        return (tt_blocks.edge_sh(self.dev, g["dev"], sh, self.dtype),
+                D.to_dev(tt_blocks.pad_edges(g["dev"], ef), self.dev, self.dtype))
 
     def energy_forces(self, atomic_numbers, pos, edge_index, shifts):
         """pos [n, 3], shifts [E, 3] (float64 torch) -> (total energy (float), forces [n, 3] float64)."""
@@ -91,9 +95,8 @@ class Mace:
 
         w, g = self.w, self.graph(atomic_numbers, edge_index)
         vec, r = ref.edge_vectors(pos, edge_index, shifts)
-        dev = lambda a: D.to_dev(tt_blocks.pad_edges(g["dev"], a), self.dev, self.dtype)  # noqa: E731
         sh, ef = ref.spherical_harmonics(vec), ref.radial_embedding(r, atomic_numbers, edge_index, w)
-        widths, (sh, ef) = (sh.shape[1], ef.shape[1]), (dev(sh), dev(ef))
+        widths, (sh, ef) = (sh.shape[1], ef.shape[1]), self._edges(g, sh, ef)
         tapes = []
         energy = self._total(g, self._forward(g, sh, ef, tapes), ref.zbl(r, atomic_numbers, edge_index, w, len(pos)))
         cast = lambda a, dt: a if a is None or a.dtype == dt else ttnn.typecast(a, dt)  # noqa: E731

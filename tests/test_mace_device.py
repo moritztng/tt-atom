@@ -77,7 +77,8 @@ def test_interaction_device(g, device, layer, dt):  # noqa: F811
 
     def edges(a):
         return dev(tt_blocks.pad_edges(graph, a.double()))
-    x, sc = tt_blocks.interaction(dev(feats.reshape(len(order), -1)), edges(t["a@spherical_harmonics.out0"]),
+    sh = tt_blocks.edge_sh(device, graph, t["a@spherical_harmonics.out0"].double(), _dtype(dt))
+    x, sc = tt_blocks.interaction(dev(feats.reshape(len(order), -1)), sh,
                                   edges(t["a@radial_embedding.out0"]), plan, graph)
     got = ttnn.to_torch(x).double().reshape(len(order), 16, 128).transpose(1, 2)
     err = rel(got, t[f"a@interactions.{layer}.out0"].double()[order])

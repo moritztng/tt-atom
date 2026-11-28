@@ -15,30 +15,43 @@ from tt_atom import device as D
 from . import dense
 
 
+def const(t, dev, dtype):
+    """A constant matmul operand on the card. At float32 it is split on the host into its bfloat16 hi + lo
+    parts (see ``mm``), once, instead of on the card at every call."""
+    import ttnn
+
+    t = t.contiguous()
+    if dtype != ttnn.float32:
+        return D.to_dev(t, dev, dtype)
+    hi = t.to(torch.bfloat16)
+    lo = (t - hi.to(t.dtype)).to(torch.bfloat16)
+    return tuple(D.to_dev(part.float(), dev, ttnn.bfloat16) for part in (hi, lo))
+
+
 def mm(a, b, cfg):
     """matmul that keeps float32 operands at float32 accuracy.
 
     The matrix engine reads float32 operands through 19-bit source registers, i.e. truncated to a 10-bit
     mantissa, and truncation is biased: MACE's per-atom energies came out ~9 meV/atom high from that alone.
     So a float32 operand is split into bfloat16 hi + lo parts and the significant products are summed (a
-    bfloat16 x bfloat16 product is exact in the float32 accumulator), leaving ~2^-16 relative. A bfloat16
-    operand is taken as exact (0/1 selectors are uploaded that way) and is not split: two matmuls instead of
-    three. Two bfloat16 operands take the plain matmul.
+    bfloat16 x bfloat16 product is exact in the float32 accumulator), leaving ~2^-16 relative. A constant from
+    ``const`` arrives already split. A bfloat16 operand is taken as exact (0/1 selectors are uploaded that way)
+    and is not split: two matmuls instead of three. Two bfloat16 operands take the plain matmul.
     """
     import ttnn
 
-    if a.dtype != ttnn.float32 and b.dtype != ttnn.float32:
-        return ttnn.matmul(a, b, compute_kernel_config=cfg)
-
     def parts(x):
-        if x.dtype != ttnn.float32:
-            return (x,)
+        if isinstance(x, tuple) or x.dtype != ttnn.float32:
+            return x if isinstance(x, tuple) else (x,)
         hi = ttnn.typecast(x, ttnn.bfloat16)
         return hi, ttnn.typecast(ttnn.subtract(x, ttnn.typecast(hi, ttnn.float32)), ttnn.bfloat16)
 
+    a, b = parts(a), parts(b)
+    if len(a) == len(b) == 1:
+        return ttnn.matmul(a[0], b[0], compute_kernel_config=cfg)
     out = None
-    for i, x in enumerate(parts(a)):
-        for y in parts(b)[:2 - i]:  # lo x lo is below float32
+    for i, x in enumerate(a):
+        for y in b[:2 - i]:  # lo x lo is below float32
             term = ttnn.matmul(x, y, compute_kernel_config=cfg, dtype=ttnn.float32)
             out = term if out is None else ttnn.add(out, term)
     return out
@@ -83,9 +96,9 @@ def symmetric_contraction_setup(dev, tables, dtype):
     sel = lambda S: D.to_dev(S.contiguous(), dev, ttnn.bfloat16)  # noqa: E731  (0/1: exact, see mm)
     return {
         "sels": [(None if Sp is None else sel(Sp), sel(Sl)) for Sp, Sl in sels],
-        "T": [D.to_dev(T[e], dev, dtype) for e in range(T.shape[0])],
+        "T": [const(T[e], dev, dtype) for e in range(T.shape[0])],
         "t": {"sels": [(None if Sp is None else sel(Sp.T), sel(Sl.T)) for Sp, Sl in sels],
-              "T": [D.to_dev(T[e].transpose(1, 2).contiguous(), dev, dtype) for e in range(T.shape[0])]},
+              "T": [const(T[e].transpose(1, 2), dev, dtype) for e in range(T.shape[0])]},
         "widths": [t.shape[-1] for t, _, _ in tables],
         "cfg": D.compute_kernel_config(),
     }
@@ -215,6 +228,22 @@ def pad_edges(graph, x):
     return torch.cat([x, x.new_zeros(1, x.shape[1])])[graph["slot_edge"]]
 
 
+def edge_sh(dev, graph, sh, dtype):
+    """Per-edge spherical harmonics [E, 16] (host) -> device ([n, D, 16], its transpose [n, 16, D]): the edge
+    sum multiplies from the left by one and the reverse pass by the other, and the host transposes for free."""
+    sh = pad_edges(graph, sh).reshape(graph["n"], graph["D"], -1)
+    return D.to_dev(sh, dev, dtype), D.to_dev(sh.transpose(1, 2).contiguous(), dev, dtype)
+
+
+def _per_node(plan, key, n):
+    """The constant ``plan[key]`` [p, q] (host) as a device [n, p, q] matmul operand, built once per atom count:
+    matmul has no shared left operand, and a left multiply keeps the layer in the cm layout without permutes."""
+    cache = plan["per_node"]
+    if (key, n) not in cache:
+        cache[key, n] = const(plan[key].expand(n, -1, -1), plan["dev"], plan["dtype"])
+    return cache[key, n]
+
+
 def interaction_setup(dev, w, layer, elements, irreps_in, residual, dtype, sh_ls=(0, 1, 2, 3)):
     """Device weights for one interaction block in the flattened cm layout [rows, A * 128], for the species
     ``elements`` present. Graph-free: pair with graph_setup."""
@@ -230,7 +259,7 @@ def interaction_setup(dev, w, layer, elements, irreps_in, residual, dtype, sh_ls
     a_sk = (sum(2 * l + 1 for _, l in sk_in), sum(2 * l + 1 for _, l in sk_out))
     C, ins_of_k, mid = dense.conv_tp_plan(irreps_in, list(sh_ls), [l for _, l in hidden])
     K = C.shape[2]
-    tdev = lambda a: D.to_dev(a.contiguous(), dev, dtype)  # noqa: E731
+    tdev = lambda a: const(a, dev, dtype)  # noqa: E731
     both = lambda a: (tdev(a), tdev(a.T))  # noqa: E731  (forward, reverse)
     fcw = lambda Ws: zip(*(both(W / W.shape[0] ** 0.5) for W in Ws))  # noqa: E731
     # The density MLP ends in one column. Widen it to 32 zero-padded columns (tanh(0^2) = 0): a width-1 row-major
@@ -246,15 +275,15 @@ def interaction_setup(dev, w, layer, elements, irreps_in, residual, dtype, sh_ls
     (dens, dens_t), (tp_w, tp_w_t) = fcw(dens), fcw(tp_w)
     up = dense.plan_matrix(dense.linear_plan(irreps_in, irreps_in, w[p + "linear_up.weight"]), a_in, a_in)
     up, up_t = both(up.reshape(-1, a_in, 128)[:, a_of_r, :].reshape(-1, R * 128))
-    cn, cn_t = both(Cn)
     lin, lin_t = both(dense.plan_matrix(dense.linear_plan(mid, hidden, w[p + "linear.weight"]), K, 16))
     skip, skip_t = zip(*(both(dense.plan_matrix(s, *a_sk)) for s in sk))
     ones = torch.zeros(16 * 128, 32, dtype=torch.float64)  # row sum as a GEMM, into column 0 of a tile
     ones[:, 0] = 1.0
     return {
         "R": R, "K": K, "residual": residual,
-        "up": up, "lin": lin, "skip": skip, "tp_w": tp_w, "dens": dens, "cn": cn, "silu": ref._silu_2mom(),
-        "t": {"up": up_t, "lin": lin_t, "skip": skip_t, "tp_w": tp_w_t, "dens": dens_t, "cn": cn_t,
+        "up": up, "lin": lin, "skip": skip, "tp_w": tp_w, "dens": dens, "silu": ref._silu_2mom(),
+        "cn": Cn, "cn_t": Cn.T, "per_node": {}, "dev": dev, "dtype": dtype,  # see _per_node
+        "t": {"up": up_t, "lin": lin_t, "skip": skip_t, "tp_w": tp_w_t, "dens": dens_t,
               "ones": D.to_dev(ones, dev, ttnn.bfloat16)},
         "cfg": D.compute_kernel_config(),
     }
@@ -269,7 +298,7 @@ def _per_element(x, ranges, mats, cfg):
 
 
 def interaction(feats, sh, ef, plan, graph, tape=None):
-    """feats [n, A * 128], sh [n * D, 16], ef [n * D, n_radial] (device, tile, padded receiver layout)
+    """feats [n, A * 128], sh = edge_sh(...), ef [n * D, n_radial] (device, tile, padded receiver layout)
     -> (x [n, 16 * 128] cm, skip [n, 128] or None)."""
     import ttnn
 
@@ -282,15 +311,14 @@ def interaction(feats, sh, ef, plan, graph, tape=None):
     x1 = rows(graph["slot_sender"], mm(feats, plan["up"], cfg), (n * Dn, R * 128))
     tw = fc_net(ef, plan["tp_w"], plan["silu"], t["tw_pre"])  # [n * D, R * 128]
     Q = ttnn.reshape(ttnn.multiply(x1, tw), (n, Dn, R * 128))
-    sh = ttnn.reshape(sh, (n, Dn, 16))
-    B = mm(perm(sh, (0, 2, 1)), Q, cfg)  # [n, 16, R * 128]: the sum over each node's edges
-    msg = mm(perm(ttnn.reshape(B, (n, 16 * R, 128)), (0, 2, 1)), plan["cn"], cfg)  # [n, 128, K]
-    msg = ttnn.reshape(perm(msg, (0, 2, 1)), (n, K * 128))
+    B = mm(sh[1], Q, cfg)  # [n, 16, R * 128]: the sum over each node's edges
+    msg = mm(_per_node(plan, "cn_t", n), ttnn.reshape(B, (n, 16 * R, 128)), cfg)  # [n, K, 128]
+    msg = ttnn.reshape(msg, (n, K * 128))
     u = fc_net(ef, plan["dens"], plan["silu"], t["u_pre"])
     dens = ttnn.tanh(ttnn.multiply(u, u))  # [n * D, 32], columns 1.. are zero
     density = scatter.linear32(ttnn, lambda p: ttnn.sum(ttnn.reshape(p, (n, Dn, 32)), dim=1), dens)[:, :1]
     lin, inv = mm(msg, plan["lin"], cfg), ttnn.reciprocal(ttnn.add(density, 1.0))
-    t.update(x1=x1, tw=tw, Q=Q, sh=sh, u=u, dens=dens, lin=lin, inv=inv)
+    t.update(x1=x1, tw=tw, Q=Q, sh=sh[0], u=u, dens=dens, lin=lin, inv=inv)
     msg = ttnn.multiply(lin, inv)
     if not plan["residual"]:
         msg = _per_element(msg, graph["ranges"], plan["skip"], cfg)
@@ -311,8 +339,8 @@ def interaction_bwd(g_out, g_sc, plan, graph, tape):
     g_density = ttnn.neg(ttnn.multiply(mm(ttnn.multiply(g_msg, t["lin"]), w["ones"], cfg),
                                        ttnn.multiply(t["inv"], t["inv"])))
     g_raw = mm(ttnn.multiply(g_msg, t["inv"]), w["lin"], cfg)  # [n, K * 128]
-    g_B = mm(perm(ttnn.reshape(g_raw, (n, K, 128)), (0, 2, 1)), w["cn"], cfg)  # [n, 128, 16 * R]
-    g_B = ttnn.reshape(perm(g_B, (0, 2, 1)), (n, 16, R * 128))
+    g_B = mm(_per_node(plan, "cn", n), ttnn.reshape(g_raw, (n, K, 128)), cfg)  # [n, 16 * R, 128]
+    g_B = ttnn.reshape(g_B, (n, 16, R * 128))
     g_sh = ttnn.reshape(mm(t["Q"], perm(g_B, (0, 2, 1)), cfg), (n * Dn, 16))
     g_Q = ttnn.reshape(mm(t["sh"], g_B, cfg), (n * Dn, R * 128))
     g_u = ttnn.multiply(ttnn.reshape(g_density, (n, 1, 32)), ttnn.reshape(
@@ -333,7 +361,7 @@ def product_setup(dev, w, layer, elements, irreps_out, dtype):
 
     p, a = f"products.{layer}.", sum(2 * l + 1 for _, l in irreps_out)
     tables = dense.product_tables(w, layer, len(irreps_out), elements=elements)
-    tdev = lambda t: D.to_dev(t.contiguous(), dev, dtype)  # noqa: E731
+    tdev = lambda t: const(t, dev, dtype)  # noqa: E731
     r = f"readouts.{layer}."
     if r + "linear.weight" in w:
         ro = [dense.plan_matrix(dense.linear_plan(irreps_out, [(1, 0)], w[r + "linear.weight"]), a, 1)]
@@ -348,7 +376,9 @@ def product_setup(dev, w, layer, elements, irreps_out, dtype):
     ro_t[-1] = ro_t[-1] * float(w["scale_shift.scale"])
     return {"sc": symmetric_contraction_setup(dev, tables, dtype), "a": a, "lin": tdev(lin),
             "readout": [tdev(W) for W in ro], "silu": ref._silu_2mom(), "cfg": D.compute_kernel_config(),
-            "t": {"lin": tdev(lin.T), "readout": [tdev(W) for W in ro_t]}}
+            # the last reverse readout weight is a broadcast row, not a matmul operand
+            "t": {"lin": tdev(lin.T),
+                  "readout": [tdev(W) for W in ro_t[:-1]] + [D.to_dev(ro_t[-1].contiguous(), dev, dtype)]}}
 
 
 def product(x, sc, plan, graph, tape=None):
