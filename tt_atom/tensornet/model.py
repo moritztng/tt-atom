@@ -11,15 +11,19 @@ def weights(model, dtype):
             "readout": R.weights(model, dtype)}
 
 
-def forward(o, w, z, edge, geo, send, n, eye, ol=None, edge_l=None, eye_l=None):
+def forward(o, w, z, edge, geo, send, n, eye, ol=None, edge_l=None, eye_l=None, stages=None):
     """Per-atom energies [1, 1, N, 1] and the tape. edge = (rbf [S, R], cut [S, 1]). The interaction layers may run
-    on a second backend `ol` (another dtype) with their own copies of the edge inputs and of eye."""
+    on a second backend `ol` (another dtype) with their own copies of the edge inputs and of eye. A `stages` list
+    receives the node tensor after the embedding and after each layer."""
     ol, edge_l, eye_l = ol or o, edge_l or edge, eye if eye_l is None else eye_l
     x, te = E.forward(o, w["embed"], z, *edge, geo, n)
+    keep = (lambda t: None) if stages is None else stages.append
+    keep(x)
     x, tl = ol.cast(x), []
     for wl in w["layers"]:
         x, t = L.forward(ol, wl, x, *edge_l, send, n, eye_l, 1.0)
         tl.append(t)
+        keep(x)
     e, tr = R.forward(o, w["readout"], o.cast(x), eye)
     return e, (te, tl, tr)
 

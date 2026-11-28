@@ -58,6 +58,8 @@ def main():
     torch.set_num_threads(1)
     layers = {}
     down = lambda t: ttnn.to_torch(t).double()
+    flat = lambda tape: {f"{k}{i}": down(t) for k, v in tape.items() for i, t in enumerate(v if isinstance(v, (list, tuple)) else [v])
+                         if not isinstance(t, (int, float, dict))}
     with device as dev, sampler as clk:
         nodes = sorted({os.readlink(f"/proc/self/fd/{f}").rsplit("/", 1)[1] for f in os.listdir("/proc/self/fd")
                         if os.path.exists(f"/proc/self/fd/{f}") and os.readlink(f"/proc/self/fd/{f}").startswith("/dev/tenstorrent/")})
@@ -88,14 +90,14 @@ def main():
             elif m["op"] == "energy":
                 s = layers["model"]
                 o, ol, n = s["o"], s["ol"], s["n"]
-                t0 = time.perf_counter()
+                t0, stages = time.perf_counter(), [] if m.get("stages") else None
                 geo = [o.up(c) for c in m["geo"].split(1, -1)]
                 e, tape = M.forward(o, s["w"], o.up(m["z"]), (o.up(m["rbf"]), o.up(m["cut"])), geo, s["send"], n, s["eye"],
-                                    ol=ol, edge_l=(ol.up(m["rbf"]), ol.up(m["cut"])), eye_l=s["eye_l"])
+                                    ol=ol, edge_l=(ol.up(m["rbf"]), ol.up(m["cut"])), eye_l=s["eye_l"], stages=stages)
                 grbf, gcut, ggeo = M.backward(o, s["w"], tape, o.up(torch.ones(1, 1, n, 1)), s["table"], n, s["d"], s["eye"],
                                               ol=ol, eye_l=s["eye_l"])
                 out = {"e": down(e).reshape(-1), "grbf": sum(down(g) for g in grbf), "gcut": sum(down(g) for g in gcut),
-                       "ggeo": down(ggeo)}
+                       "ggeo": down(ggeo), **({"stages": [down(x) for x in stages], "tape": flat(tape[0])} if stages else {})}
                 send({**out, "seconds": time.perf_counter() - t0})
             elif m["op"] == "close":
                 send({"aiclk_mhz_during": {k: v for k, v in clk.summary().items() if k in nodes}, "opened_nodes": nodes,

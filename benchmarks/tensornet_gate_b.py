@@ -27,6 +27,7 @@ def main():
     ap.add_argument("--steps", type=int, default=3, help="repeat the device step; the last one is graded and timed")
     ap.add_argument("--server", default="python benchmarks/tensornet_layer_server.py --cpu")
     ap.add_argument("--rattle", type=float, default=0.0, help="extra Gaussian displacement in A, for a second cell of another energy")
+    ap.add_argument("--stages", action="store_true", help="also grade the node tensor after each block against float64")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
     torch.set_num_threads(4)
@@ -58,7 +59,7 @@ def main():
 
     remote = Remote(args.server)
     remote.call(op="model", w=M.weights(m, torch.float64), n=n, d=d, units=m.units, send=send, table=table, dtype=args.dtype)
-    msg = dict(op="energy", z=pad(E.pair(m.tensor_embedding, z, ei)), rbf=pad(rbf), cut=pad(cut), geo=pad(geo))
+    msg = dict(op="energy", stages=args.stages, z=pad(E.pair(m.tensor_embedding, z, ei)), rbf=pad(rbf), cut=pad(cut), geo=pad(geo))
     for _ in range(args.steps):
         out = remote.call(**msg)
     std, mean = float(pot.data_std), float(pot.data_mean)
@@ -70,6 +71,15 @@ def main():
            "dE_meV_per_atom": 1e3 * (e1 - e0) / n,
            "force_mae_meV_A": 1e3 * float(np.abs(f1 - f0).mean()), "force_max_meV_A": 1e3 * float(np.abs(f1 - f0).max()),
            "mean_abs_force_eV_A": float(np.abs(f0).mean()), "device_step_s_untuned": out["seconds"], **remote.call(op="close")}
+    if args.stages:
+        eye, ref = torch.eye(3, dtype=torch.float64).reshape(3, 3, 1, 1).expand(3, 3, n, m.units), []
+        e_ref, tape = M.forward(L.TorchOps, M.weights(m, torch.float64), msg["z"], (msg["rbf"], msg["cut"]), list(msg["geo"].split(1, -1)),
+                             send, n, eye, stages=ref)
+        de = 1e3 * std * (out["e"] - e_ref.reshape(-1))
+        res["stage_rel_rms"] = [float((a - b).norm() / b.norm()) for a, b in zip(out["stages"], ref)]
+        flat = {f"{k}{i}": t for k, v in tape[0].items() for i, t in enumerate(v if isinstance(v, (list, tuple)) else [v]) if torch.is_tensor(t)}
+        res["embed_tape_rel_rms"] = {k: float((out["tape"][k].reshape(t.shape) - t).norm() / t.norm()) for k, t in flat.items() if k in out["tape"]}
+        res["atom_dE_meV"] = {"mean": float(de.mean()), "std": float(de.std())}
     print(json.dumps(res))
     if args.out:
         json.dump(res, open(args.out, "w"), indent=1)

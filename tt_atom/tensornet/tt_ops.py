@@ -26,7 +26,7 @@ class TtOps:
         return self.tt.from_torch(t.float().contiguous(), dtype=self.dtype, layout=self.tt.TILE_LAYOUT, device=self.dev)
 
     def weight(self, t):                           # a matmul operand: pre-split for an exact float32 product
-        return SC.const(t.float(), self.dev, self.dtype) if self.dtype == self.tt.float32 else self.up(t)
+        return SC.const(t.float(), self.dev, self.dtype) if self.cfg and self.dtype == self.tt.float32 else self.up(t)
 
     def cast(self, x):
         return x if x.dtype == self.dtype else self.tt.typecast(x, self.dtype)
