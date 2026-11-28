@@ -359,7 +359,7 @@ def cmd_convert(args):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tt-atom", description="TT-Atom: UMA MLIP inference on Tenstorrent")
     ap.add_argument("--device-id", type=int, default=0)
-    ap.add_argument("--fast", action="store_true", help="bf8 weights (throughput; accuracy-safe)")
+    ap.add_argument("--fast", action="store_true", help="UMA: bf8 weights for throughput. Orb: ignored, one bf16 path")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("run", help="one-shot: structure -> auto-bundle -> single-point/relax/md")

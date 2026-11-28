@@ -37,7 +37,9 @@ class OrbCalculator(DeviceCalculator):
         edges only) so differently-sized systems reuse the same compiled kernel shapes — the
         screening-stream win measured in ``benchmarks/bench_compile_pain.py``. Energies and
         forces are bit-exact vs the unpadded path (gated by ``tests/test_bucketing.py``); the
-        cost is ~23% mean extra message-passing work, bounded by the ladder's ~1.55 ratio."""
+        cost is ~23% mean extra message-passing work, bounded by the ladder's ~1.55 ratio.
+
+        ``fast`` is accepted and ignored: Orb has one precision path (bf16)."""
         super().__init__(device=device, device_id=device_id, fast=fast, **kwargs)
         self.bucketing = bucketing
         if isinstance(weights, (str, pathlib.Path)):
@@ -58,18 +60,17 @@ class OrbCalculator(DeviceCalculator):
         L = self.cfg["num_message_passing_steps"]
         latent_dim = self.cfg["latent_dim"]
         self.encoder = Encoder(w, self.device, node_in=self.cfg["node_embed_size"],
-                               edge_in=self.cfg["edge_embed_size"], latent_dim=latent_dim,
-                               fast=fast)
+                               edge_in=self.cfg["edge_embed_size"], latent_dim=latent_dim)
         self.layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", self.device,
-                                                 latent_dim=latent_dim, fast=fast)
+                                                 latent_dim=latent_dim)
                        for i in range(L)]
-        self.ehead = EnergyHead(w, self.device, latent_dim=latent_dim, fast=fast)
+        self.ehead = EnergyHead(w, self.device, latent_dim=latent_dim)
         # ForceHead present => this is a "direct" checkpoint (forces are a device MLP head, no
         # autograd); absent => "conservative" (forces via tt_atom.orb_forces's analytic VJP).
         self.is_direct = "forces_head.mlp.NN-0.weight" in w
-        self.fhead = (ForceHead(w, self.device, latent_dim=latent_dim, fast=fast)
+        self.fhead = (ForceHead(w, self.device, latent_dim=latent_dim)
                       if self.is_direct else None)
-        self.shead = (StressHead(w, self.device, latent_dim=latent_dim, fast=fast)
+        self.shead = (StressHead(w, self.device, latent_dim=latent_dim)
                       if "stress_head.mlp.NN-0.weight" in w else None)
         self.has_cond = "conditioner.charge_embedding.W" in w
 
