@@ -25,6 +25,37 @@ from bench_orb_perf_dollar_tt import SIZES as ORB_SIZES, AiclkSampler, grade, lo
 SIZES = [("2x2x2", 2, 2, 2), *ORB_SIZES]  # 64, 216, 512, 1000, 2016 atoms
 
 
+def profile(dev):
+    """Wrap the block functions with device-synced timers -> {name: [seconds, calls]}, inclusive of callees.
+    Counts restart when the caller clears the dict's values."""
+    import ttnn
+
+    from tt_atom import scatter
+    from tt_atom.mace import tt_blocks as B
+
+    acc = {}
+
+    def wrap(mod, name):
+        fn = getattr(mod, name)
+
+        def timed(*a, **k):
+            ttnn.synchronize_device(dev)
+            t0 = time.perf_counter()
+            out = fn(*a, **k)
+            ttnn.synchronize_device(dev)
+            rec = acc.setdefault(name, [0.0, 0])
+            rec[0] += time.perf_counter() - t0
+            rec[1] += 1
+            return out
+        setattr(mod, name, timed)
+
+    for name in ("mm", "perm", "rows", "fc_net", "fc_net_bwd", "conv_tp", "conv_tp_bwd", "symmetric_contraction",
+                 "symmetric_contraction_bwd", "interaction", "interaction_bwd", "product", "product_bwd"):
+        wrap(B, name)
+    wrap(scatter, "segment_sum")
+    return acc
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--weights", required=True, help="MACE golden npz (tests/gen_golden_mace.py), carries the weights")
@@ -38,6 +69,8 @@ def main():
     ap.add_argument("--anchors", default=None, help="float64 anchors npz from mace_gpu_bench_fair.py --anchors-out")
     ap.add_argument("--platform", default="Tenstorrent Blackhole, one chip")
     ap.add_argument("--out", default="benchmarks/mace_perf_dollar_tt.json")
+    ap.add_argument("--profile", action="store_true",
+                    help="device-synced inclusive time per block function (slows the step; not a timing run)")
     args = ap.parse_args()
 
     import ttnn
@@ -64,6 +97,7 @@ def main():
 
     with D.device(0) as dev:
         model = Mace(dev, w, ttnn.float32)
+        prof = profile(dev) if args.profile else None
         for tag, nx, ny, nz in (s for s in SIZES if s[0] in args.sizes.split(",")):
             atoms = bulk(args.element, "diamond", a=args.a, cubic=True) * (nx, ny, nz)
             pos0 = atoms.get_positions()
@@ -85,12 +119,18 @@ def main():
             for _ in range(args.warmup):
                 model.energy_forces(Z, torch.from_numpy(pos0 + rng.normal(0.0, args.jitter, pos0.shape)), ei, shifts)
             ms = []
+            if prof is not None:
+                prof.clear()
             with AiclkSampler() as clk:
                 for _ in range(args.steps):
                     p = torch.from_numpy(pos0 + rng.normal(0.0, args.jitter, pos0.shape))
                     t0 = time.perf_counter()
                     model.energy_forces(Z, p, ei, shifts)
                     ms.append((time.perf_counter() - t0) * 1e3)
+            if prof is not None:
+                print(f"{tag} inclusive ms/step: " + ", ".join(
+                    f"{k} {v[0] * 1e3 / args.steps:.1f} ({v[1] // args.steps}x)" for k, v in
+                    sorted(prof.items(), key=lambda kv: -kv[1][0])), flush=True)
             records.append({"size": tag, "atoms": len(atoms), "edges": int(ei.shape[1]), "first_call_s": first,
                             "ms_per_step_median": float(np.median(ms)), "ms_per_step_min": min(ms), "ms_raw": ms,
                             "reference": ref_src, **acc, "aiclk_mhz_during_by_node": clk.summary()})
