@@ -47,6 +47,7 @@ class FakeTtnn:
     silu, sigmoid, reciprocal, neg, reshape = torch.nn.functional.silu, torch.sigmoid, torch.reciprocal, torch.neg, torch.reshape
     concat, sum = (lambda xs, dim: torch.cat(xs, dim)), (lambda x, dim, keepdim=False: x.sum(dim, keepdim=keepdim))
     rsqrt = torch.rsqrt
+    typecast = staticmethod(lambda t, dtype: t)
     to_layout = staticmethod(lambda x, layout: x)
     embedding = staticmethod(lambda idx, table, **k: table[idx])
     from_torch = staticmethod(lambda t, **k: t.long() if not t.is_floating_point() else t.double())

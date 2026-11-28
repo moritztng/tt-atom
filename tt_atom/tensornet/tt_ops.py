@@ -25,8 +25,15 @@ class TtOps:
     def up(self, t):
         return self.tt.from_torch(t.float().contiguous(), dtype=self.dtype, layout=self.tt.TILE_LAYOUT, device=self.dev)
 
-    def weight(self, t):                           # a matmul operand: pre-split for an exact float32 product
-        return SC.const(t.float(), self.dev, self.dtype) if self.cfg and self.dtype == self.tt.float32 else self.up(t)
+    def weight(self, t):
+        """A matmul operand. At float32 a wide one is pre-split for scatter.mm; one with a few input rows (the radial
+        basis projections) goes up row by row and `linear` sums row products instead: float32 multiplies and adds are
+        exact on the card, a matmul is good to 1e-4, and these feed neighbour sums that cancel ~100x on a lattice."""
+        if not self.cfg or self.dtype != self.tt.float32:
+            return self.up(t)
+        if t.shape[-2] <= 8 and t.dim() == 2:
+            return [self.up(row[None]) for row in t]
+        return SC.const(t.float(), self.dev, self.dtype)
 
     def cast(self, x):
         return x if x.dtype == self.dtype else self.tt.typecast(x, self.dtype)
@@ -49,7 +56,10 @@ class TtOps:
         return self.tt.multiply(s, self.tt.add(self.tt.multiply(x, self.tt.add(self.tt.neg(s), 1.0)), 1.0))
 
     def linear(self, x, w, b=None):
-        y = SC.mm(x, w, self.cfg, self.tt)
+        if isinstance(w, list):
+            y = self._sum([self.tt.multiply(c, row) for c, row in zip(self.split(x, len(w)), w)])
+        else:
+            y = SC.mm(x, w, self.cfg, self.tt)
         return y if b is None else self.tt.add(y, b)
 
     def comp(self, x, i, j):                       # [3, 3, N, U] -> component (i, j) as [1, 1, N, U]
@@ -114,9 +124,16 @@ class TtOps:
         return self._sum(self._cols(x, 3, 9 * self.u))
 
     def slot_sum(self, x, n):
-        tt = self.tt
-        rm = lambda p: tt.reshape(tt.to_layout(p, tt.ROW_MAJOR_LAYOUT), (n, self.d, x.shape[-1]))
-        return SC.linear32(tt, lambda p: tt.to_layout(tt.reshape(tt.sum(rm(p), dim=1), (n, x.shape[-1])), tt.TILE_LAYOUT), x)
+        """Sum of each node's slots, accumulated slot by slot in float32. On a near-symmetric lattice the vector and
+        tensor parts cancel ~100x over the neighbours; ttnn.sum is good to ~1e-4 of the summands (bfloat16: 4e-3),
+        which is percent of such a result, while float32 adds are exact to rounding."""
+        tt, w = self.tt, x.shape[-1]
+        g, acc = tt.reshape(tt.to_layout(x, tt.ROW_MAJOR_LAYOUT), (n, self.d, w)), None
+        for k in range(self.d):
+            s = tt.to_layout(tt.reshape(tt.slice(g, [0, k, 0], [n, k + 1, w]), (n, w)), tt.TILE_LAYOUT)
+            s = s if s.dtype == tt.float32 else tt.typecast(s, tt.float32)
+            acc = s if acc is None else tt.add(acc, s)
+        return self.cast(acc)
 
     def slot_spread(self, x, d):
         return self.gather(self.recv, x)
