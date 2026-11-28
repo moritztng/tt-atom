@@ -301,8 +301,7 @@ def interaction_cm(w, layer, feats, element, elements, sh, ef, edge_index, irrep
     dens = torch.tanh(ref.fc_net(ef, ref._layers(w, p + "density_fn")) ** 2)
     density = torch.zeros(n, 1, dtype=feats.dtype).index_add_(0, receiver, dens)
     C, ins_of_k, mid = conv_tp_plan(irreps_in, list(sh_ls), [l for _, l in hidden])
-    m = conv_tp_cm(up[sender], sh, tp_w, C, ins_of_k)
-    msg = torch.zeros(n, *m.shape[1:], dtype=m.dtype).index_add_(0, receiver, m)
+    msg = conv_tp_nodes(up[sender], sh, tp_w, receiver, n, conv_tp_node_plan(C, ins_of_k))
     msg = linear_cm(msg, linear_plan(mid, hidden, w[p + "linear.weight"]), 16, 128) / (density + 1)[:, :, None]
     if not residual:
         msg = skip_cm(msg, element, sk, 16, 128)
