@@ -59,18 +59,20 @@ replay. Errors are against float64 on the benchmark structure itself.
 
 | atoms | edges | step | of which on the card | energy error | force MAE |
 |---:|---:|---:|---:|---:|---:|
-| 64 | 2944 | 94.4 ms | 86.3 ms | 0.77 meV/atom | 0.52 meV/A |
-| 216 | 9936 | 276.5 ms | 247.3 ms | 0.33 meV/atom | 0.49 meV/A |
-| 512 | 23552 | 560.6 ms | 521.1 ms | 0.33 meV/atom | 0.51 meV/A |
-| 1000 | 46000 | 1079.9 ms | 1009.2 ms | 0.33 meV/atom | 0.50 meV/A |
+| 64 | 2944 | 82.5 ms | 73.9 ms | 0.77 meV/atom | 0.50 meV/A |
+| 216 | 9936 | 229.9 ms | 208.2 ms | 0.71 meV/atom | 0.52 meV/A |
+| 512 | 23552 | 453.3 ms | 419.0 ms | 0.50 meV/atom | 0.50 meV/A |
+| 1000 | 46000 | 912.5 ms | 833.8 ms | 0.33 meV/atom | 0.49 meV/A |
 
-About 1.1 ms per atom, more than 90 % of it on the card. This is far slower than MACE on a GPU
+About 0.9 ms per atom, more than 90 % of it on the card. This is far slower than MACE on a GPU
 (a consumer RTX 3090 runs the 64-atom step in 2.4 ms with cuEquivariance), so there is no
 per-dollar claim for MACE.
 
 The step is not limited by arithmetic. At 1000 atoms it issues 206 matmuls totalling 715 GFLOP
-(`bench_mace_tt.py --eager --census`), which the card executes at 0.7 TFLOP/s. Tracing changes
-nothing at this size (an eager step takes 1079 ms), so the host is not the limit either.
+(`bench_mace_tt.py --eager --census`), which the card executes at 0.9 TFLOP/s. The largest of those matmuls timed alone
+(`bench_mace_gemm_shapes.py`) take 200 ms per step, running anywhere from 0.2 TFLOP/s for the
+batched per-node shapes to 66 TFLOP/s for the wide node layers. Tracing barely helps at this
+size (an eager step takes 949 ms), so the host is not the limit either.
 
 ## Reproduce
 
