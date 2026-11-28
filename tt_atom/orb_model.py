@@ -132,18 +132,14 @@ class MLPNorm:
 
     def __init__(
         self, weights, prefix, device, in_dim, hidden_dim, out_dim, *,
-        fast=False, minimal_matmul=False,
+        minimal_matmul=False,
     ):
         import ttnn
 
         self.ttnn = ttnn
         self.kcfg = compute_kernel_config()
-        wdtype = ttnn.bfloat8_b if fast else ttnn.bfloat16
-        self.hidden_dtype = wdtype
-        # minimal_matmul requires activation and weight dtypes to match, unlike linear.
-        self.use_minimal_matmul = (
-            minimal_matmul and not fast and _orb_minimal_matmul_enabled(ttnn)
-        )
+        wdtype = ttnn.bfloat16
+        self.use_minimal_matmul = minimal_matmul and _orb_minimal_matmul_enabled(ttnn)
         self.w = []
         self.b = []
         for i in range(3):
@@ -164,9 +160,9 @@ class MLPNorm:
                 return ttnn.linear(
                     value, weight, bias=bias,
                     compute_kernel_config=self.kcfg, dtype=dtype)
-        a0 = linear(x, self.w[0], self.b[0], self.hidden_dtype)
+        a0 = linear(x, self.w[0], self.b[0], ttnn.bfloat16)
         h0 = ttnn.silu(a0)
-        a1 = linear(h0, self.w[1], self.b[1], self.hidden_dtype)
+        a1 = linear(h0, self.w[1], self.b[1], ttnn.bfloat16)
         h1 = ttnn.silu(a1)
         h2 = linear(h1, self.w[2], self.b[2], ttnn.bfloat16)
         self._cache_a0, self._cache_a1 = a0, a1           # pre-SiLU activations, for orb_forces.mlpnorm_bw
@@ -177,11 +173,9 @@ class Encoder:
     """``gns.Encoder``: separate node/edge MLPNorm blocks, no interaction between them."""
 
     def __init__(self, weights, device, *, node_in, edge_in, latent_dim,
-                 hidden_dim=MLP_HIDDEN_DIM, fast=False):
-        self.node_fn = MLPNorm(weights, "_encoder._node_fn", device, node_in, hidden_dim, latent_dim,
-                               fast=fast)
-        self.edge_fn = MLPNorm(weights, "_encoder._edge_fn", device, edge_in, hidden_dim, latent_dim,
-                               fast=fast)
+                 hidden_dim=MLP_HIDDEN_DIM):
+        self.node_fn = MLPNorm(weights, "_encoder._node_fn", device, node_in, hidden_dim, latent_dim)
+        self.edge_fn = MLPNorm(weights, "_encoder._edge_fn", device, edge_in, hidden_dim, latent_dim)
 
     def __call__(self, node_features, edge_features):
         return self.node_fn(node_features), self.edge_fn(edge_features)
@@ -201,18 +195,17 @@ class AttentionInteractionLayer:
     change for checkpoints without it.
     """
 
-    def __init__(self, weights, prefix, device, *, latent_dim, hidden_dim=MLP_HIDDEN_DIM,
-                 fast=False):
+    def __init__(self, weights, prefix, device, *, latent_dim, hidden_dim=MLP_HIDDEN_DIM):
         import ttnn
 
         self.ttnn = ttnn
         self.kcfg = compute_kernel_config()
         self.C = latent_dim
-        wdtype = ttnn.bfloat8_b if fast else ttnn.bfloat16
+        wdtype = ttnn.bfloat16
         self.edge_mlp = MLPNorm(weights, f"{prefix}._edge_mlp", device, 3 * latent_dim, hidden_dim,
-                                latent_dim, fast=fast, minimal_matmul=True)
+                                latent_dim, minimal_matmul=True)
         self.node_mlp = MLPNorm(weights, f"{prefix}._node_mlp", device, 3 * latent_dim, hidden_dim,
-                                latent_dim, fast=fast)
+                                latent_dim)
         self.receive_attn_w = to_dev(weights[f"{prefix}._receive_attn.weight"].T.contiguous(), device, wdtype)
         self.receive_attn_b = to_dev(weights[f"{prefix}._receive_attn.bias"], device, wdtype)
         self.send_attn_w = to_dev(weights[f"{prefix}._send_attn.weight"].T.contiguous(), device, wdtype)
@@ -316,13 +309,13 @@ class EnergyHead:
     exactly like UMA's ``scale_rmsd``/``scale_mean``/``elem_refs`` (``tt_atom/weights.py``).
     """
 
-    def __init__(self, weights, device, *, latent_dim, hidden_dim=MLP_HIDDEN_DIM, fast=False):
+    def __init__(self, weights, device, *, latent_dim, hidden_dim=MLP_HIDDEN_DIM):
         import ttnn
 
         self.ttnn = ttnn
         self.device = device
         self.kcfg = compute_kernel_config()
-        wdtype = ttnn.bfloat8_b if fast else ttnn.bfloat16
+        wdtype = ttnn.bfloat16
         self.w0 = to_dev(weights["energy_head.mlp.NN-0.weight"].T.contiguous(), device, wdtype)
         self.b0 = to_dev(weights["energy_head.mlp.NN-0.bias"], device, wdtype)
         self.w1 = to_dev(weights["energy_head.mlp.NN-1.weight"].T.contiguous(), device, wdtype)
@@ -369,12 +362,12 @@ class ForceHead:
     non-periodic (zero-cell) systems -- the ported Si golden is fully periodic.
     """
 
-    def __init__(self, weights, device, *, latent_dim, hidden_dim=MLP_HIDDEN_DIM, fast=False):
+    def __init__(self, weights, device, *, latent_dim, hidden_dim=MLP_HIDDEN_DIM):
         import ttnn
 
         self.ttnn = ttnn
         self.kcfg = compute_kernel_config()
-        wdtype = ttnn.bfloat8_b if fast else ttnn.bfloat16
+        wdtype = ttnn.bfloat16
         self.w0 = to_dev(weights["forces_head.mlp.NN-0.weight"].T.contiguous(), device, wdtype)
         self.b0 = to_dev(weights["forces_head.mlp.NN-0.bias"], device, wdtype)
         self.w1 = to_dev(weights["forces_head.mlp.NN-1.weight"].T.contiguous(), device, wdtype)
@@ -417,12 +410,12 @@ class StressHead:
     stress has no explicit volume division (unlike the conservative virial): the normalizer
     stats were fit directly against the target's own eV/Å^3 units."""
 
-    def __init__(self, weights, device, *, latent_dim, hidden_dim=MLP_HIDDEN_DIM, fast=False):
+    def __init__(self, weights, device, *, latent_dim, hidden_dim=MLP_HIDDEN_DIM):
         import ttnn
 
         self.ttnn = ttnn
         self.kcfg = compute_kernel_config()
-        wdtype = ttnn.bfloat8_b if fast else ttnn.bfloat16
+        wdtype = ttnn.bfloat16
         self.w0 = to_dev(weights["stress_head.mlp.NN-0.weight"].T.contiguous(), device, wdtype)
         self.b0 = to_dev(weights["stress_head.mlp.NN-0.bias"], device, wdtype)
         self.w1 = to_dev(weights["stress_head.mlp.NN-1.weight"].T.contiguous(), device, wdtype)

@@ -4,7 +4,7 @@ For each size and each TT precision mode, the GPU headline is the fastest frozen
 precision run, whose force MAE and max |dF| against the shared float64 anchor are no larger than the
 TT leg's. Per-dollar uses the purchase price of the hardware that ran each leg.
 
-    python benchmarks/orb_fair_compare.py --tt tt_default.json [tt_fast.json] \
+    python benchmarks/orb_fair_compare.py --tt tt_default.json \
         --gpu h200_high.json h200_highest.json --tt-price 1399 --gpu-price 51250
 """
 from __future__ import annotations
