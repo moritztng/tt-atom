@@ -49,10 +49,16 @@ def profile(dev):
             return out
         setattr(mod, name, timed)
 
-    for name in ("mm", "perm", "rows", "fc_net", "fc_net_bwd", "conv_tp", "conv_tp_bwd", "symmetric_contraction",
+    for name in ("mm", "perm", "rows", "fc_net", "fc_net_bwd", "symmetric_contraction",
                  "symmetric_contraction_bwd", "interaction", "interaction_bwd", "product", "product_bwd"):
         wrap(B, name)
     wrap(scatter, "segment_sum")
+    from tt_atom import device as D  # the host side of a step: geometry, its VJP, transfers
+    from tt_atom.mace import backward, reference
+    for mod, names in ((reference, ("edge_vectors", "spherical_harmonics", "radial_embedding", "zbl")),
+                       (backward, ("geometry_vjp",)), (D, ("to_dev",)), (ttnn, ("to_torch",)), (B, ("pad_edges",))):
+        for name in names:
+            wrap(mod, name)
     return acc
 
 
