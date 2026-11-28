@@ -50,18 +50,20 @@ class FakeTtnn:
 
 @pytest.mark.parametrize("backend", ["torch", "tt"])
 @pytest.mark.parametrize("which", [0, 1])
-def test_layer_matches_matgl(which, backend):
+@pytest.mark.parametrize("receiver", [0, 1])
+def test_layer_matches_matgl(which, backend, receiver):
+    """receiver=1 is the aggregation end of weights older than matgl 3: matgl's layer with the edge ends exchanged."""
     mod, args, kw = captured()[which]
     ei, r, rbf, x = layer_args(args, kw)
     x = x.clone().requires_grad_(True)
     rbf = rbf.clone().requires_grad_(True)
     r = r.clone().requires_grad_(True)
-    want = mod(ei, r, rbf, x)                                           # [N, U, 3, 3]
+    want = mod(ei.flip(0) if receiver else ei, r, rbf, x)                                           # [N, U, 3, 3]
     g_out = torch.randn(want.shape, dtype=torch.float64, generator=torch.Generator().manual_seed(1))
     wx, wrbf, wr = torch.autograd.grad((want * g_out).sum(), (x, rbf, r))
 
     n = x.shape[0]
-    edge, send, table, d = L.slots(ei, n, min_width=32)
+    edge, send, table, d = L.slots(ei, n, min_width=32, receiver=receiver)
     o = L.TorchOps if backend == "torch" else TtOps(None, n, d, mod.units, ttnn=FakeTtnn)
     pad = lambda t: torch.cat([t, torch.zeros_like(t[:1])])[edge]
     cut = torch.where(r <= mod.cutoff, 0.5 * (torch.cos(torch.pi * r / mod.cutoff) + 1), 0.0)

@@ -104,15 +104,17 @@ def weights(layer, dtype=torch.float64):
             "node_t": [wt.T.contiguous() for wt in node]}
 
 
-def slots(edge_index, n, min_width=0):
-    """Edge list (receiver row 0, sender row 1) -> (edge [S] edge id of each receiver slot, E in pad slots;
-    send [S] sender node, 0 in pad slots; table [N D'] slot ids grouped by sender, S = none; D)."""
+def slots(edge_index, n, min_width=0, receiver=0):
+    """Edge list -> (edge [S] edge id of each receiver slot, E in pad slots; send [S] sender node, 0 in pad
+    slots; table [N D'] slot ids grouped by sender, S = none; D). `receiver` is the row of edge_index a message
+    lands on: 0 for weights trained with matgl >= 3 (2025.2), 1 for the older ones (v2025.1). The loader sets it."""
     edge_index, e = edge_index.long(), edge_index.shape[1]
-    edge, d = build_gather(edge_index[0], n, e, min_width=min_width)
+    recv, sender = edge_index[receiver], edge_index[1 - receiver]
+    edge, d = build_gather(recv, n, e, min_width=min_width)
     edge = torch.from_numpy(edge.astype(np.int64))
     real = (edge < e).nonzero()[:, 0]
     send = torch.zeros(n * d, dtype=torch.long)
-    send[real] = edge_index[1][edge[real]]
+    send[real] = sender[edge[real]]
     table, _ = build_gather(send[real], n, len(real), sentinel=-1, min_width=min_width)
     table = torch.from_numpy(table.astype(np.int64))
     table = torch.where(table < 0, torch.tensor(n * d), real[table.clamp(min=0)])
