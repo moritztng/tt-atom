@@ -21,6 +21,32 @@ from tt_atom.tensornet import potential as P
 CELLS = {64: 2, 216: 3, 512: 4, 1000: 5, 1728: 6}
 
 
+def profile(dev):
+    """Wrap every method of the device backend with device-synced timers -> {name: [seconds, calls]}, inclusive of
+    callees. Counts restart when the caller clears the dict."""
+    import ttnn
+    from tt_atom.tensornet.tt_ops import TtOps
+
+    acc = {}
+
+    def wrap(name, fn):
+        def timed(*a, **k):
+            ttnn.synchronize_device(dev)
+            t0 = time.perf_counter()
+            out = fn(*a, **k)
+            ttnn.synchronize_device(dev)
+            rec = acc.setdefault(name, [0.0, 0])
+            rec[0] += time.perf_counter() - t0
+            rec[1] += 1
+            return out
+        return timed
+
+    for name, fn in list(vars(TtOps).items()):
+        if callable(fn) and not name.startswith("_") and not isinstance(fn, (staticmethod, classmethod, property)):
+            setattr(TtOps, name, wrap(name, fn))
+    return acc
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("bundle")
@@ -32,10 +58,11 @@ def main():
     ap.add_argument("--layer-dtype", default=None)
     ap.add_argument("--platform", default="")
     ap.add_argument("--cpu", action="store_true")
+    ap.add_argument("--profile", action="store_true", help="device-synced inclusive time per backend method (slows the step)")
     args = ap.parse_args()
     bundle, rng = torch.load(args.bundle, weights_only=True), np.random.default_rng(0)
     torch.set_num_threads(1)
-    calc, nodes, sampler = None, [], None
+    calc, nodes, sampler, prof = None, [], None, None
     if args.cpu:
         inner = P.torch_run(bundle["w"], bundle["units"])
     else:
@@ -44,6 +71,8 @@ def main():
         from tt_atom.tensornet_calculator import TensorNetCalculator
         calc = TensorNetCalculator(bundle, layer_dtype=getattr(ttnn, args.layer_dtype) if args.layer_dtype else None)
         inner = calc.run
+        if args.profile:
+            prof = profile(calc.device)
         # the /dev node this process opened: the AICLK that counts (node number != TT_VISIBLE_DEVICES index)
         fds = (os.path.realpath(f"/proc/self/fd/{fd}") for fd in os.listdir("/proc/self/fd"))
         nodes = sorted({p.rsplit("/", 1)[1] for p in fds if p.startswith("/dev/tenstorrent/")})
@@ -82,6 +111,8 @@ def main():
         for _ in range(args.warmup):
             step()
         net.clear()
+        if prof is not None:
+            prof.clear()
         if sampler is None:
             ms, clk = [step() for _ in range(args.steps)], None
         else:
@@ -99,6 +130,9 @@ def main():
                        "protocol": {"jitter_A": args.jitter, "warmup": args.warmup, "steps": args.steps, "mode": "eager",
                                     "neighbour_list": "rebuilt every step", "quantity": "energy + forces"},
                        "results": records}, f, indent=1)
+        if prof is not None:
+            print(f"{n} inclusive ms/step: " + ", ".join(f"{k} {v[0] * 1e3 / args.steps:.1f} ({v[1] // args.steps}x)" for k, v in
+                                                          sorted(prof.items(), key=lambda kv: -kv[1][0])), flush=True)
         mine = {k: v for k, v in (clk or {}).items() if k in nodes} or clk or {}
         print(f"{n} atoms: {rec['ms_per_step_median']:.1f} ms/step (network {rec['network_ms_per_step_median']:.1f}), "
               f"{rec['atoms_per_s']:.0f} atoms/s, dE " + " / ".join(f"{v['dE_meV_per_atom']:+.2f}" for v in acc.values())
