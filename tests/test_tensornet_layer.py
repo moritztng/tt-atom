@@ -48,6 +48,7 @@ class FakeTtnn:
     concat, sum = (lambda xs, dim: torch.cat(xs, dim)), (lambda x, dim, keepdim=False: x.sum(dim, keepdim=keepdim))
     rsqrt = torch.rsqrt
     typecast = staticmethod(lambda t, dtype: t)
+    to_torch = staticmethod(lambda t: t)
     to_layout = staticmethod(lambda x, layout: x)
     embedding = staticmethod(lambda idx, table, **k: table[idx])
     from_torch = staticmethod(lambda t, **k: t.long() if not t.is_floating_point() else t.double())
@@ -254,8 +255,13 @@ def test_potential_without_matgl_graph():
     ref.calc = PESCalculator(pot)
     z = torch.tensor([pot.model.element_types.index(s) for s in atoms.get_chemical_symbols()])
     shift = float(pot.data_mean) + float(pot.element_refs.property_offset.double()[z].sum())
-    e, f = P.energy_forces(P.torch_run(M.weights(m, torch.float64), m.units), lambda ei: E.pair(m.tensor_embedding, z, ei),
-                           atoms, float(m.cutoff), m.bond_expansion.max_n, scale=float(pot.data_std), shift=shift)
+    from tt_atom.tensornet.tt_ops import runner
+
+    w, args = M.weights(m, torch.float64), (lambda ei: E.pair(m.tensor_embedding, z, ei), atoms, float(m.cutoff), m.bond_expansion.max_n)
+    e, f = P.energy_forces(P.torch_run(w, m.units), *args, scale=float(pot.data_std), shift=shift)
+    e_tt, f_tt = P.energy_forces(runner(None, w, m.units, ttnn=FakeTtnn), *args, scale=float(pot.data_std), shift=shift)
+    # the card's op bookkeeping on the stand-in; inputs go up as float32, hence 1e-7
+    assert abs(e_tt - e) < 1e-7 * len(atoms) and np.abs(f_tt - f).max() < 1e-6
     assert abs(e - ref.get_potential_energy()) < 1e-7 * len(atoms)   # matgl's own offsets pass through float32
     # matgl's calculator agrees with its own float64 autograd only to ~4e-6 relative (same level with matgl's graph)
     assert np.abs(f - ref.get_forces()).max() < 1e-5 * np.abs(f).max()

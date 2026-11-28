@@ -168,3 +168,28 @@ def model_to_device(o, ol, w):
             "layers": [to_device(ol, wl) for wl in w["layers"]],
             "readout": {"ln": tuple(b4(v) for v in r["ln"]), "value": chain(r["value"]), "gate": chain(r["gate"]),
                         "value_t": [m4(m) for m in r["value_t"]], "gate_t": [m4(m) for m in r["gate_t"]]}}
+
+
+def runner(dev, w, units, layer_dtype=None, ttnn=None):
+    """The network on one chip as potential.energy_forces's `run`: embedding and readout float32, the interaction
+    layers at `layer_dtype` (float32 unless given). Weights go up once; the ops of a graph shape (N, D) are kept."""
+    if ttnn is None:
+        import ttnn
+    from . import model as M
+
+    shapes, wd = {}, []
+    down = lambda t: ttnn.to_torch(t).double()
+
+    def run(z, rbf, cut, geo, send, table, n, d):
+        if (n, d) not in shapes:
+            o = TtOps(dev, n, d, units, dtype=ttnn.float32, ttnn=ttnn)
+            ol = o if layer_dtype in (None, ttnn.float32) else TtOps(dev, n, d, units, dtype=layer_dtype, ttnn=ttnn)
+            eye = torch.eye(3).reshape(3, 3, 1, 1).expand(3, 3, n, units)
+            shapes[n, d] = o, ol, o.up(eye), ol.up(eye), o.up(torch.ones(1, 1, n, 1))
+            wd or wd.append(model_to_device(o, ol, w))
+        o, ol, eye, eye_l, ones = shapes[n, d]
+        e, tape = M.forward(o, wd[0], o.up(z), (o.up(rbf), o.up(cut)), [o.up(c) for c in geo.split(1, -1)], o.index(send), n, eye,
+                            ol=ol, edge_l=(ol.up(rbf), ol.up(cut)), eye_l=eye_l)
+        grbf, gcut, ggeo = M.backward(o, wd[0], tape, ones, o.index(table), n, d, eye, ol=ol, eye_l=eye_l)
+        return down(e).reshape(-1), sum(down(g) for g in grbf), sum(down(g) for g in gcut), down(ggeo)
+    return run
