@@ -257,6 +257,34 @@ def conv_tp_cm(x1, sh, w, C, ins_of_k):
     return (MT @ x1) * w[:, ins_of_k, :]
 
 
+def conv_tp_node_plan(C, ins_of_k):
+    """Constants that move the conv_tp sum over a node's edges in front of the Clebsch-Gordan contraction.
+
+    The per-edge product [E, K, mul] is the block's largest tensor and a device pays for it in tiny per-edge
+    matmuls. With rows r = (instruction, input component of that instruction), R of them:
+        Q[e, r, c]    = x1[e, a_of_r[r], c] * w[e, ins_of_r[r], c]      per edge, elementwise
+        B[n, b, r, c] = sum over edges into n of sh[e, b] * Q[e, r, c]  one matmul over the neighbour axis
+        msg[n, k, c]  = sum_(b, r) Cn[b * R + r, k] * B[n, b, r, c]     node sized, constant matrix
+    equals summing ``conv_tp_cm`` onto the receivers. Returns (a_of_r [R], ins_of_r [R], Cn [B * R, K])."""
+    A, Bn, K = C.shape
+    a_of_r, ins_of_r = [], []
+    for n in range(int(ins_of_k.max()) + 1):
+        rows = C[:, :, ins_of_k == n].abs().sum(dim=(1, 2)).nonzero()[:, 0].tolist()
+        a_of_r += rows
+        ins_of_r += [n] * len(rows)
+    a_of_r, ins_of_r = torch.tensor(a_of_r), torch.tensor(ins_of_r)
+    Cn = C[a_of_r].permute(1, 0, 2) * (ins_of_r[:, None] == ins_of_k[None, :])  # [B, R, K]
+    return a_of_r, ins_of_r, Cn.reshape(Bn * len(a_of_r), K)
+
+
+def conv_tp_nodes(x1, sh, w, receiver, n, plan):
+    """x1 [E, A, mul], sh [E, B], w [E, n_ins, mul] -> messages summed onto receivers [n, K, mul]."""
+    a_of_r, ins_of_r, Cn = plan
+    Q = x1[:, a_of_r, :] * w[:, ins_of_r, :]  # [E, R, mul]
+    B = torch.zeros(n, sh.shape[1], *Q.shape[1:], dtype=Q.dtype).index_add_(0, receiver, sh[:, :, None, None] * Q[:, None])
+    return torch.einsum("pk,npc->nkc", Cn, B.reshape(n, -1, Q.shape[2]))
+
+
 def interaction_cm(w, layer, feats, element, elements, sh, ef, edge_index, irreps_in, residual, sh_ls=(0, 1, 2, 3)):
     """reference.density_interaction in cm layout. feats [n, A, mul]; element [n] indexes ``elements``
     (the present species). Returns (x [n, 16, mul] for the product block, skip [n, 1, mul] or None)."""
@@ -273,8 +301,7 @@ def interaction_cm(w, layer, feats, element, elements, sh, ef, edge_index, irrep
     dens = torch.tanh(ref.fc_net(ef, ref._layers(w, p + "density_fn")) ** 2)
     density = torch.zeros(n, 1, dtype=feats.dtype).index_add_(0, receiver, dens)
     C, ins_of_k, mid = conv_tp_plan(irreps_in, list(sh_ls), [l for _, l in hidden])
-    m = conv_tp_cm(up[sender], sh, tp_w, C, ins_of_k)
-    msg = torch.zeros(n, *m.shape[1:], dtype=m.dtype).index_add_(0, receiver, m)
+    msg = conv_tp_nodes(up[sender], sh, tp_w, receiver, n, conv_tp_node_plan(C, ins_of_k))
     msg = linear_cm(msg, linear_plan(mid, hidden, w[p + "linear.weight"]), 16, 128) / (density + 1)[:, :, None]
     if not residual:
         msg = skip_cm(msg, element, sk, 16, 128)

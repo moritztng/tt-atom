@@ -60,7 +60,8 @@ def _interaction_fwd(w, layer, feats, element, elements, sh, ef, edge_index, irr
     sk_in, sk_out = (irreps_in, [(128, 0)]) if residual else (HIDDEN, HIDDEN)
     sk = dense.skip_plan(sk_in, len(w["atomic_numbers"]), sk_out, w[p + "skip_tp.weight"], elements)
     C, ins_of_k, mid = dense.conv_tp_plan(irreps_in, [0, 1, 2, 3], [0, 1, 2, 3])
-    K, A = C.shape[2], C.shape[0]
+    K = C.shape[2]
+    a_of_r, ins_of_r, Cn = dense.conv_tp_node_plan(C, ins_of_k)
     up_plan = dense.linear_plan(irreps_in, irreps_in, w[p + "linear_up.weight"])
     lin_plan = dense.linear_plan(mid, HIDDEN, w[p + "linear.weight"])
     Wt, Wd = ref._layers(w, p + "conv_tp_weights"), ref._layers(w, p + "density_fn")
@@ -71,18 +72,17 @@ def _interaction_fwd(w, layer, feats, element, elements, sh, ef, edge_index, irr
     u, u_pre = fc_fwd(ef, Wd)
     dens = torch.tanh(u ** 2)
     density = torch.zeros(n, 1, dtype=feats.dtype).index_add_(0, rcv, dens)
-    Cf = C.permute(1, 2, 0).reshape(C.shape[1], -1)  # [B, K * A]
-    MT = (sh @ Cf).reshape(len(snd), K, A)
-    Z = MT @ x1  # [E, K, 128]
-    m = Z * tw[:, ins_of_k, :]
-    raw = torch.zeros(n, K, 128, dtype=feats.dtype).index_add_(0, rcv, m)
+    # conv_tp with the edge sum ahead of the Clebsch-Gordan contraction (dense.conv_tp_nodes), the card's form
+    Q = x1[:, a_of_r, :] * tw[:, ins_of_r, :]  # [E, R, 128]
+    B = torch.zeros(n, sh.shape[1], *Q.shape[1:], dtype=feats.dtype).index_add_(0, rcv, sh[:, :, None, None] * Q[:, None])
+    raw = torch.einsum("pk,npc->nkc", Cn, B.reshape(n, -1, 128))
     lin = dense.linear_cm(raw, lin_plan, 16, 128)
     msg = lin / (density + 1)[:, :, None]
     out = msg if residual else dense.skip_cm(msg, element, sk, 16, 128)
     sc = dense.skip_cm(feats, element, sk, 1, 128) if residual else None
-    tape = dict(sk=sk, a_in=a_in, ins_of_k=ins_of_k, up_plan=up_plan, lin_plan=lin_plan, Wt=Wt, Wd=Wd, x1=x1,
-                tw=tw, tw_pre=tw_pre, u=u, u_pre=u_pre, dens=dens, density=density, Cf=Cf, MT=MT, Z=Z, lin=lin,
-                K=K, A=A, residual=residual)
+    tape = dict(sk=sk, a_in=a_in, up_plan=up_plan, lin_plan=lin_plan, Wt=Wt, Wd=Wd, x1=x1,
+                tw=tw, tw_pre=tw_pre, u=u, u_pre=u_pre, dens=dens, density=density, Q=Q, sh=sh, lin=lin,
+                K=K, a_of_r=a_of_r, ins_of_r=ins_of_r, Cn=Cn, residual=residual)
     return out, sc, tape
 
 
@@ -95,14 +95,12 @@ def _interaction_bwd(g_out, g_sc, t, element, edge_index):
     g_lin = g_msg / d1
     g_density = -(g_msg * t["lin"]).sum(dim=(1, 2))[:, None] / (t["density"] + 1) ** 2  # [n, 1]
     g_raw = linear_t(g_lin, t["lin_plan"], t["K"], 128)
-    g_m = g_raw[rcv]  # scatter^T = gather
-    wk = t["tw"][:, t["ins_of_k"], :]
-    g_Z = g_m * wk
-    g_wk = g_m * t["Z"]
-    g_tw = torch.zeros_like(t["tw"]).index_add_(1, t["ins_of_k"], g_wk)
-    g_MT = g_Z @ t["x1"].transpose(1, 2)  # [E, K, A]
-    g_x1 = t["MT"].transpose(1, 2) @ g_Z  # [E, A, 128]
-    g_sh = g_MT.reshape(len(snd), -1) @ t["Cf"].T
+    a_of_r, ins_of_r, Q = t["a_of_r"], t["ins_of_r"], t["Q"]
+    g_B = torch.einsum("pk,nkc->npc", t["Cn"], g_raw).reshape(n, -1, *Q.shape[1:])[rcv]  # scatter^T = gather
+    g_Q = torch.einsum("eb,ebrc->erc", t["sh"], g_B)
+    g_sh = torch.einsum("erc,ebrc->eb", Q, g_B)
+    g_x1 = torch.zeros_like(t["x1"]).index_add_(1, a_of_r, g_Q * t["tw"][:, ins_of_r, :])
+    g_tw = torch.zeros_like(t["tw"]).index_add_(1, ins_of_r, g_Q * t["x1"][:, a_of_r, :])
     g_ef = fc_bwd(g_tw.reshape(len(snd), -1), t["Wt"], t["tw_pre"])
     g_dens = g_density[rcv]  # [E, 1]
     g_u = g_dens * (1 - t["dens"] ** 2) * 2 * t["u"]

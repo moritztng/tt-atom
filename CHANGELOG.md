@@ -10,13 +10,24 @@ smoke (see `RELEASING.md`).
 Behaviour changes are all in the knobs and the caches, not in the models: every numeric path is
 byte-identical to 0.3.0.
 
+### Added
+- MACE-MP-0b3 medium (MIT weights), energy and forces on one Blackhole chip: `MaceCalculator`,
+  `docs/mace-port.md`. An accuracy port (1.2 meV/atom, 1.7 meV/A force MAE against float64 on the
+  golden); about 1.1 ms per atom per step, no per-dollar claim.
+
 ### Changed
+- Orb's `--fast` (bf8 hidden activations) is removed. It was 4.5% faster at 1000 atoms for about
+  three times the force error, no faster at 216 and 512, and it crashed at 2016. The flag and the
+  `fast=` argument of `OrbCalculator` are still accepted and do nothing, so no caller breaks. UMA's
+  `--fast` is unchanged.
 - The Orb GPU comparison in `docs/orb-port.md` is redone as one protocol on both sides. The GPU now
   runs at its fastest setting (TF32, whole step in one CUDA graph, frozen neighbour list) instead
   of the stock calculator, B200 is added, and every leg is graded against the same float64 forces.
-  One TT chip at 1350 MHz delivers 4.3x to 6.3x the throughput per dollar of an H200 and 4.8x to
-  7.4x of a B200 (216 to 2016 Si atoms), down from the 4.4x to 9.1x quoted before. Raw results
-  are in `benchmarks/orb_fair/`.
+  Each GPU is credited with its best measured atoms/s (the 2016-atom rate) at every size, since
+  small structures would be batched to fill it. One TT chip at 1350 MHz delivers 4.1x to 4.7x the
+  throughput per dollar of an H200 and 4.6x to 5.3x of a B200 (216 to 2016 Si atoms), down from
+  the 4.4x to 9.1x quoted before. A batched GPU run is not measured yet. Raw results are in
+  `benchmarks/orb_fair/`.
 
 ### Fixed
 - The release gate's perf leg no longer decides by luck. It took one measurement per model against

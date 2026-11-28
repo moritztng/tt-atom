@@ -43,35 +43,12 @@ def test_symmetric_contraction_device(g, device, layer, n_out, dt):  # noqa: F81
     ranges = tt_blocks.species_ranges(local[order], len(present))
     x = t[f"a@interactions.{layer}.out0"].double()[order]  # [n, c, ell]
     n, c, ell = x.shape
-    out = tt_blocks.symmetric_contraction(ttnn.from_torch(x.reshape(n * c, ell), dtype=_dtype(dt),
+    out = tt_blocks.symmetric_contraction(ttnn.from_torch(x.permute(1, 0, 2).reshape(c * n, ell), dtype=_dtype(dt),
                                                           layout=ttnn.TILE_LAYOUT, device=device), plan, ranges, n, c)
     got = tt_blocks.symmetric_contraction_to_ref(ttnn.to_torch(out), plan["widths"])
     want = t[f"a@products.{layer}.symmetric_contractions.out0"].double()[order]
     err = rel(got, want)
     print(f"symmetric_contraction layer {layer} {dt}: rel err {err:.2e}")
-    assert err < BAR[dt], err
-
-
-@pytest.mark.parametrize("dt", ["float32", "bfloat16"])
-@pytest.mark.parametrize("layer,irreps", [(0, [(128, 0)]), (1, [(128, 0), (128, 1)])])
-def test_conv_tp_device(g, device, layer, irreps, dt):  # noqa: F811
-    import ttnn
-
-    t, ls = g["t"], [0, 1, 2, 3]
-    C, ins_of_k, _ = dense.conv_tp_plan(irreps, ls, ls)
-    plan = tt_blocks.conv_tp_setup(device, C, ins_of_k, _dtype(dt))
-    p = f"a@interactions.{layer}."
-    x1 = ref.reshape_irreps(t[p + "linear_up.out0"].double()[g["ei"][0]], irreps)  # [E, mul, A]
-    sh = t["a@spherical_harmonics.out0"].double()
-    w = t[p + "conv_tp_weights.out0"].double()
-    E, mul = x1.shape[:2]
-
-    def dev(a):
-        return ttnn.from_torch(a, dtype=_dtype(dt), layout=ttnn.TILE_LAYOUT, device=device)
-    out = tt_blocks.conv_tp(dev(x1), dev(sh), dev(w.reshape(E, -1, mul)), plan)
-    got = tt_blocks.conv_tp_to_ref(ttnn.to_torch(out), ins_of_k)
-    err = rel(got, t[p + "conv_tp.out0"])
-    print(f"conv_tp layer {layer} {dt}: rel err {err:.2e}")
     assert err < BAR[dt], err
 
 
@@ -97,8 +74,12 @@ def test_interaction_device(g, device, layer, dt):  # noqa: F811
 
     def dev(a):
         return ttnn.from_torch(a, dtype=_dtype(dt), layout=ttnn.TILE_LAYOUT, device=device)
-    x, sc = tt_blocks.interaction(dev(feats.reshape(len(order), -1)), dev(t["a@spherical_harmonics.out0"].double()),
-                                  dev(t["a@radial_embedding.out0"].double()), plan, graph)
+
+    def edges(a):
+        return dev(tt_blocks.pad_edges(graph, a.double()))
+    sh = tt_blocks.pad_edges(graph, t["a@spherical_harmonics.out0"].double()).reshape(len(order), graph["D"], 16)
+    x, sc = tt_blocks.interaction(dev(feats.reshape(len(order), -1)), (dev(sh), dev(sh.transpose(1, 2).contiguous())),
+                                  edges(t["a@radial_embedding.out0"]), plan, graph)
     got = ttnn.to_torch(x).double().reshape(len(order), 16, 128).transpose(1, 2)
     err = rel(got, t[f"a@interactions.{layer}.out0"].double()[order])
     print(f"interaction layer {layer} {dt}: rel err {err:.2e}")
@@ -147,13 +128,53 @@ _BF16 = pytest.mark.xfail(strict=True, reason="bfloat16 blocks exceed 5 meV/atom
                                     pytest.param("bfloat16", "float32", marks=_BF16), ("float32", "float32")])
 def test_energy_device(g, device, dt, pdt):  # noqa: F811
     """Total energy with both layers on the card; geometry features (sh, radial, ZBL) from the float64 reference."""
-    from tt_atom.mace.tt_model import MaceEnergy
+    from tt_atom.mace.tt_model import Mace
 
     w, t = g["w"], g["t"]
-    m = MaceEnergy(device, w, _dtype(dt), _dtype(pdt))
+    m = Mace(device, w, _dtype(dt), _dtype(pdt))
     zbl = ref.zbl(g["r"], g["Z"], g["ei"], w, len(g["Z"]))
     e = m.energy(g["Z"], g["ei"], t["a@spherical_harmonics.out0"].double(), t["a@radial_embedding.out0"].double(), zbl)
     want = float(t["out@energy"].double().sum())
     n = len(g["Z"])
     print(f"energy {dt}/{pdt}: {e:.6f} vs {want:.6f} eV, dE/atom {abs(e - want) / n:.2e} eV")
     assert abs(e - want) / n < 5e-3
+
+
+@pytest.mark.parametrize("trace", [False, True])
+def test_energy_forces_device(g, device, trace):  # noqa: F811
+    """Energy and forces with both layers and their reverse passes on the card at float32; host float64 geometry.
+    The force bar is Orb's shipped bfloat16 error against float64 (6-7 meV/A MAE). Traced: the second call is a
+    replay with refreshed inputs, at positions moved off the capture's and back."""
+    import ttnn
+    from tt_atom.mace.tt_model import Mace
+
+    t = g["t"]
+    m, pos, shifts = Mace(device, g["w"], ttnn.float32, trace=trace), t["in@pos"].double(), t["in@shifts"].double()
+    if trace:
+        m.energy_forces(g["Z"], pos + 0.05 * torch.randn_like(pos), g["ei"], shifts)
+    e, f = m.energy_forces(g["Z"], pos, g["ei"], shifts)
+    want_e, want_f = float(t["out@energy"].double().sum()), t["out@forces"].double()
+    d = (f - want_f).abs()
+    print(f"energy+forces float32 trace={trace}: dE/atom {abs(e - want_e) / len(g['Z']):.2e} eV, force MAE {d.mean():.2e} "
+          f"max {d.max():.2e} eV/A (max |F| {want_f.abs().max():.2e})")
+    assert abs(e - want_e) / len(g["Z"]) < 5e-3 and d.mean() < 7e-3
+
+
+def test_calculator_device(g, device):  # noqa: F811
+    """The ASE calculator builds its own neighbour list from positions and cell and lands on the golden; a second
+    call at moved positions replays the captured step."""
+    from ase import Atoms
+    from tt_atom import MaceCalculator
+
+    t = g["t"]
+    atoms = Atoms(numbers=g["Z"].numpy(), positions=t["in@pos"].double().numpy(), cell=t["in@cell"].double().numpy().reshape(3, 3), pbc=True)
+    atoms.calc = MaceCalculator(g["w"], device=device)
+    e, f = atoms.get_potential_energy(), torch.from_numpy(atoms.get_forces())
+    want_e, want_f = float(t["out@energy"].double().sum()), t["out@forces"].double()
+    d = (f - want_f).abs()
+    print(f"calculator: dE/atom {abs(e - want_e) / len(atoms):.2e} eV, force MAE {d.mean():.2e} eV/A")
+    assert abs(e - want_e) / len(atoms) < 5e-3 and d.mean() < 7e-3
+    atoms.rattle(0.01, seed=0)
+    e2 = atoms.get_potential_energy()
+    assert e2 != e and abs(e2 - e) / len(atoms) < 0.05
+    atoms.calc.close()

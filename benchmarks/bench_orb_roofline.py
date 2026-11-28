@@ -54,7 +54,7 @@ def _one_size(args, size):
 
     tag, nx, ny, nz = size
     atoms = bulk(args.element, "diamond", a=args.a, cubic=True) * (nx, ny, nz)
-    calc = OrbDeviceCalculator(args.weights, device_id=0, fast=args.fast)
+    calc = OrbDeviceCalculator(args.weights, device_id=0)
     atoms.calc = calc
     rng = np.random.default_rng(args.seed)
 
@@ -156,7 +156,6 @@ def main():
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--fast", action="store_true", help="bf8 weights and hidden MLP activations")
     parser.add_argument("--ablate-scatter", action="store_true",
                         help="profiling only: replace segment sums with shape-compatible zeros")
     parser.add_argument("--sizes", default="3x3x3,6x6x7")
@@ -184,7 +183,6 @@ def main():
         "platform": "Tenstorrent Blackhole p150 (one card, device 0)",
         "model": "orb-v3-conservative-inf-omat",
         "method": "explicitly synchronized additive stage attribution plus normal-path end-to-end",
-        "fast": args.fast,
         "scatter_ablation": args.ablate_scatter,
         "git_sha": git_sha(),
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
