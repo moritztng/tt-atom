@@ -18,6 +18,8 @@ a variant here, named <backend>_<mode>:
            compiled         the calculator's `compile_mode="default"`
            reduce_overhead  the calculator's `compile_mode="reduce-overhead"` (PyTorch CUDA graphs)
            cudagraph        the eager step, forces included, captured whole into one CUDA graph
+                            (e3nn and cueq only: a captured oeq convolution replays with out-of-range
+                            indices and trips a device-side assert, openequivariance 0.8.3)
 plus `stock`: the plain MACECalculator call (neighbours rebuilt, stress on), for context only.
 Precision is per process: float32-high (TF32 matmuls), float32-highest, float64.
 
@@ -46,7 +48,8 @@ SIZES = [("2x2x2", 2, 2, 2), *ORB_SIZES]  # 64, 216, 512, 1000, 2016 atoms
 BACKENDS = {"e3nn": {}, "cueq": {"enable_cueq": True}, "oeq": {"enable_oeq": True},
             "hybrid": {"enable_cueq": True, "enable_oeq": True}}
 MODES = {"eager": None, "compiled": "default", "reduce_overhead": "reduce-overhead", "cudagraph": None}
-ALL = [f"{b}_{m}" for b in BACKENDS for m in MODES]
+ALL = [f"{b}_{m}" for b in BACKENDS for m in MODES
+       if not (m == "cudagraph" and b in ("oeq", "hybrid"))]
 
 
 def failure(exc):
