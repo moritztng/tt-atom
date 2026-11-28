@@ -186,8 +186,11 @@ def runner(dev, w, units, layer_dtype=None, ttnn=None):
             shapes[n, d] = o, ol, o.up(eye), ol.up(eye), o.up(torch.ones(1, 1, n, 1))
             wd or wd.append(model_to_device(o, ol, w))
         o, ol, eye, eye_l, ones = shapes[n, d]
-        e, tape = M.forward(o, wd[0], o.up(z), (o.up(rbf), o.up(cut)), [o.up(c) for c in geo.split(1, -1)], o.index(send), n, eye,
-                            ol=ol, edge_l=(ol.up(rbf), ol.up(cut)), eye_l=eye_l)
+        edge = o.up(rbf), o.up(cut)
+        # the 27 geometry scalars go up as one tensor and are cut into columns on the card: a [S, 1] upload is padded
+        # to a full tile of columns, so 27 of them move 32x the data
+        e, tape = M.forward(o, wd[0], o.up(z), edge, o._cols(o.up(geo), geo.shape[-1], 1), o.index(send), n, eye,
+                            ol=ol, edge_l=edge if ol is o else (ol.up(rbf), ol.up(cut)), eye_l=eye_l)
         grbf, gcut, ggeo = M.backward(o, wd[0], tape, ones, o.index(table), n, d, eye, ol=ol, eye_l=eye_l)
         return down(e).reshape(-1), sum(down(g) for g in grbf), sum(down(g) for g in gcut), down(ggeo)
     return run
