@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from datetime import datetime, timezone
 
@@ -107,6 +108,9 @@ def main():
     with D.device(0) as dev:
         model = Mace(dev, w, ttnn.float32)
         prof = profile(dev) if args.profile else None
+        # the /dev node this process opened: the AICLK that counts (node number != TT_VISIBLE_DEVICES index)
+        fds = (os.path.realpath(f"/proc/self/fd/{fd}") for fd in os.listdir("/proc/self/fd"))
+        nodes = sorted({p.rsplit("/", 1)[1] for p in fds if p.startswith("/dev/tenstorrent/")})
         for tag, nx, ny, nz in (s for s in SIZES if s[0] in args.sizes.split(",")):
             atoms = bulk(args.element, "diamond", a=args.a, cubic=True) * (nx, ny, nz)
             pos0 = atoms.get_positions()
@@ -142,12 +146,15 @@ def main():
                     sorted(prof.items(), key=lambda kv: -kv[1][0])), flush=True)
             records.append({"size": tag, "atoms": len(atoms), "edges": int(ei.shape[1]), "first_call_s": first,
                             "ms_per_step_median": float(np.median(ms)), "ms_per_step_min": min(ms), "ms_raw": ms,
-                            "reference": ref_src, **acc, "aiclk_mhz_during_by_node": clk.summary()})
+                            "reference": ref_src, **acc, "opened_nodes": nodes,
+                            "host_load1": os.getloadavg()[0], "aiclk_mhz_during_by_node": clk.summary()})
             dump()
-            busy = max(clk.summary().items(), key=lambda kv: kv[1]["median"])
+            mine = {k: v for k, v in clk.summary().items() if k in nodes} or clk.summary()
+            busy = min(mine.items(), key=lambda kv: kv[1]["min"])
             print(f"{tag} {len(atoms)} atoms {ei.shape[1]} edges: {np.median(ms):.1f} ms/step (min {min(ms):.1f}), "
                   f"dE/atom {acc['dE_per_atom_eV']:.2e} eV, force MAE {acc['mae_dF_eV_per_A']:.2e} eV/A, "
-                  f"AICLK node {busy[0]} median {busy[1]['median']} min {busy[1]['min']}", flush=True)
+                  f"AICLK node {busy[0]} median {busy[1]['median']} min {busy[1]['min']}, host load {os.getloadavg()[0]:.0f}",
+                  flush=True)
 
 
 if __name__ == "__main__":
