@@ -1,0 +1,130 @@
+{
+ "model": "materialyze/TensorNet-PES-MatPES-PBE-2025.2",
+ "matgl": "4.1.4",
+ "cell": "si",
+ "atoms": 216,
+ "edges": 6048,
+ "edges_per_atom": 28.0,
+ "energy_eV": -1157.611083984375,
+ "max_abs_force": 0.47290360927581787,
+ "cpu_wall_s_with_profiler": 1.2097000600770116,
+ "gemm_forward": [
+  {
+   "rows": 6048,
+   "in": 256,
+   "out": 384,
+   "calls": 2,
+   "gflop": 2.378170368
+  },
+  {
+   "rows": 1944,
+   "in": 128,
+   "out": 128,
+   "calls": 15,
+   "gflop": 0.95551488
+  },
+  {
+   "rows": 6048,
+   "in": 128,
+   "out": 256,
+   "calls": 2,
+   "gflop": 0.792723456
+  },
+  {
+   "rows": 6048,
+   "in": 256,
+   "out": 128,
+   "calls": 1,
+   "gflop": 0.396361728
+  },
+  {
+   "rows": 216,
+   "in": 256,
+   "out": 384,
+   "calls": 1,
+   "gflop": 0.042467328
+  },
+  {
+   "rows": 216,
+   "in": 128,
+   "out": 128,
+   "calls": 6,
+   "gflop": 0.042467328
+  },
+  {
+   "rows": 6048,
+   "in": 3,
+   "out": 128,
+   "calls": 5,
+   "gflop": 0.02322432
+  },
+  {
+   "rows": 216,
+   "in": 384,
+   "out": 128,
+   "calls": 1,
+   "gflop": 0.021233664
+  },
+  {
+   "rows": 216,
+   "in": 128,
+   "out": 256,
+   "calls": 1,
+   "gflop": 0.014155776
+  },
+  {
+   "rows": 216,
+   "in": 128,
+   "out": 1,
+   "calls": 2,
+   "gflop": 0.000110592
+  }
+ ],
+ "gemm_forward_gflop": 4.66642944,
+ "gemm_step_gflop_est": 13.999288320000002,
+ "leaf_op_largest_input_GB": {
+  "edge": 1.359735552,
+  "other": 3.8e-07,
+  "node": 0.325836
+ },
+ "leaf_ops": {
+  "aten::add|node": 91,
+  "aten::mul|edge": 86,
+  "aten::copy_|node": 75,
+  "aten::mul|node": 63,
+  "aten::fill_|node": 61,
+  "aten::copy_|edge": 50,
+  "aten::add|edge": 40,
+  "AddBackward0|node": 35,
+  "aten::fill_|edge": 33,
+  "aten::div|node": 32,
+  "aten::neg|node": 19,
+  "CloneBackward0|node": 19,
+  "aten::div|edge": 18,
+  "aten::neg|edge": 18,
+  "aten::zero_|edge": 14,
+  "aten::sin|edge": 12,
+  "aten::cos|edge": 12,
+  "ExpandBackward0|node": 12,
+  "aten::zero_|other": 11,
+  "aten::sub|node": 10,
+  "aten::sigmoid|node": 9,
+  "aten::silu|node": 8,
+  "aten::sub_|node": 8,
+  "AddBackward0|edge": 8,
+  "aten::silu|edge": 6,
+  "aten::sigmoid|edge": 6,
+  "aten::sub_|edge": 6,
+  "aten::sub|edge": 5,
+  "aten::zero_|node": 3,
+  "aten::fill_|other": 2,
+  "ExpandBackward0|edge": 2,
+  "aten::masked_fill_|edge": 2,
+  "aten::copy_|other": 1,
+  "aten::add|other": 1,
+  "aten::linalg_vector_norm|edge": 1,
+  "aten::_reshape_alias|node": 1,
+  "aten::sigmoid_backward|node": 1,
+  "SqueezeBackward1|edge": 1
+ }
+}
