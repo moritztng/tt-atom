@@ -138,7 +138,13 @@ def test_product_readout_device(g, device, layer, dt):  # noqa: F811
     assert err < BAR[dt] and err_e < BAR[dt], (err, err_e)
 
 
-@pytest.mark.parametrize("dt,pdt", [("bfloat16", "bfloat16"), ("bfloat16", "float32"), ("float32", "float32")])
+# bfloat16 blocks miss the 5 meV/atom bar on card (34 meV/atom, 6.6 with float32 products; qb2 11-27), so float32
+# is the working precision. The two cases stay as strict xfails: a pass means the bar moved and this list is stale.
+_BF16 = pytest.mark.xfail(strict=True, reason="bfloat16 blocks exceed 5 meV/atom")
+
+
+@pytest.mark.parametrize("dt,pdt", [pytest.param("bfloat16", "bfloat16", marks=_BF16),
+                                    pytest.param("bfloat16", "float32", marks=_BF16), ("float32", "float32")])
 def test_energy_device(g, device, dt, pdt):  # noqa: F811
     """Total energy with both layers on the card; geometry features (sh, radial, ZBL) from the float64 reference."""
     from tt_atom.mace.tt_model import MaceEnergy

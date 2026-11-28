@@ -81,15 +81,22 @@ def linear32(ttnn, op, x):
 
 def embed_rows(ttnn, idx, table):
     """``ttnn.embedding`` for any table dtype. The op takes bfloat16 tables only, so a float32 table is gathered
-    as its three bfloat16 parts (``bf16_parts``) and summed back in float32, exactly. A bfloat16 table takes
+    as its three bfloat16 parts (see ``bf16_parts``) and summed back in float32, exactly. A bfloat16 table takes
     the plain op, unchanged."""
     if table.dtype == ttnn.bfloat16:
         return ttnn.embedding(idx, table)
-    # Tile before the typecast: a row-major typecast of a gather whose row count is not a multiple of 32 hangs
-    # the card (qb2, 11-27).
-    out = linear32(ttnn, lambda p: ttnn.typecast(ttnn.to_layout(ttnn.embedding(
-        idx, ttnn.to_layout(ttnn.typecast(p, ttnn.bfloat16), ttnn.ROW_MAJOR_LAYOUT)), ttnn.TILE_LAYOUT), ttnn.float32), table)
+    # The gather comes out tiled: a row-major typecast of a gather whose row count is not a multiple of 32
+    # hangs the card (qb2, 11-27).
+    out, rest = None, ttnn.to_layout(table, ttnn.TILE_LAYOUT)
+    for last in (False, False, True):
+        part = ttnn.typecast(rest, ttnn.bfloat16)
+        got = ttnn.typecast(ttnn.embedding(idx, ttnn.to_layout(part, ttnn.ROW_MAJOR_LAYOUT), layout=ttnn.TILE_LAYOUT),
+                            ttnn.float32)
+        out = got if out is None else ttnn.add(out, got)
+        if not last:
+            rest = ttnn.subtract(rest, ttnn.typecast(part, ttnn.float32))
     return out if table.layout == ttnn.TILE_LAYOUT else ttnn.to_layout(out, ttnn.ROW_MAJOR_LAYOUT)
+
 
 def segment_sum(ttnn, msg, gather_dev, Dmax, N, W):
     """``msg`` [E, W] (tile) -> ``out`` [N, W] with ``out[n] = sum over gathered edges of msg``.
