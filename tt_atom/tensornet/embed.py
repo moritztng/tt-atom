@@ -7,7 +7,7 @@ those 27 scalars, of the radial basis and of the cutoff, and the host finishes t
 """
 import torch
 
-EPS = 1e-5  # torch.nn.LayerNorm default, which matgl uses
+from . import layer as L
 
 
 def weights(emb, dtype=torch.float64):
@@ -48,30 +48,20 @@ def forward(o, w, z, rbf, cut, geo, n):
     parts = o.unrows(o.slot_sum(edge, n), 3)
     x0 = o.add(o.add(parts[0], parts[1]), parts[2])
 
-    g, b = w["ln"]
-    u = g.shape[-1]
-    dev = o.sub(nrm := o.csum(o.mul(x0, x0)), o.scale(o.usum(nrm), 1 / u))
-    r = o.rsqrt(o.add(o.scale(o.usum(o.mul(dev, dev)), 1 / u), EPS))
-    h, pre = o.add(o.mul(o.mul(dev, r), g), b), []
-    for wt, bias in w["scalar"]:
-        pre.append(o.linear(h, wt, bias))
-        h = o.silu(pre[-1])
+    h, ln = L.norm(o, o.csum(o.mul(x0, x0)), *w["ln"])
+    h, pre = L.mlp(o, h, w["scalar"])
+    h = o.silu(h)
     f = o.split(h, 3)                                                         # [1, 1, N, U] per part
     lp = [o.linear(p, wt) for p, wt in zip(parts, w["node"])]
     out = o.add(o.add(o.mul(lp[0], f[0]), o.mul(lp[1], f[1])), o.mul(lp[2], f[2]))
-    return out, dict(lin=lin, zw=zw, z=z, cut=cut, geo=geo, x0=x0, dev=dev, r=r, pre=pre, f=f, lp=lp, u=u)
+    return out, dict(lin=lin, zw=zw, z=z, cut=cut, geo=geo, x0=x0, ln=ln, pre=pre, f=f, lp=lp)
 
 
 def backward(o, w, t, g_out, d):
     """Gradient of X -> gradients of (rbf [S, R], cut [S, 1], geo [S, 27])."""
-    u = t["u"]
     g_h = o.cat([o.csum(o.mul(g_out, p)) for p in t["lp"]])
-    for wt_t, pre in zip(w["scalar_t"][::-1], t["pre"][::-1]):
-        g_h = o.linear(o.mul(g_h, o.silu_grad(pre)), wt_t)
-    g_h = o.mul(g_h, w["ln"][0])
-    r, dev = t["r"], t["dev"]
-    g_dev = o.sub(o.mul(g_h, r), o.mul(dev, o.scale(o.mul(o.mul(r, o.mul(r, r)), o.usum(o.mul(g_h, dev))), 1 / u)))
-    g_x0 = o.mul(o.scale(t["x0"], 2.0), o.sub(g_dev, o.scale(o.usum(g_dev), 1 / u)))
+    g_h = L.mlp_t(o, o.mul(g_h, o.silu_grad(t["pre"][-1])), w["scalar_t"], t["pre"])
+    g_x0 = o.mul(o.scale(t["x0"], 2.0), L.norm_t(o, g_h, w["ln"][0], t["ln"]))
     g_parts = [o.add(o.linear(o.mul(g_out, f), wt_t), g_x0) for f, wt_t in zip(t["f"], w["node_t"])]
     blocks = o.split(o.slot_spread(o.rows(g_parts), d), 27)                   # [S, U] per part and component
 

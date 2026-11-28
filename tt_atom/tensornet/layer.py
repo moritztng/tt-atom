@@ -29,6 +29,8 @@ class TorchOps:
         s = torch.sigmoid(x)
         return s * (1 + x * (1 - s))
 
+    sigmoid = staticmethod(torch.sigmoid)
+
     @staticmethod
     def rsqrt(x):
         return x.rsqrt()
@@ -138,6 +140,38 @@ def slots(edge_index, n, min_width=0, own=False):
     table = torch.from_numpy(table.astype(np.int64))
     table = torch.where(table < 0, torch.tensor(n * d), real[table.clamp(min=0)])
     return edge, send, table, d
+
+
+EPS = 1e-5  # torch.nn.LayerNorm default, which matgl uses
+
+
+def norm(o, x, g, b):
+    """Layer norm over the last dim. Returns (y, tape)."""
+    u = x.shape[-1]
+    dev = o.sub(x, o.scale(o.usum(x), 1 / u))
+    r = o.rsqrt(o.add(o.scale(o.usum(o.mul(dev, dev)), 1 / u), EPS))
+    return o.add(o.mul(o.mul(dev, r), g), b), (dev, r, u)
+
+
+def norm_t(o, g_y, g, tape):
+    dev, r, u = tape
+    g_y = o.mul(g_y, g)
+    g_dev = o.sub(o.mul(g_y, r), o.mul(dev, o.scale(o.mul(o.mul(r, o.mul(r, r)), o.usum(o.mul(g_y, dev))), 1 / u)))
+    return o.sub(g_dev, o.scale(o.usum(g_dev), 1 / u))
+
+
+def mlp(o, h, ws):
+    """Linears with SiLU between them, none after the last. Returns (out, pre-activations)."""
+    pre = []
+    for k, (wt, b) in enumerate(ws):
+        pre.append(o.linear(h if k == 0 else o.silu(pre[-1]), wt, b))
+    return pre[-1], pre
+
+
+def mlp_t(o, g, ws_t, pre):
+    for k in range(len(ws_t) - 1, -1, -1):
+        g = o.linear(g if k == len(ws_t) - 1 else o.mul(g, o.silu_grad(pre[k])), ws_t[k])
+    return g
 
 
 def decompose(o, x, eye):

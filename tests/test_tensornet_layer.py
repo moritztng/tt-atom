@@ -169,3 +169,51 @@ def test_embedding_matches_matgl(backend):
     gr, gvec = torch.autograd.grad((cut * unpad(gcut)).sum() + (geo * unpad(ggeo)).sum(), (r, vec))
     assert torch.allclose(gr, wr, rtol=1e-9, atol=1e-12)
     assert torch.allclose(gvec, wvec, rtol=1e-9, atol=1e-11)
+
+
+@pytest.mark.skipif(OLD, reason="needs matgl >= 3")
+def test_model_matches_matgl():
+    """Embedding, both layers and readout chained: summed atomic energies and their gradient to every edge input."""
+    from ase.build import bulk
+    from matgl.ext.ase import PESCalculator
+    from matgl.utils.maths import decompose_tensor, tensor_norm
+
+    from tt_atom.tensornet import embed as E
+    from tt_atom.tensornet import model as M
+
+    pot = matgl.load_model(MODEL).double()
+    pot.calc_stresses = False
+    atoms = bulk("Si", "diamond", a=5.43, cubic=True) * (2, 2, 2)
+    atoms.positions += np.random.default_rng(0).normal(0, 0.05, atoms.positions.shape)
+    m, calls = pot.model, []
+    h = m.tensor_embedding.register_forward_hook(lambda mod, args, kw, out: calls.append((args, kw)), with_kwargs=True)
+    atoms.calc = PESCalculator(pot)
+    atoms.get_potential_energy()
+    h.remove()
+    a = dict(zip(("z", "edge_index", "edge_attr", "edge_weight", "edge_vec"), calls[0][0]), **calls[0][1])
+    z, ei = a["z"], a["edge_index"]
+    rbf, r, vec = [a[k].detach().clone().requires_grad_(True) for k in ("edge_attr", "edge_weight", "edge_vec")]
+    x = m.tensor_embedding(z, ei, rbf, r, vec)[0]
+    for layer in m.layers:
+        x = layer(ei, r, rbf, x)
+    want = m.final_layer(m.linear(m.out_norm(torch.cat([tensor_norm(p) for p in decompose_tensor(x)], -1)))).reshape(-1)
+    wrbf, wr, wvec = torch.autograd.grad(want.sum(), (rbf, r, vec))
+
+    n, e, o = len(z), ei.shape[1], L.TorchOps
+    edge, send, table, d = L.slots(ei, n, min_width=32)
+    pad = lambda t: torch.cat([t, torch.zeros_like(t[:1])])[edge]
+    cut = torch.where(r <= m.cutoff, 0.5 * (torch.cos(torch.pi * r / m.cutoff) + 1), 0.0)[:, None]
+    geo = E.geometry(vec)
+    eye = torch.eye(3, dtype=torch.float64).reshape(3, 3, 1, 1).expand(3, 3, n, m.units)
+    w = M.weights(m, torch.float64)
+    en, tape = M.forward(o, w, pad(E.pair(m.tensor_embedding, z, ei)), pad(rbf.detach()), pad(cut.detach()),
+                         list(pad(geo.detach()).split(1, -1)), send, n, eye)
+    assert torch.allclose(en.reshape(-1), want, rtol=1e-10, atol=1e-12)
+
+    grbf, gcut, ggeo = M.backward(o, w, tape, torch.ones_like(en), table, n, d, eye)
+    real = edge < e
+    unpad = lambda t: torch.zeros(e, *t.shape[1:], dtype=t.dtype).index_copy(0, edge[real], t[real])
+    assert torch.allclose(unpad(grbf), wrbf, rtol=1e-8, atol=1e-11)
+    gr, gvec = torch.autograd.grad((cut * unpad(gcut)).sum() + (geo * unpad(ggeo)).sum(), (r, vec))
+    assert torch.allclose(gr, wr, rtol=1e-8, atol=1e-11)
+    assert torch.allclose(gvec, wvec, rtol=1e-8, atol=1e-10)

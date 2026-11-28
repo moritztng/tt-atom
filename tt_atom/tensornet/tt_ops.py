@@ -16,7 +16,7 @@ class TtOps:
         self.dtype = dtype or ttnn.bfloat16
         self.cfg = D.compute_kernel_config() if ttnn.__name__ == "ttnn" else None
         self.add, self.sub, self.mul = ttnn.add, ttnn.subtract, ttnn.multiply
-        self.silu, self.recip, self.rsqrt = ttnn.silu, ttnn.reciprocal, ttnn.rsqrt
+        self.silu, self.recip, self.rsqrt, self.sigmoid = ttnn.silu, ttnn.reciprocal, ttnn.rsqrt, ttnn.sigmoid
         self.recv = self.index(torch.arange(n).repeat_interleave(d))
 
     def index(self, idx):
