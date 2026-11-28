@@ -59,6 +59,45 @@ def build_gather(idx: torch.Tensor, num_nodes: int, E: int, sentinel=None, min_w
     return gather.reshape(-1).astype(np.int32), Dmax
 
 
+def bf16_parts(ttnn, x):
+    """A float32 tensor as three float32 tensors whose values are bfloat16-exact and sum to ``x`` (8 mantissa
+    bits each). The engine reads float32 through 19-bit registers, so permutes, reductions and gathers of a
+    float32 tensor drop ~1e-3 relative; applied to each part and summed, a linear op stays float32-exact."""
+    parts, rest = [], ttnn.to_layout(x, ttnn.TILE_LAYOUT)  # typecast wants tile-padded shapes
+    for _ in range(3):
+        hi = ttnn.typecast(ttnn.typecast(rest, ttnn.bfloat16), ttnn.float32)
+        parts.append(hi)
+        rest = ttnn.subtract(rest, hi)
+    return parts
+
+
+def linear32(ttnn, op, x):
+    """``op(x)`` for a linear op (permute, sum, gather): plain for bfloat16, part by part for float32."""
+    if x.dtype != ttnn.float32:
+        return op(x)
+    a, b, c = (op(p) for p in bf16_parts(ttnn, x))
+    return ttnn.add(ttnn.add(a, b), c)
+
+
+def embed_rows(ttnn, idx, table):
+    """``ttnn.embedding`` for any table dtype. The op takes bfloat16 tables only, so a float32 table is gathered
+    as its three bfloat16 parts (see ``bf16_parts``) and summed back in float32, exactly. A bfloat16 table takes
+    the plain op, unchanged."""
+    if table.dtype == ttnn.bfloat16:
+        return ttnn.embedding(idx, table)
+    # The gather comes out tiled: a row-major typecast of a gather whose row count is not a multiple of 32
+    # hangs the card (qb2, 11-27).
+    out, rest = None, ttnn.to_layout(table, ttnn.TILE_LAYOUT)
+    for last in (False, False, True):
+        part = ttnn.typecast(rest, ttnn.bfloat16)
+        got = ttnn.typecast(ttnn.embedding(idx, ttnn.to_layout(part, ttnn.ROW_MAJOR_LAYOUT), layout=ttnn.TILE_LAYOUT),
+                            ttnn.float32)
+        out = got if out is None else ttnn.add(out, got)
+        if not last:
+            rest = ttnn.subtract(rest, ttnn.typecast(part, ttnn.float32))
+    return out if table.layout == ttnn.TILE_LAYOUT else ttnn.to_layout(out, ttnn.ROW_MAJOR_LAYOUT)
+
+
 def segment_sum(ttnn, msg, gather_dev, Dmax, N, W):
     """``msg`` [E, W] (tile) -> ``out`` [N, W] with ``out[n] = sum over gathered edges of msg``.
 
@@ -81,9 +120,18 @@ def segment_sum(ttnn, msg, gather_dev, Dmax, N, W):
         g = ttnn.embedding(gather_dev, mpad)
         g = ttnn.to_layout(ttnn.reshape(g, (N, Dmax, W)), ttnn.TILE_LAYOUT)
         return ttnn.sum(g, dim=1)
+    if msg.dtype == ttnn.float32:  # gather and reduce each bfloat16-exact part: both are exact on parts
+        return linear32(ttnn, lambda p: _segment_sum_bf16(ttnn, ttnn.typecast(p, ttnn.bfloat16), gather_dev, Dmax, N, W,
+                                                          out_dtype=ttnn.float32), msg)
+    return _segment_sum_bf16(ttnn, msg, gather_dev, Dmax, N, W)
+
+
+def _segment_sum_bf16(ttnn, msg, gather_dev, Dmax, N, W, out_dtype=None):
     msg_rm = ttnn.to_layout(msg, ttnn.ROW_MAJOR_LAYOUT)                # cheap tile->RM (no concat repack)
     zrow = ttnn.multiply(ttnn.slice(msg_rm, [0, 0], [1, W]), 0.0)      # [1,W] device zeros (trace-safe)
     mpad = ttnn.concat([msg_rm, zrow], dim=0)                          # [E+1, W] row append (RM, no repack)
     g = ttnn.embedding(gather_dev, mpad)                               # [N*Dmax, W] row-select (RM)
     g = ttnn.reshape(g, (N, Dmax, W))                                  # metadata-only (RM contiguous)
+    if out_dtype is not None:
+        g = ttnn.typecast(ttnn.to_layout(g, ttnn.TILE_LAYOUT), out_dtype)
     return ttnn.to_layout(ttnn.sum(g, dim=1), ttnn.TILE_LAYOUT)        # [N, W] tile (small out)

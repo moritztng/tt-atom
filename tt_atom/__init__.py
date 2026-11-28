@@ -17,6 +17,7 @@ _EXPORTS = {
     "Calculator": "auto",
     "TTAtomCalculator": "calculator",
     "OrbCalculator": "orb_calculator",
+    "MaceCalculator": "mace_calculator",
     "WeightBundle": "weights",
     "Backbone": "model",
     "HostGeometry": "geometry",
