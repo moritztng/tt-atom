@@ -147,13 +147,28 @@ _BF16 = pytest.mark.xfail(strict=True, reason="bfloat16 blocks exceed 5 meV/atom
                                     pytest.param("bfloat16", "float32", marks=_BF16), ("float32", "float32")])
 def test_energy_device(g, device, dt, pdt):  # noqa: F811
     """Total energy with both layers on the card; geometry features (sh, radial, ZBL) from the float64 reference."""
-    from tt_atom.mace.tt_model import MaceEnergy
+    from tt_atom.mace.tt_model import Mace
 
     w, t = g["w"], g["t"]
-    m = MaceEnergy(device, w, _dtype(dt), _dtype(pdt))
+    m = Mace(device, w, _dtype(dt), _dtype(pdt))
     zbl = ref.zbl(g["r"], g["Z"], g["ei"], w, len(g["Z"]))
     e = m.energy(g["Z"], g["ei"], t["a@spherical_harmonics.out0"].double(), t["a@radial_embedding.out0"].double(), zbl)
     want = float(t["out@energy"].double().sum())
     n = len(g["Z"])
     print(f"energy {dt}/{pdt}: {e:.6f} vs {want:.6f} eV, dE/atom {abs(e - want) / n:.2e} eV")
     assert abs(e - want) / n < 5e-3
+
+
+def test_energy_forces_device(g, device):  # noqa: F811
+    """Energy and forces with both layers and their reverse passes on the card at float32; host float64 geometry.
+    The force bar is Orb's shipped bfloat16 error against float64 (6-7 meV/A MAE)."""
+    import ttnn
+    from tt_atom.mace.tt_model import Mace
+
+    t = g["t"]
+    e, f = Mace(device, g["w"], ttnn.float32).energy_forces(g["Z"], t["in@pos"].double(), g["ei"], t["in@shifts"].double())
+    want_e, want_f = float(t["out@energy"].double().sum()), t["out@forces"].double()
+    d = (f - want_f).abs()
+    print(f"energy+forces float32: dE/atom {abs(e - want_e) / len(g['Z']):.2e} eV, force MAE {d.mean():.2e} "
+          f"max {d.max():.2e} eV/A (max |F| {want_f.abs().max():.2e})")
+    assert abs(e - want_e) / len(g["Z"]) < 5e-3 and d.mean() < 7e-3
