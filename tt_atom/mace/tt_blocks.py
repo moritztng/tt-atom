@@ -20,22 +20,28 @@ def mm(a, b, cfg):
 
     The matrix engine reads float32 operands through 19-bit source registers, i.e. truncated to a 10-bit
     mantissa, and truncation is biased: MACE's per-atom energies came out ~9 meV/atom high from that alone.
-    For float32 inputs each operand is split into bfloat16 hi + lo parts and the three significant products
-    are summed (a bfloat16 x bfloat16 product is exact in the float32 accumulator), leaving ~2^-16 relative.
-    bfloat16 inputs take the plain matmul.
+    So a float32 operand is split into bfloat16 hi + lo parts and the significant products are summed (a
+    bfloat16 x bfloat16 product is exact in the float32 accumulator), leaving ~2^-16 relative. A bfloat16
+    operand is taken as exact (0/1 selectors are uploaded that way) and is not split: two matmuls instead of
+    three. Two bfloat16 operands take the plain matmul.
     """
     import ttnn
 
     if a.dtype != ttnn.float32 and b.dtype != ttnn.float32:
         return ttnn.matmul(a, b, compute_kernel_config=cfg)
 
-    def split(x):
+    def parts(x):
+        if x.dtype != ttnn.float32:
+            return (x,)
         hi = ttnn.typecast(x, ttnn.bfloat16)
         return hi, ttnn.typecast(ttnn.subtract(x, ttnn.typecast(hi, ttnn.float32)), ttnn.bfloat16)
 
-    (ah, al), (bh, bl) = split(a), split(b)
-    f = lambda x, y: ttnn.matmul(x, y, compute_kernel_config=cfg, dtype=ttnn.float32)  # noqa: E731
-    return ttnn.add(ttnn.add(f(ah, bh), f(ah, bl)), f(al, bh))
+    out = None
+    for i, x in enumerate(parts(a)):
+        for y in parts(b)[:2 - i]:  # lo x lo is below float32
+            term = ttnn.matmul(x, y, compute_kernel_config=cfg, dtype=ttnn.float32)
+            out = term if out is None else ttnn.add(out, term)
+    return out
 
 
 def perm(x, dims):
@@ -73,11 +79,12 @@ def symmetric_contraction_setup(dev, tables, dtype):
     ell = int(last.max()) + 1
     sels = dense.monomial_selectors(parent, last, ell)
     T = torch.cat([t for t, _, _ in tables], dim=-1)  # [E, c, F, sum(2L+1)]
+    import ttnn
+    sel = lambda S: D.to_dev(S.contiguous(), dev, ttnn.bfloat16)  # noqa: E731  (0/1: exact, see mm)
     return {
-        "sels": [(None if Sp is None else D.to_dev(Sp, dev, dtype), D.to_dev(Sl, dev, dtype)) for Sp, Sl in sels],
+        "sels": [(None if Sp is None else sel(Sp), sel(Sl)) for Sp, Sl in sels],
         "T": [D.to_dev(T[e], dev, dtype) for e in range(T.shape[0])],
-        "t": {"sels": [(None if Sp is None else D.to_dev(Sp.T.contiguous(), dev, dtype),
-                        D.to_dev(Sl.T.contiguous(), dev, dtype)) for Sp, Sl in sels],
+        "t": {"sels": [(None if Sp is None else sel(Sp.T), sel(Sl.T)) for Sp, Sl in sels],
               "T": [D.to_dev(T[e].transpose(1, 2).contiguous(), dev, dtype) for e in range(T.shape[0])]},
         "widths": [t.shape[-1] for t, _, _ in tables],
         "cfg": D.compute_kernel_config(),
@@ -211,6 +218,8 @@ def pad_edges(graph, x):
 def interaction_setup(dev, w, layer, elements, irreps_in, residual, dtype, sh_ls=(0, 1, 2, 3)):
     """Device weights for one interaction block in the flattened cm layout [rows, A * 128], for the species
     ``elements`` present. Graph-free: pair with graph_setup."""
+    import ttnn
+
     from . import reference as ref
 
     p = f"interactions.{layer}."
@@ -246,7 +255,7 @@ def interaction_setup(dev, w, layer, elements, irreps_in, residual, dtype, sh_ls
         "R": R, "K": K, "residual": residual,
         "up": up, "lin": lin, "skip": skip, "tp_w": tp_w, "dens": dens, "cn": cn, "silu": ref._silu_2mom(),
         "t": {"up": up_t, "lin": lin_t, "skip": skip_t, "tp_w": tp_w_t, "dens": dens_t, "cn": cn_t,
-              "ones": tdev(ones)},
+              "ones": D.to_dev(ones, dev, ttnn.bfloat16)},
         "cfg": D.compute_kernel_config(),
     }
 
