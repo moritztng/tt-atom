@@ -76,6 +76,8 @@ def main():
     ap.add_argument("--anchors", default=None, help="float64 anchors npz from mace_gpu_bench_fair.py --anchors-out")
     ap.add_argument("--platform", default="Tenstorrent Blackhole, one chip")
     ap.add_argument("--out", default="benchmarks/mace_perf_dollar_tt.json")
+    ap.add_argument("--interaction-dtype", default="float32", choices=["float32", "bfloat16"],
+                    help="precision of the interaction blocks (the edge side); products and readouts stay float32")
     ap.add_argument("--eager", action="store_true", help="no trace replay: every op dispatched from the host")
     ap.add_argument("--trace-region", type=int, default=400_000_000)
     ap.add_argument("--profile", action="store_true",
@@ -101,7 +103,7 @@ def main():
 
     def dump():
         with open(args.out, "w") as f:
-            json.dump({"model": "MACE-MP-0b3 medium", "precision": "float32", "platform": args.platform,
+            json.dump({"model": "MACE-MP-0b3 medium", "precision": f"interaction {args.interaction_dtype}, product float32", "platform": args.platform,
                        "git_sha": git_sha(), "utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                        "protocol": {"jitter_A": args.jitter, "warmup": args.warmup, "steps": args.steps,
                                     "neighbour_list": "frozen", "quantity": "energy + forces",
@@ -109,7 +111,7 @@ def main():
                        "results": records}, f, indent=1)
 
     with D.device(0, trace_region_size=0 if args.eager else args.trace_region) as dev:
-        model = Mace(dev, w, ttnn.float32, trace=not args.eager)
+        model = Mace(dev, w, getattr(ttnn, args.interaction_dtype), ttnn.float32, trace=not args.eager)
         card, replay = [], ttnn.execute_trace  # the replay is the card's share of a traced step
 
         def timed_replay(*a, **k):
