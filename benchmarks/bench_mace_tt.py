@@ -85,6 +85,9 @@ def main():
     from tt_atom.mace import backward
     from tt_atom.mace.tt_model import Mace
 
+    # The host side of a step is a few elementwise ops over the edges (2 % of the step). Left to torch's thread
+    # pool on a busy 64-core host it took 3x longer than the card (1.4 s of a 1.9 s step at 216 atoms).
+    torch.set_num_threads(1)
     z = np.load(args.weights)
     w = {k[2:]: torch.from_numpy(np.asarray(z[k])) for k in z.files if k.startswith("w@")}
     w = {k: v.double() if v.is_floating_point() else v for k, v in w.items()}
