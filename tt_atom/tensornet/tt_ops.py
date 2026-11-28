@@ -25,6 +25,9 @@ class TtOps:
     def up(self, t):
         return self.tt.from_torch(t.float().contiguous(), dtype=self.dtype, layout=self.tt.TILE_LAYOUT, device=self.dev)
 
+    def cast(self, x):
+        return x if x.dtype == self.dtype else self.tt.typecast(x, self.dtype)
+
     def cat(self, xs):
         return self.tt.concat(xs, dim=-1)
 
@@ -126,3 +129,17 @@ def to_device(o, w):
     node = lambda m: o.up(m[None, None])
     return {"edge": [(o.up(wt), o.up(b[None])) for wt, b in w["edge"]], "edge_t": [o.up(m) for m in w["edge_t"]],
             "node": [node(m) for m in w["node"]], "node_t": [node(m) for m in w["node_t"]]}
+
+
+def model_to_device(o, ol, w):
+    """Weights from model.weights -> device tensors: embedding and readout through `o`, layers through `ol`.
+    Matrices that meet [.., .., N, U] tensors go up as [1, 1, in, out], their biases as [1, 1, 1, out]."""
+    m4, b4, t = (lambda m: o.up(m[None, None])), (lambda b: o.up(b[None, None, None])), o.up
+    e, r = w["embed"], w["readout"]
+    chain = lambda ws: [(m4(wt), b4(b)) for wt, b in ws]
+    return {"embed": {"proj": [(t(wt), t(b[None])) for wt, b in e["proj"]], "proj_t": [t(m) for m in e["proj_t"]],
+                      "scalar": chain(e["scalar"]), "scalar_t": [m4(m) for m in e["scalar_t"]],
+                      "node": [m4(m) for m in e["node"]], "node_t": [m4(m) for m in e["node_t"]], "ln": tuple(b4(v) for v in e["ln"])},
+            "layers": [to_device(ol, wl) for wl in w["layers"]],
+            "readout": {"ln": tuple(b4(v) for v in r["ln"]), "value": chain(r["value"]), "gate": chain(r["gate"]),
+                        "value_t": [m4(m) for m in r["value_t"]], "gate_t": [m4(m) for m in r["gate_t"]]}}

@@ -32,6 +32,10 @@ class TorchOps:
     sigmoid = staticmethod(torch.sigmoid)
 
     @staticmethod
+    def cast(x):                                   # to this backend's dtype
+        return x
+
+    @staticmethod
     def rsqrt(x):
         return x.rsqrt()
 

@@ -7,6 +7,7 @@ import io
 import os
 import struct
 import sys
+import time
 
 import torch
 
@@ -28,18 +29,36 @@ def send(obj):
     PIPE.flush()
 
 
+def backend(cpu):
+    """(ttnn, device context, clock sampler). --cpu swaps ttnn for the float64 stand-in of the tests: a dry run of
+    the bridge and of the op bookkeeping, no card."""
+    if not cpu:
+        import ttnn
+
+        from bench_orb_perf_dollar_tt import AiclkSampler
+        from tt_atom import device as D
+
+        return ttnn, D.device(0), AiclkSampler()
+    import contextlib
+    import types
+
+    from tests.test_tensornet_layer import FakeTtnn
+
+    FakeTtnn.float32, FakeTtnn.to_torch, FakeTtnn.typecast = torch.float64, staticmethod(lambda t: t), staticmethod(lambda t, dtype: t)
+    return FakeTtnn, contextlib.nullcontext(), contextlib.nullcontext(types.SimpleNamespace(summary=dict))
+
+
 def main():
-    import ttnn
-
-    from bench_orb_perf_dollar_tt import AiclkSampler
-    from tt_atom import device as D
     from tt_atom.tensornet import layer as L
-    from tt_atom.tensornet.tt_ops import TtOps, to_device
+    from tt_atom.tensornet import model as M
+    from tt_atom.tensornet.tt_ops import TtOps as Ops, model_to_device, to_device
 
+    ttnn, device, sampler = backend("--cpu" in sys.argv)
+    TtOps = lambda *a, **k: Ops(*a, ttnn=ttnn, **k)
     torch.set_num_threads(1)
     layers = {}
     down = lambda t: ttnn.to_torch(t).double()
-    with D.device(0) as dev, AiclkSampler() as clk:
+    with device as dev, sampler as clk:
         nodes = sorted({os.readlink(f"/proc/self/fd/{f}").rsplit("/", 1)[1] for f in os.listdir("/proc/self/fd")
                         if os.path.exists(f"/proc/self/fd/{f}") and os.readlink(f"/proc/self/fd/{f}").startswith("/dev/tenstorrent/")})
         while (m := recv()) is not None:
@@ -59,6 +78,25 @@ def main():
                 o = s["o"]
                 gx, grbf, gcut = L.backward(o, s["w"], s["tape"], o.up(m["g"]), s["table"], s["n"], s["d"], s["eye"])
                 send({"gx": down(gx), "grbf": down(grbf), "gcut": down(gcut)})
+            elif m["op"] == "model":
+                n, d, u = m["n"], m["d"], m["units"]
+                o, ol = TtOps(dev, n, d, u, dtype=ttnn.float32), TtOps(dev, n, d, u, dtype=getattr(ttnn, m["dtype"]))
+                eye = torch.eye(3).reshape(3, 3, 1, 1).expand(3, 3, n, u)
+                layers["model"] = {"o": o, "ol": ol, "w": model_to_device(o, ol, m["w"]), "send": o.index(m["send"]),
+                                   "table": o.index(m["table"]), "eye": o.up(eye), "eye_l": ol.up(eye), "n": n, "d": d}
+                send({"ok": True})
+            elif m["op"] == "energy":
+                s = layers["model"]
+                o, ol, n = s["o"], s["ol"], s["n"]
+                t0 = time.perf_counter()
+                geo = [o.up(c) for c in m["geo"].split(1, -1)]
+                e, tape = M.forward(o, s["w"], o.up(m["z"]), (o.up(m["rbf"]), o.up(m["cut"])), geo, s["send"], n, s["eye"],
+                                    ol=ol, edge_l=(ol.up(m["rbf"]), ol.up(m["cut"])), eye_l=s["eye_l"])
+                grbf, gcut, ggeo = M.backward(o, s["w"], tape, o.up(torch.ones(1, 1, n, 1)), s["table"], n, s["d"], s["eye"],
+                                              ol=ol, eye_l=s["eye_l"])
+                out = {"e": down(e).reshape(-1), "grbf": sum(down(g) for g in grbf), "gcut": sum(down(g) for g in gcut),
+                       "ggeo": down(ggeo)}
+                send({**out, "seconds": time.perf_counter() - t0})
             elif m["op"] == "close":
                 send({"aiclk_mhz_during": {k: v for k, v in clk.summary().items() if k in nodes}, "opened_nodes": nodes,
                       "host_load1": os.getloadavg()[0]})

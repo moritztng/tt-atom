@@ -206,11 +206,12 @@ def test_model_matches_matgl():
     geo = E.geometry(vec)
     eye = torch.eye(3, dtype=torch.float64).reshape(3, 3, 1, 1).expand(3, 3, n, m.units)
     w = M.weights(m, torch.float64)
-    en, tape = M.forward(o, w, pad(E.pair(m.tensor_embedding, z, ei)), pad(rbf.detach()), pad(cut.detach()),
+    en, tape = M.forward(o, w, pad(E.pair(m.tensor_embedding, z, ei)), (pad(rbf.detach()), pad(cut.detach())),
                          list(pad(geo.detach()).split(1, -1)), send, n, eye)
     assert torch.allclose(en.reshape(-1), want, rtol=1e-10, atol=1e-12)
 
     grbf, gcut, ggeo = M.backward(o, w, tape, torch.ones_like(en), table, n, d, eye)
+    grbf, gcut = sum(grbf), sum(gcut)
     real = edge < e
     unpad = lambda t: torch.zeros(e, *t.shape[1:], dtype=t.dtype).index_copy(0, edge[real], t[real])
     assert torch.allclose(unpad(grbf), wrbf, rtol=1e-8, atol=1e-11)
