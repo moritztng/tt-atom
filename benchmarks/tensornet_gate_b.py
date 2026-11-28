@@ -26,6 +26,7 @@ def main():
     ap.add_argument("--min-width", type=int, default=32, help="floor of the padded degree")
     ap.add_argument("--steps", type=int, default=3, help="repeat the device step; the last one is graded and timed")
     ap.add_argument("--server", default="python benchmarks/tensornet_layer_server.py --cpu")
+    ap.add_argument("--rattle", type=float, default=0.0, help="extra Gaussian displacement in A, for a second cell of another energy")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
     torch.set_num_threads(4)
@@ -38,6 +39,7 @@ def main():
     m, graphs = pot.model, []
     hook = m.register_forward_hook(lambda mod, a, kw, out: graphs.append(kw.get("g", a[0] if a else None)), with_kwargs=True)
     atoms = build("si", args.n)
+    atoms.positions += np.random.default_rng(1).normal(0, args.rattle, atoms.positions.shape)
     atoms.calc = PESCalculator(pot)
     e0, f0 = atoms.get_potential_energy(), atoms.get_forces().copy()
     hook.remove()
@@ -64,7 +66,8 @@ def main():
     f1 = -(std * grad).numpy()
     e1 = std * float(out["e"].sum()) + mean * 1 + float(pot.element_refs.property_offset.double()[z].sum())
     res = {"model": args.model, "atoms": n, "edges": ei.shape[1], "slots": n * d, "layer_dtype": args.dtype,
-           "embed_readout_dtype": "float32", "dE_meV_per_atom": 1e3 * abs(e1 - e0) / n,
+           "embed_readout_dtype": "float32", "rattle_A": args.rattle, "e_ref_eV_per_atom": e0 / n,
+           "dE_meV_per_atom": 1e3 * (e1 - e0) / n,
            "force_mae_meV_A": 1e3 * float(np.abs(f1 - f0).mean()), "force_max_meV_A": 1e3 * float(np.abs(f1 - f0).max()),
            "mean_abs_force_eV_A": float(np.abs(f0).mean()), "device_step_s_untuned": out["seconds"], **remote.call(op="close")}
     print(json.dumps(res))
