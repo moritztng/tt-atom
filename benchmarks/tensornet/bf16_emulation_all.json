@@ -1,0 +1,9 @@
+{
+ "atoms": 216,
+ "modules_rounded": 63,
+ "skip": [],
+ "dE_meV_per_atom": 25.38779929832176,
+ "force_mae_meV_A": 5.1232920959591866,
+ "force_max_meV_A": 17.921730875968933,
+ "mean_abs_force_eV_A": 0.09262650460004807
+}

@@ -1,0 +1,15 @@
+{
+ "atoms": 216,
+ "modules_rounded": 4,
+ "skip": [
+  "final_layer",
+  "linear",
+  "out_norm",
+  "tensor_embedding",
+  "bond_expansion"
+ ],
+ "dE_meV_per_atom": 0.20458080150462962,
+ "force_mae_meV_A": 1.1848354479297996,
+ "force_max_meV_A": 6.216667592525482,
+ "mean_abs_force_eV_A": 0.09262649714946747
+}
