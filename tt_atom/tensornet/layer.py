@@ -131,11 +131,14 @@ def slots(edge_index, n, min_width=0, own=False):
     of node i in row k N + i so that a node's slots are D row blocks of N;
     send [S] sender node, 0 in pad slots; table [N D'] slot ids grouped by sender, S = none; D).
     own=True is the message of weights trained before matgl 3 (v2025.1): row 1 receives, and the features an
-    edge carries are the receiver's own. The loader sets it."""
+    edge carries are the receiver's own. The loader sets it. min_width > 0 keeps D stable while atoms move: at
+    least min_width, then the next multiple of 8."""
     edge_index, e = edge_index.long(), edge_index.shape[1]
     recv = sender = edge_index[1]
     if not own:
         recv, sender = edge_index
+    if min_width:   # the width is a compiled shape: floor it, and above the floor move in steps of 8 slots
+        min_width = max(min_width, -(-int(torch.bincount(recv, minlength=1).max()) // 8) * 8)
     edge, d = build_gather(recv, n, e, min_width=min_width)
     edge = torch.from_numpy(edge.astype(np.int64)).reshape(n, d).T.reshape(-1)   # slot-major: row k N + i
     real = (edge < e).nonzero()[:, 0]
