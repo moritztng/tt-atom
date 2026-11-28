@@ -65,14 +65,48 @@ replay. Errors are against float64 on the benchmark structure itself.
 | 1000 | 46000 | 912.5 ms | 833.8 ms | 0.33 meV/atom | 0.49 meV/A |
 
 About 0.9 ms per atom, more than 90 % of it on the card. This is far slower than MACE on a GPU
-(a consumer RTX 3090 runs the 64-atom step in 2.4 ms with cuEquivariance), so there is no
-per-dollar claim for MACE.
+(a consumer RTX 3090 runs the 64-atom step in 2.1 ms with cuEquivariance, see
+[GPU comparison](#gpu-comparison)), so there is no per-dollar claim for MACE.
 
 The step is not limited by arithmetic. At 1000 atoms it issues 206 matmuls totalling 715 GFLOP
 (`bench_mace_tt.py --eager --census`), which the card executes at 0.9 TFLOP/s. The largest of those matmuls timed alone
 (`bench_mace_gemm_shapes.py`) take 200 ms per step, running anywhere from 0.2 TFLOP/s for the
 batched per-node shapes to 66 TFLOP/s for the wide node layers. Tracing barely helps at this
 size (an eager step takes 949 ms), so the host is not the limit either.
+
+## GPU comparison
+
+The GPU side was measured on one RTX 3090 (24 GB) with mace-torch 0.3.17, same checkpoint, same Si
+cells and same protocol as the table above: energy and forces, stress off, frozen neighbour list,
+positions jittered and uploaded every step, median of 100 steps. Every backend the package ships
+(e3nn, cuEquivariance, OpenEquivariance, the cueq+oeq hybrid) was timed eager, compiled, with
+`compile_mode="reduce-overhead"` and with the whole step captured in one CUDA graph. cuEquivariance
+with TF32 matmuls won at every size. The table shows it for one cell, for several copies of the
+cell batched until the card is full, and in float64.
+
+| atoms | one cell, TF32 | atoms/s | batched, TF32 | one cell, float64 | TF32 energy error | TF32 force MAE |
+|---:|---:|---:|---:|---:|---:|---:|
+| 64 | 2.05 ms | 31,200 | 113,200 atoms/s (64 cells) | 14.7 ms | 0.01 meV/atom | 0.42 meV/A |
+| 216 | 3.51 ms | 61,500 | 126,300 atoms/s (64 cells) | not run | 0.23 meV/atom | 0.43 meV/A |
+| 512 | 5.92 ms | 86,500 | 127,800 atoms/s (16 cells) | 79.1 ms | 0.23 meV/atom | 0.43 meV/A |
+| 1000 | 9.53 ms | 105,000 | 132,100 atoms/s (16 cells) | 156.4 ms | 0.39 meV/atom | 0.46 meV/A |
+| 2016 | 17.34 ms | 116,300 | 125,400 atoms/s (4 cells) | 311.4 ms | 0.36 meV/atom | 0.45 meV/A |
+
+Errors are against stock mace-torch in float64 on the same positions, the reference the TT numbers
+use. The worst single force component is off by at most 2.3 meV/A. At 64 and 216 atoms the fastest
+single-cell mode is the whole-step CUDA graph, from 512 atoms up it is the package's own
+`reduce-overhead` compile. The stock calculator takes 72 ms at 512 atoms and 239 ms at 2016, and
+float64 is 7 to 18 times slower than TF32.
+
+So one RTX 3090 saturates near 130,000 atoms/s at the same force accuracy as the TT fp32 path, and
+one TT chip does about 1,100 atoms/s. The gap is roughly 100 times against a consumer card, which
+is why no H200 or B200 run was rented and no per-dollar ratio is quoted.
+
+The protocol is `benchmarks/mace_gpu_bench_fair.py`, which shares its timing loop, clock sampler
+and CUDA-graph capture with the Orb GPU bench through `benchmarks/_gpu_fair.py`. Every variant with
+its time, GPU clock during the run, memory and error is in `benchmarks/mace_perf_dollar_gpu.json`
+(built by `benchmarks/mace_gpu_bar.py`), and the raw files and float64 anchors are in
+`benchmarks/mace_fair/`.
 
 ## Reproduce
 

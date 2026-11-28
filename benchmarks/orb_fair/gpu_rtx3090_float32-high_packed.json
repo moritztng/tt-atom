@@ -1,0 +1,903 @@
+{
+ "gpu_name": "NVIDIA GeForce RTX 3090",
+ "orb_models": "v0.7.0",
+ "torch": "2.15.0+cu132",
+ "cuda": "13.2",
+ "precision": "float32-high",
+ "dev_run": true,
+ "parity_anchor": "orb float64, stock calculator, fresh graph",
+ "git_sha": null,
+ "timestamp_utc": "2026-11-28T03:54:17.456852+00:00",
+ "protocol": "NVIDIA leg of the Orb-v3 per-dollar comparison, with the GPU at its best.\n\nOne protocol on both sides (the TT leg is `bench_orb_perf_dollar_tt.py`):\n  * same checkpoint (`orb-v3-conservative-inf-omat`), same periodic Si diamond supercells,\n    and the edge count is recorded so a graph mismatch is visible;\n  * same quantity: energy + conservative forces (F = -dE/dpos), stress OFF\n    (`disable_stress()`; orb's rotational-gradient term stays, a little extra GPU work);\n  * same neighbour treatment: the list is built once at the first geometry and frozen,\n    positions jittered each step and copied host -> device, as the TT leg does;\n  * load, compile and capture excluded; median of the timed steps; the SM clock is sampled\n    during the timed loop and recorded.\n\nWhat \"at its best\" means here was checked on 2026-11-26 against what ships:\n  * orb-models 0.7.0 (latest on PyPI): precision \"float32-high\" (TF32 matmuls, the package\n    default), \"float32-highest\", \"float64\"; no bf16 path. `compile` defaults to\n    torch.compile(mode=\"default\", dynamic=True). kNN via NVIDIA ALCHEMI Toolkit-Ops.\n  * NVIDIA ALCHEMI toolkit 0.3.0 (nvalchemi-toolkit): model wrappers for MACE, UMA,\n    AIMNet2, no Orb wrapper, so there is no vendor-accelerated Orb path to compare to.\n\nEvery variant, stock included, is graded at the same jittered positions against the float64 model\nthrough the stock calculator (dE/atom, MAE and max |dF|); the anchors are saved (--anchors-out) and\nthe TT leg is graded against the very same file. No bar is applied here: the headline is the\nfastest frozen variant, at either precision, that is no less accurate than the TT leg at that size.\nRun once per precision.\n\nVariants:\n  stock            stock ORBCalculator, neighbours rebuilt per call, stress on. The plain\n                   user path; reported for context, never the headline.\n  frozen_compiled  package-compiled model, TF32, frozen graph, stress off.\n  frozen_cudagraph uncompiled model captured whole (forward + autograd forces) into one CUDA\n                   graph and replayed; the GPU counterpart of the TT leg's trace/replay.\n  frozen_compiled_cudagraph  both: torch.compile (static shapes, the graph is frozen) for fused\n                   kernels, then the whole step captured into one CUDA graph.\n  frozen_reduce_overhead  torch.compile(mode=\"reduce-overhead\", dynamic=False): PyTorch's own\n                   CUDA graphs per compiled region, the package-level way to get both.\n\nPacking (--pack <variants>): one cell does not fill a GPU, so the named variants are timed again\nwith B copies of the cell in one batch, B doubled until atoms/s stops rising. atoms/s there is\nB x N per step, graded on the first cell.\n\n    python benchmarks/orb_gpu_bench_fair.py --out orb_perf_dollar_gpu_<gpu>.json\n",
+ "warmup": 10,
+ "steps": 50,
+ "records": [
+  {
+   "tag": "3x3x3",
+   "N": 216,
+   "variants": {
+    "frozen_cudagraph": {
+     "step_ms_raw": [
+      27.0699,
+      26.4645,
+      26.9864,
+      26.6179,
+      26.63,
+      27.0117,
+      26.7372,
+      26.6722,
+      27.0297,
+      26.7191,
+      26.6269,
+      27.0469,
+      26.8078,
+      26.6444,
+      27.0778,
+      26.6872,
+      26.5962,
+      27.0041,
+      26.8476,
+      26.8477,
+      27.0443,
+      26.8026,
+      26.8136,
+      27.3704,
+      27.0301,
+      27.0794,
+      26.935,
+      26.8179,
+      27.1955,
+      26.8954,
+      26.7952,
+      27.1797,
+      26.8913,
+      26.8227,
+      27.0521,
+      26.8078,
+      26.6934,
+      27.0052,
+      26.9384,
+      26.6628,
+      27.0146,
+      26.7734,
+      26.8216,
+      26.8592,
+      26.7736,
+      26.795,
+      27.4142,
+      27.0845,
+      26.9714,
+      26.9159
+     ],
+     "step_ms_median": 26.85346209909767,
+     "steps_per_s": 37.23914615961575,
+     "sm_clock_mhz_during": 1725,
+     "sm_clock_mhz_min_max": [
+      1695,
+      1755
+     ],
+     "atoms_per_s": 8043.655570477002,
+     "parity": {
+      "dE_per_atom_eV": 0.00010922529922389138,
+      "mae_dF_eV_per_A": 0.0004102051546159583,
+      "max_abs_dF_eV_per_A": 0.0018527492153183958
+     }
+    },
+    "frozen_compiled_cudagraph": {
+     "error": "TorchRuntimeError: torch.compile cannot JIT compile during CUDA graph capture. Execute warmup iterations outside of CUDA graph capture to trigger compilation, then capture the gra",
+     "where": [
+      "torch/_dynamo/bytecode_transformation.py:1849 tracer_output = transformations(instructions, code_options)",
+      "torch/_dynamo/convert_frame.py:1612 tracer_output = trace_frame(",
+      "torch/_dynamo/convert_frame.py:374 return fn(*args, **kwargs)",
+      "torch/_dynamo/convert_frame.py:922 raise exc.TorchRuntimeError("
+     ]
+    },
+    "frozen_reduce_overhead": {
+     "error": "RuntimeError: Cannot copy between CPU and CUDA tensors during CUDA graph capture unless the CPU tensor is pinned. Please use tensor.pin_memory() or allocate the tensor with p",
+     "where": [
+      "torch/_compile.py:54 return disable_fn(*args, **kwargs)",
+      "torch/_dynamo/eval_frame.py:1552 return fn(*args, **kwargs)",
+      "torch/_higher_order_ops/cudagraph_conditional_nodes.py:39 return func(*args, **kwargs)",
+      "torch/_ops.py:916 return self._op(*args, **kwargs)"
+     ]
+    }
+   },
+   "packed": {
+    "frozen_cudagraph": {
+     "2": {
+      "step_ms_raw": [
+       49.871,
+       49.4878,
+       49.437,
+       49.4943,
+       49.5561,
+       49.4373,
+       49.5733,
+       49.7862,
+       49.3429,
+       49.6651,
+       49.6495,
+       52.0419,
+       50.8775,
+       50.1311,
+       49.7394,
+       49.7584,
+       49.7041,
+       49.6855,
+       49.6746,
+       49.6965,
+       49.5526,
+       49.6632,
+       49.6608,
+       49.7313,
+       49.5426,
+       49.977,
+       49.6456,
+       49.6909,
+       49.6676,
+       50.6681
+      ],
+      "step_ms_median": 49.671135493554175,
+      "steps_per_s": 20.132416745934268,
+      "sm_clock_mhz_during": 1725,
+      "sm_clock_mhz_min_max": [
+       1710,
+       1725
+      ],
+      "atoms_per_s": 8697.204034243603,
+      "parity": {
+       "dE_per_atom_eV": 0.00011335788792831847,
+       "mae_dF_eV_per_A": 0.00041011260626204,
+       "max_abs_dF_eV_per_A": 0.0016529627077975229
+      }
+     },
+     "4": {
+      "step_ms_raw": [
+       95.2248,
+       94.9962,
+       97.7101,
+       101.8998,
+       96.1083,
+       95.1282,
+       95.4434,
+       95.0914,
+       95.312,
+       95.299,
+       95.3736,
+       95.3738,
+       97.5586,
+       98.289,
+       96.6543,
+       95.698,
+       95.5234,
+       95.2355,
+       95.525,
+       95.3274,
+       95.0966,
+       95.9021,
+       96.9672,
+       97.1054,
+       96.6177,
+       96.2432,
+       95.7435,
+       95.7806,
+       95.6575,
+       95.5358
+      ],
+      "step_ms_median": 95.59661895036697,
+      "steps_per_s": 10.460621002916351,
+      "sm_clock_mhz_during": 1642,
+      "sm_clock_mhz_min_max": [
+       1500,
+       1695
+      ],
+      "atoms_per_s": 9037.976546519727,
+      "parity": {
+       "dE_per_atom_eV": 0.00010858951634628722,
+       "mae_dF_eV_per_A": 0.00040338949447170103,
+       "max_abs_dF_eV_per_A": 0.0020453765260712645
+      }
+     },
+     "8": {
+      "step_ms_raw": [
+       185.2061,
+       184.3367,
+       184.713,
+       189.0492,
+       188.4269,
+       185.8469,
+       184.6372,
+       184.8328,
+       187.0827,
+       188.5861,
+       186.2775,
+       185.521,
+       185.2984,
+       186.2085,
+       188.0769,
+       186.8241,
+       185.9885,
+       185.5053,
+       186.1225,
+       187.9838,
+       187.1979,
+       186.4608,
+       186.0388,
+       185.6661,
+       187.1604,
+       187.5148,
+       186.5704,
+       186.3627,
+       185.874,
+       186.5255
+      ],
+      "step_ms_median": 186.24297389760613,
+      "steps_per_s": 5.369330069599224,
+      "sm_clock_mhz_during": 1635,
+      "sm_clock_mhz_min_max": [
+       1605,
+       1650
+      ],
+      "atoms_per_s": 9278.202360267458,
+      "parity": {
+       "dE_per_atom_eV": 0.00010565785085511245,
+       "mae_dF_eV_per_A": 0.00040665898526132636,
+       "max_abs_dF_eV_per_A": 0.0016138426231877348
+      }
+     },
+     "16": {
+      "step_ms_raw": [
+       363.0533,
+       366.8679,
+       364.9909,
+       362.856,
+       367.91,
+       363.9713,
+       364.1412,
+       367.1922,
+       363.8089,
+       365.4775,
+       365.5354,
+       363.4213,
+       366.5584,
+       365.0259,
+       364.4131,
+       367.0185,
+       364.6645,
+       365.5755,
+       365.948,
+       365.2428,
+       366.4348,
+       364.7119,
+       363.5196,
+       364.831,
+       363.7586,
+       364.2379,
+       364.5057,
+       363.8441,
+       365.1131,
+       364.3368
+      ],
+      "step_ms_median": 364.77147589903325,
+      "steps_per_s": 2.741442426481819,
+      "sm_clock_mhz_during": 1605,
+      "sm_clock_mhz_min_max": [
+       1575,
+       1650
+      ],
+      "atoms_per_s": 9474.425025921166,
+      "parity": {
+       "dE_per_atom_eV": 0.00010692941661032078,
+       "mae_dF_eV_per_A": 0.0004008630865564242,
+       "max_abs_dF_eV_per_A": 0.0018294773268239042
+      }
+     },
+     "32": {
+      "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 1.21 GiB. GPU 0 has a total capacity of 23.61 GiB of which 45.69 MiB is free. Including non-PyTorch memory, this process h",
+      "where": [
+       "torch/nn/modules/module.py:1787 return self._call_impl(*args, **kwargs)",
+       "torch/nn/modules/module.py:1798 return forward_call(*args, **kwargs)",
+       "torch/nn/modules/activation.py:476 return F.silu(input, inplace=self.inplace)",
+       "torch/nn/functional.py:2451 return torch._C._nn.silu(input)"
+      ]
+     }
+    },
+    "frozen_compiled_cudagraph": {
+     "2": {
+      "error": "TorchRuntimeError: torch.compile cannot JIT compile during CUDA graph capture. Execute warmup iterations outside of CUDA graph capture to trigger compilation, then capture the gra",
+      "where": [
+       "torch/_dynamo/bytecode_transformation.py:1849 tracer_output = transformations(instructions, code_options)",
+       "torch/_dynamo/convert_frame.py:1612 tracer_output = trace_frame(",
+       "torch/_dynamo/convert_frame.py:374 return fn(*args, **kwargs)",
+       "torch/_dynamo/convert_frame.py:922 raise exc.TorchRuntimeError("
+      ]
+     }
+    }
+   },
+   "edges": 9936
+  },
+  {
+   "tag": "4x4x4",
+   "N": 512,
+   "variants": {
+    "frozen_cudagraph": {
+     "step_ms_raw": [
+      60.7262,
+      60.2841,
+      60.3124,
+      62.0541,
+      60.4754,
+      60.0841,
+      60.1971,
+      60.1479,
+      60.1749,
+      60.1134,
+      60.2176,
+      60.1377,
+      60.1871,
+      60.1971,
+      60.2257,
+      60.3943,
+      60.2397,
+      60.3287,
+      60.8326,
+      61.0159,
+      60.5868,
+      60.4673,
+      60.546,
+      60.6739,
+      60.2929,
+      60.4605,
+      60.5138,
+      60.4841,
+      60.4121,
+      60.3484,
+      60.0998,
+      60.3931,
+      60.1069,
+      60.407,
+      60.5272,
+      60.5116,
+      60.4831,
+      60.6892,
+      60.7292,
+      60.5053,
+      60.5077,
+      60.5999,
+      60.6204,
+      60.4172,
+      60.3274,
+      60.4723,
+      60.3337,
+      60.3379,
+      60.5682,
+      60.1245
+     ],
+     "step_ms_median": 60.40956650394946,
+     "steps_per_s": 16.553669524091386,
+     "sm_clock_mhz_during": 1680,
+     "sm_clock_mhz_min_max": [
+      1650,
+      1725
+     ],
+     "atoms_per_s": 8475.47879633479,
+     "parity": {
+      "dE_per_atom_eV": 0.00011450352913833228,
+      "mae_dF_eV_per_A": 0.0004338405144994834,
+      "max_abs_dF_eV_per_A": 0.001691257486417297
+     }
+    },
+    "frozen_compiled_cudagraph": {
+     "error": "TorchRuntimeError: torch.compile cannot JIT compile during CUDA graph capture. Execute warmup iterations outside of CUDA graph capture to trigger compilation, then capture the gra",
+     "where": [
+      "torch/_dynamo/bytecode_transformation.py:1849 tracer_output = transformations(instructions, code_options)",
+      "torch/_dynamo/convert_frame.py:1612 tracer_output = trace_frame(",
+      "torch/_dynamo/convert_frame.py:374 return fn(*args, **kwargs)",
+      "torch/_dynamo/convert_frame.py:922 raise exc.TorchRuntimeError("
+     ]
+    },
+    "frozen_reduce_overhead": {
+     "error": "RuntimeError: Cannot copy between CPU and CUDA tensors during CUDA graph capture unless the CPU tensor is pinned. Please use tensor.pin_memory() or allocate the tensor with p",
+     "where": [
+      "torch/_compile.py:54 return disable_fn(*args, **kwargs)",
+      "torch/_dynamo/eval_frame.py:1552 return fn(*args, **kwargs)",
+      "torch/_higher_order_ops/cudagraph_conditional_nodes.py:39 return func(*args, **kwargs)",
+      "torch/_ops.py:916 return self._op(*args, **kwargs)"
+     ]
+    }
+   },
+   "packed": {
+    "frozen_cudagraph": {
+     "2": {
+      "step_ms_raw": [
+       112.9713,
+       118.6985,
+       116.021,
+       112.9706,
+       112.8785,
+       113.0806,
+       113.1631,
+       113.3226,
+       113.0545,
+       114.0301,
+       115.2124,
+       114.2433,
+       113.5866,
+       113.479,
+       113.0464,
+       113.5385,
+       113.4258,
+       113.6172,
+       114.3372,
+       114.4247,
+       114.0428,
+       113.5651,
+       113.676,
+       113.7364,
+       113.4283,
+       113.6167,
+       113.944,
+       114.1042,
+       114.1374,
+       114.1045
+      ],
+      "step_ms_median": 113.61694987863302,
+      "steps_per_s": 8.801503658285245,
+      "sm_clock_mhz_during": 1665,
+      "sm_clock_mhz_min_max": [
+       1620,
+       1725
+      ],
+      "atoms_per_s": 9012.739746084091,
+      "parity": {
+       "dE_per_atom_eV": 0.00010633769280410377,
+       "mae_dF_eV_per_A": 0.0004209588158827267,
+       "max_abs_dF_eV_per_A": 0.0018726642227911983
+      }
+     },
+     "4": {
+      "step_ms_raw": [
+       220.1456,
+       221.2218,
+       225.0111,
+       220.8352,
+       220.7813,
+       220.6506,
+       223.436,
+       222.2131,
+       221.5525,
+       220.4466,
+       221.673,
+       223.0835,
+       221.5718,
+       220.9462,
+       221.1751,
+       222.3204,
+       222.6352,
+       221.7437,
+       220.648,
+       221.5621,
+       222.5355,
+       221.221,
+       220.9951,
+       221.4715,
+       222.0995,
+       222.0533,
+       220.7825,
+       220.7679,
+       221.8292,
+       222.1649
+      ],
+      "step_ms_median": 221.55728691723198,
+      "steps_per_s": 4.513505350756412,
+      "sm_clock_mhz_during": 1605,
+      "sm_clock_mhz_min_max": [
+       1590,
+       1635
+      ],
+      "atoms_per_s": 9243.658958349131,
+      "parity": {
+       "dE_per_atom_eV": 0.00010633769280410377,
+       "mae_dF_eV_per_A": 0.0004247049440665508,
+       "max_abs_dF_eV_per_A": 0.0018721873856329951
+      }
+     },
+     "8": {
+      "step_ms_raw": [
+       436.2325,
+       432.0486,
+       434.1901,
+       433.9223,
+       433.1866,
+       434.7785,
+       432.1961,
+       435.4623,
+       431.8892,
+       435.0792,
+       433.315,
+       433.3984,
+       434.7778,
+       433.5764,
+       434.9408,
+       433.0968,
+       434.9336,
+       433.8771,
+       434.5814,
+       434.4736,
+       433.7345,
+       435.1008,
+       433.6892,
+       435.0508,
+       434.0491,
+       434.257,
+       434.8207,
+       434.5167,
+       434.8562,
+       434.4774
+      ],
+      "step_ms_median": 434.3653080286458,
+      "steps_per_s": 2.3022096413234996,
+      "sm_clock_mhz_during": 1612,
+      "sm_clock_mhz_min_max": [
+       1590,
+       1695
+      ],
+      "atoms_per_s": 9429.850690861054,
+      "parity": {
+       "dE_per_atom_eV": 0.00011235776192641822,
+       "mae_dF_eV_per_A": 0.0004216315331892883,
+       "max_abs_dF_eV_per_A": 0.001740769410367049
+      }
+     },
+     "16": {
+      "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 1.44 GiB. GPU 0 has a total capacity of 23.61 GiB of which 847.69 MiB is free. Including non-PyTorch memory, this process ",
+      "where": [
+       "torch/nn/modules/module.py:1787 return self._call_impl(*args, **kwargs)",
+       "torch/nn/modules/module.py:1798 return forward_call(*args, **kwargs)",
+       "torch/nn/modules/activation.py:476 return F.silu(input, inplace=self.inplace)",
+       "torch/nn/functional.py:2451 return torch._C._nn.silu(input)"
+      ]
+     }
+    },
+    "frozen_compiled_cudagraph": {
+     "2": {
+      "error": "TorchRuntimeError: torch.compile cannot JIT compile during CUDA graph capture. Execute warmup iterations outside of CUDA graph capture to trigger compilation, then capture the gra",
+      "where": [
+       "torch/_dynamo/bytecode_transformation.py:1849 tracer_output = transformations(instructions, code_options)",
+       "torch/_dynamo/convert_frame.py:1612 tracer_output = trace_frame(",
+       "torch/_dynamo/convert_frame.py:374 return fn(*args, **kwargs)",
+       "torch/_dynamo/convert_frame.py:922 raise exc.TorchRuntimeError("
+      ]
+     }
+    }
+   },
+   "edges": 23552
+  },
+  {
+   "tag": "5x5x5",
+   "N": 1000,
+   "variants": {
+    "frozen_cudagraph": {
+     "step_ms_raw": [
+      116.484,
+      116.347,
+      116.1821,
+      116.0555,
+      117.2859,
+      117.2101,
+      116.7914,
+      116.382,
+      116.2921,
+      116.1725,
+      116.0144,
+      116.173,
+      116.5537,
+      116.8081,
+      116.5422,
+      116.1338,
+      115.9868,
+      116.2213,
+      116.1623,
+      115.996,
+      116.2368,
+      116.2985,
+      116.676,
+      116.5032,
+      116.3819,
+      116.2092,
+      116.1266,
+      115.8752,
+      116.198,
+      116.6112,
+      117.1444,
+      116.3898,
+      116.5912,
+      116.505,
+      116.6337,
+      116.4771,
+      116.4483,
+      115.7815,
+      116.2208,
+      116.5567,
+      116.6506,
+      116.4971,
+      116.3072,
+      116.387,
+      116.4225,
+      116.27,
+      116.1851,
+      116.0933,
+      116.5401,
+      116.4119
+     ],
+     "step_ms_median": 116.38193705584854,
+     "steps_per_s": 8.592398659940907,
+     "sm_clock_mhz_during": 1650,
+     "sm_clock_mhz_min_max": [
+      1635,
+      1770
+     ],
+     "atoms_per_s": 8592.398659940907,
+     "parity": {
+      "dE_per_atom_eV": 0.00010477354654267401,
+      "mae_dF_eV_per_A": 0.00042518117339644353,
+      "max_abs_dF_eV_per_A": 0.0018540028130513732
+     }
+    },
+    "frozen_compiled_cudagraph": {
+     "error": "TorchRuntimeError: torch.compile cannot JIT compile during CUDA graph capture. Execute warmup iterations outside of CUDA graph capture to trigger compilation, then capture the gra",
+     "where": [
+      "torch/_dynamo/bytecode_transformation.py:1849 tracer_output = transformations(instructions, code_options)",
+      "torch/_dynamo/convert_frame.py:1612 tracer_output = trace_frame(",
+      "torch/_dynamo/convert_frame.py:374 return fn(*args, **kwargs)",
+      "torch/_dynamo/convert_frame.py:922 raise exc.TorchRuntimeError("
+     ]
+    },
+    "frozen_reduce_overhead": {
+     "error": "RuntimeError: Cannot copy between CPU and CUDA tensors during CUDA graph capture unless the CPU tensor is pinned. Please use tensor.pin_memory() or allocate the tensor with p",
+     "where": [
+      "torch/_compile.py:54 return disable_fn(*args, **kwargs)",
+      "torch/_dynamo/eval_frame.py:1552 return fn(*args, **kwargs)",
+      "torch/_higher_order_ops/cudagraph_conditional_nodes.py:39 return func(*args, **kwargs)",
+      "torch/_ops.py:916 return self._op(*args, **kwargs)"
+     ]
+    }
+   },
+   "packed": {
+    "frozen_cudagraph": {
+     "2": {
+      "step_ms_raw": [
+       220.9912,
+       221.6176,
+       224.2315,
+       222.0477,
+       221.5845,
+       221.2632,
+       222.1423,
+       222.9338,
+       222.2662,
+       221.6023,
+       221.6503,
+       222.4409,
+       222.6028,
+       222.9338,
+       221.7902,
+       221.81,
+       222.6383,
+       222.4876,
+       222.5427,
+       221.9407,
+       222.5399,
+       222.7151,
+       222.7557,
+       222.0382,
+       222.5558,
+       222.5634,
+       222.5233,
+       222.5257,
+       222.3515,
+       223.1991
+      ],
+      "step_ms_median": 222.46427088975906,
+      "steps_per_s": 4.495103847464766,
+      "sm_clock_mhz_during": 1635,
+      "sm_clock_mhz_min_max": [
+       1530,
+       1650
+      ],
+      "atoms_per_s": 8990.207694929533,
+      "parity": {
+       "dE_per_atom_eV": 0.00010639097818329901,
+       "mae_dF_eV_per_A": 0.00042555320565423736,
+       "max_abs_dF_eV_per_A": 0.001958705680975812
+      }
+     },
+     "4": {
+      "step_ms_raw": [
+       430.3752,
+       428.6135,
+       427.91,
+       430.815,
+       427.8969,
+       430.4118,
+       429.0213,
+       429.5732,
+       430.0312,
+       429.0623,
+       431.0815,
+       427.9318,
+       430.9106,
+       428.3832,
+       431.0719,
+       429.4992,
+       430.0122,
+       429.5554,
+       430.1567,
+       430.6366,
+       430.0741,
+       430.4887,
+       430.5377,
+       429.2619,
+       431.4986,
+       429.5796,
+       431.2219,
+       429.4541,
+       430.8421,
+       430.2414
+      ],
+      "step_ms_median": 430.05265248939395,
+      "steps_per_s": 2.3252966682368323,
+      "sm_clock_mhz_during": 1605,
+      "sm_clock_mhz_min_max": [
+       1590,
+       1695
+      ],
+      "atoms_per_s": 9301.18667294733,
+      "parity": {
+       "dE_per_atom_eV": 0.000104102159823924,
+       "mae_dF_eV_per_A": 0.0004289831369565033,
+       "max_abs_dF_eV_per_A": 0.0017738374450159966
+      }
+     },
+     "8": {
+      "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 1.40 GiB. GPU 0 has a total capacity of 23.61 GiB of which 155.69 MiB is free. Including non-PyTorch memory, this process ",
+      "where": [
+       "torch/nn/modules/container.py:259 input = module(input)",
+       "torch/nn/modules/module.py:1787 return self._call_impl(*args, **kwargs)",
+       "torch/nn/modules/module.py:1798 return forward_call(*args, **kwargs)",
+       "torch/nn/modules/linear.py:134 return F.linear(input, self.weight, self.bias)"
+      ]
+     }
+    },
+    "frozen_compiled_cudagraph": {
+     "2": {
+      "error": "TorchRuntimeError: torch.compile cannot JIT compile during CUDA graph capture. Execute warmup iterations outside of CUDA graph capture to trigger compilation, then capture the gra",
+      "where": [
+       "torch/_dynamo/bytecode_transformation.py:1849 tracer_output = transformations(instructions, code_options)",
+       "torch/_dynamo/convert_frame.py:1612 tracer_output = trace_frame(",
+       "torch/_dynamo/convert_frame.py:374 return fn(*args, **kwargs)",
+       "torch/_dynamo/convert_frame.py:922 raise exc.TorchRuntimeError("
+      ]
+     }
+    }
+   },
+   "edges": 46000
+  },
+  {
+   "tag": "6x6x7",
+   "N": 2016,
+   "variants": {
+    "frozen_cudagraph": {
+     "step_ms_raw": [
+      232.4621,
+      233.5839,
+      233.1157,
+      232.571,
+      233.5362,
+      233.5013,
+      232.8915,
+      233.7727,
+      233.0148,
+      232.3339,
+      233.3471,
+      233.4784,
+      232.4541,
+      233.3566,
+      233.4795,
+      233.1951,
+      233.3078,
+      232.7647,
+      232.8555,
+      233.5681,
+      233.42,
+      233.6015,
+      233.6675,
+      233.5897,
+      232.9878,
+      233.4155,
+      233.5443,
+      233.6082,
+      233.7074,
+      233.2506,
+      233.1105,
+      233.6879,
+      233.6675,
+      233.3553,
+      233.9052,
+      233.7287,
+      233.4501,
+      234.035,
+      233.331,
+      233.2014,
+      234.1096,
+      233.9256,
+      233.4786,
+      233.8857,
+      233.935,
+      233.6353,
+      233.4195,
+      233.6084,
+      233.7096,
+      233.4907
+     ],
+     "step_ms_median": 233.4790644235909,
+     "steps_per_s": 4.283039262936841,
+     "sm_clock_mhz_during": 1635,
+     "sm_clock_mhz_min_max": [
+      1575,
+      1830
+     ],
+     "atoms_per_s": 8634.607154080672,
+     "parity": {
+      "dE_per_atom_eV": 0.00010526950225878878,
+      "mae_dF_eV_per_A": 0.0004283167636822001,
+      "max_abs_dF_eV_per_A": 0.0019186360227956833
+     }
+    },
+    "frozen_compiled_cudagraph": {
+     "error": "TorchRuntimeError: torch.compile cannot JIT compile during CUDA graph capture. Execute warmup iterations outside of CUDA graph capture to trigger compilation, then capture the gra",
+     "where": [
+      "torch/_dynamo/bytecode_transformation.py:1849 tracer_output = transformations(instructions, code_options)",
+      "torch/_dynamo/convert_frame.py:1612 tracer_output = trace_frame(",
+      "torch/_dynamo/convert_frame.py:374 return fn(*args, **kwargs)",
+      "torch/_dynamo/convert_frame.py:922 raise exc.TorchRuntimeError("
+     ]
+    },
+    "frozen_reduce_overhead": {
+     "error": "RuntimeError: Cannot copy between CPU and CUDA tensors during CUDA graph capture unless the CPU tensor is pinned. Please use tensor.pin_memory() or allocate the tensor with p",
+     "where": [
+      "torch/_compile.py:54 return disable_fn(*args, **kwargs)",
+      "torch/_dynamo/eval_frame.py:1552 return fn(*args, **kwargs)",
+      "torch/_higher_order_ops/cudagraph_conditional_nodes.py:39 return func(*args, **kwargs)",
+      "torch/_ops.py:916 return self._op(*args, **kwargs)"
+     ]
+    }
+   },
+   "packed": {
+    "frozen_cudagraph": {
+     "2": {
+      "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 726.00 MiB. GPU 0 has a total capacity of 23.61 GiB of which 349.69 MiB is free. Including non-PyTorch memory, this proces",
+      "where": [
+       "orb_models/forcefield/models/conservative_regressor.py:218 forces, stress, rotational_grad = compute_gradient_forces_and_stress(",
+       "orb_models/forcefield/models/forcefield_utils.py:191 grads = torch.autograd.grad(",
+       "torch/autograd/__init__.py:594 result = _engine_run_backward(",
+       "torch/autograd/graph.py:1113 return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass"
+      ]
+     }
+    },
+    "frozen_compiled_cudagraph": {
+     "2": {
+      "error": "TorchRuntimeError: torch.compile cannot JIT compile during CUDA graph capture. Execute warmup iterations outside of CUDA graph capture to trigger compilation, then capture the gra",
+      "where": [
+       "torch/_dynamo/bytecode_transformation.py:1849 tracer_output = transformations(instructions, code_options)",
+       "torch/_dynamo/convert_frame.py:1612 tracer_output = trace_frame(",
+       "torch/_dynamo/convert_frame.py:374 return fn(*args, **kwargs)",
+       "torch/_dynamo/convert_frame.py:922 raise exc.TorchRuntimeError("
+      ]
+     }
+    }
+   },
+   "edges": 92736
+  }
+ ]
+}
