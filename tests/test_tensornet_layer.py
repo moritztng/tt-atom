@@ -232,3 +232,30 @@ def test_radial_basis_matches_matgl():
     for k in range(got.shape[1]):
         gw, gg = torch.autograd.grad(want[:, k].sum(), r, retain_graph=True)[0], torch.autograd.grad(got[:, k].sum(), r, retain_graph=True)[0]
         assert torch.allclose(gg, gw, rtol=1e-9, atol=1e-11)
+
+
+def test_potential_without_matgl_graph():
+    """Neighbour list, radial basis, cutoff and geometry built here from an ase.Atoms: energy and forces of a
+    rattled, sheared cell against matgl's own calculator in float64."""
+    from ase.build import bulk
+    from matgl.ext.ase import PESCalculator
+
+    from tt_atom.tensornet import embed as E
+    from tt_atom.tensornet import model as M
+    from tt_atom.tensornet import potential as P
+
+    pot = matgl.load_model(MODEL).double()
+    pot.calc_stresses = False
+    m = pot.model
+    atoms = bulk("Si", "diamond", a=5.43, cubic=True) * (2, 2, 2)
+    atoms.set_cell(atoms.cell.array @ np.array([[1, 0.03, 0], [0, 1, 0.02], [0, 0, 0.98]]), scale_atoms=True)
+    atoms.positions += np.random.default_rng(0).normal(0, 0.08, atoms.positions.shape)
+    ref = atoms.copy()
+    ref.calc = PESCalculator(pot)
+    z = torch.tensor([pot.model.element_types.index(s) for s in atoms.get_chemical_symbols()])
+    shift = float(pot.data_mean) + float(pot.element_refs.property_offset.double()[z].sum())
+    e, f = P.energy_forces(P.torch_run(M.weights(m, torch.float64), m.units), lambda ei: E.pair(m.tensor_embedding, z, ei),
+                           atoms, float(m.cutoff), m.bond_expansion.max_n, scale=float(pot.data_std), shift=shift)
+    assert abs(e - ref.get_potential_energy()) < 1e-7 * len(atoms)   # matgl's own offsets pass through float32
+    # matgl's calculator agrees with its own float64 autograd only to ~4e-6 relative (same level with matgl's graph)
+    assert np.abs(f - ref.get_forces()).max() < 1e-5 * np.abs(f).max()
