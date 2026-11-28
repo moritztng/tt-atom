@@ -85,3 +85,18 @@ def test_energy_forces_component_major(g):  # noqa: F811
     want_e, want_f = t["out@energy"].double().sum(), t["out@forces"].double()
     assert abs(e.item() - want_e.item()) < 1e-9 * abs(want_e.item())
     assert (-gr - want_f).abs().max() < 1e-9 * want_f.abs().max()
+
+
+@pytest.mark.parametrize("irreps", [[(8, 0)], [(8, 0), (8, 1)]])
+def test_conv_tp_summed_before_coupling(irreps):
+    """conv_tp_nodes (edge sum first, Clebsch-Gordan contraction on node-sized tensors) against conv_tp_cm
+    summed onto the receivers."""
+    torch.manual_seed(0)
+    ls, E, n = [0, 1, 2, 3], 40, 6
+    C, ins_of_k, _ = dense.conv_tp_plan(irreps, ls, ls)
+    x1 = torch.randn(E, C.shape[0], 8, dtype=torch.float64)
+    sh, w = torch.randn(E, 16, dtype=torch.float64), torch.randn(E, int(ins_of_k.max()) + 1, 8, dtype=torch.float64)
+    receiver = torch.randint(0, n, (E,))
+    want = torch.zeros(n, C.shape[2], 8, dtype=torch.float64).index_add_(0, receiver, dense.conv_tp_cm(x1, sh, w, C, ins_of_k))
+    got = dense.conv_tp_nodes(x1, sh, w, receiver, n, dense.conv_tp_node_plan(C, ins_of_k))
+    assert (got - want).abs().max() < 1e-12 * want.abs().max()
