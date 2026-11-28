@@ -44,7 +44,7 @@ def main():
                 fast = min(single.items(), key=lambda kv: kv[1]["step_ms_median"], default=None)
                 row = {"N": rec["N"], "edges": rec.get("edges"),
                        "variants": {k: ({x: r[x] for x in ("step_ms_median", "atoms_per_s", "sm_clock_mhz_during",
-                                                            "sm_clock_mhz_min_max", "parity")}
+                                                            "sm_clock_mhz_min_max", "peak_mem_gb", "parity") if x in r}
                                         if "step_ms_median" in r else {"error": r["error"]})
                                     for k, r in runs.items()}}
                 if fast:

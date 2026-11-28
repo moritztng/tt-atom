@@ -103,6 +103,7 @@ def capture(run, pkg, settle=None):
     sync_probe(run, pkg)
     if settle:
         settle(s)
+    torch.cuda.empty_cache()  # the capture allocates from its own pool: give it the warm-up's memory back
     g = torch.cuda.CUDAGraph()
     with torch.cuda.graph(g, capture_error_mode="thread_local"):
         static_out = run()

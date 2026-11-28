@@ -105,7 +105,9 @@ def main():
     anchors = {}
     for tag, nx, ny, nz in plan:
         a = cell(nx, ny, nz)
-        a.set_positions(a.get_positions() + rng.normal(0.0, args.jitter, (len(a), 3)))
+        # seeded per size, so the anchor of a cell does not depend on which other sizes this process runs
+        jit = np.random.default_rng([args.seed, len(a)]).normal(0.0, args.jitter, (len(a), 3))
+        a.set_positions(a.get_positions() + jit)
         a.calc = calc64
         anchors[tag] = (a.get_positions().copy(), float(a.get_potential_energy()),
                         np.array(a.get_forces(), dtype=np.float64))
@@ -135,9 +137,14 @@ def main():
     calcs = {}
 
     def calculator(v):
-        """The package's own constructor for this backend and compile mode, built once."""
+        """The package's own constructor for this backend and compile mode. An eager model is built
+        once; a compiled one is built per shape, as an MD run would: recompiling one model for a second
+        shape fails in torch 2.15 (donated buffers under cueq, a skipped `grad` under e3nn)."""
         b, m = v.split("_", 1)
         key = (b, MODES[m])
+        if MODES[m]:
+            calcs.pop(key, None)
+            torch._dynamo.reset()
         if key not in calcs:
             try:
                 calcs[key] = mace_mp(model=args.model, device=dev, default_dtype=dtype, compute_stress=False,
@@ -199,7 +206,8 @@ def main():
 
         def timed(step, par, atoms, warm, n):
             r = time_steps(step, warm, n)
-            return {**r, "atoms_per_s": atoms * r["steps_per_s"], "parity": par}
+            peak = torch.cuda.max_memory_allocated() / 2**30 if dev == "cuda" else None
+            return {**r, "atoms_per_s": atoms * r["steps_per_s"], "peak_mem_gb": peak, "parity": par}
 
         if "stock" in variants:
             try:
@@ -220,6 +228,8 @@ def main():
             for v in [v for v in (variants if copies == 1 else pack_variants) if v != "stock"]:
                 name = v if copies == 1 else f"{v} x{copies}"
                 try:
+                    if dev == "cuda":
+                        torch.cuda.reset_peak_memory_stats()
                     upload, run, result, edges = frozen_step(v, atoms0, copies)
                     rec["edges"] = edges
                     upload(p_ref)
