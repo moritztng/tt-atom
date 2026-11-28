@@ -250,6 +250,8 @@ def main():
                 else:
                     rec["packed"].setdefault(v, {})[str(copies)] = r
                 show(name, r)
+                # after every variant: a device-side assert kills the process and must cost one variant
+                dump(args.out, meta, records + [rec], __doc__, args.warmup, args.steps)
         records.append(rec)
         dump(args.out, meta, records, __doc__, args.warmup, args.steps)
 

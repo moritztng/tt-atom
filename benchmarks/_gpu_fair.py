@@ -114,6 +114,19 @@ def capture(run, pkg, settle=None):
     return replay
 
 
+def pack_sweep(timed, n_atoms, max_atoms):
+    """A GPU that one cell does not fill is timed with B copies of the cell in one batch. B doubles
+    until atoms/s stops rising, a pack fails (out of memory) or B x N passes `max_atoms`.
+    `timed(B)` returns one result record; the sweep is {B: record}."""
+    out, best, b = {}, 0.0, 2
+    while b * n_atoms <= max_atoms:
+        r = out[str(b)] = timed(b)
+        if r.get("atoms_per_s", 0.0) <= best:
+            break
+        best, b = r["atoms_per_s"], 2 * b
+    return out
+
+
 def dump(path, meta, records, protocol, warmup, steps):
     with open(path, "w") as fh:
         json.dump({**meta, "git_sha": git_sha(),

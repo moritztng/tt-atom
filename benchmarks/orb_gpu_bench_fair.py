@@ -34,6 +34,10 @@ Variants:
   frozen_reduce_overhead  torch.compile(mode="reduce-overhead", dynamic=False): PyTorch's own
                    CUDA graphs per compiled region, the package-level way to get both.
 
+Packing (--pack <variants>): one cell does not fill a GPU, so the named variants are timed again
+with B copies of the cell in one batch, B doubled until atoms/s stops rising. atoms/s there is
+B x N per step, graded on the first cell.
+
     python benchmarks/orb_gpu_bench_fair.py --out orb_perf_dollar_gpu_<gpu>.json
 """
 from __future__ import annotations
@@ -44,7 +48,7 @@ import numpy as np
 import torch
 from ase.build import bulk
 
-from _gpu_fair import capture, dump, time_steps
+from _gpu_fair import capture, dump, pack_sweep, time_steps
 from bench_orb_perf_dollar_tt import SIZES, grade
 
 FROZEN = ("frozen_compiled", "frozen_cudagraph", "frozen_compiled_cudagraph", "frozen_reduce_overhead")
@@ -99,6 +103,9 @@ def main():
     ap.add_argument("--jitter", type=float, default=0.01, help="per-step position jitter, A")
     ap.add_argument("--sizes", default=",".join(s[0] for s in SIZES))
     ap.add_argument("--variants", default=",".join(("stock",) + FROZEN))
+    ap.add_argument("--pack", default="", help="comma list of frozen variants to also time packed: B copies of "
+                    "the cell in one batch, B doubled until atoms/s stops rising")
+    ap.add_argument("--pack-max-atoms", type=int, default=200_000)
     ap.add_argument("--anchors-out", default=None, help="save the float64 anchors (npz) for the TT leg")
     ap.add_argument("--precision", default="float32-high",
                     choices=["float32-high", "float32-highest"])
@@ -159,7 +166,7 @@ def main():
         atoms0 = bulk(args.element, "diamond", a=args.a, cubic=True) * (nx, ny, nz)
         N = len(atoms0)
         pos0 = atoms0.get_positions()
-        rec = {"tag": tag, "N": N, "variants": {}}
+        rec = {"tag": tag, "N": N, "variants": {}, "packed": {}}
         print(f"\n=== {tag}  N={N} ===", flush=True)
 
         p_ref, e_ref, f_ref = anchors[tag]
@@ -184,16 +191,19 @@ def main():
 
         graph = adapter.from_ase_atoms(atoms0).to(dev)
         rec["edges"] = int(graph.n_edge.item())
-        for v in [v for v in variants if v in FROZEN]:
+
+        def frozen(v, copies=1):
+            """Time variant `v` on a frozen graph of `copies` identical cells, graded on cell 0."""
             m = models[v]
-            batch = adapter.from_ase_atoms(atoms0).to(dev)
+            batch = (adapter.from_ase_atoms(atoms0) if copies == 1
+                     else adapter.from_ase_atoms_list([atoms0] * copies)).to(dev)
             pos = batch.node_features["positions"]
             host = torch.empty(N, 3, dtype=pos.dtype).pin_memory()
 
             def upload(p):  # predict marks positions requires_grad in place
                 host.copy_(torch.as_tensor(p, dtype=pos.dtype))
                 with torch.no_grad():
-                    pos.copy_(host, non_blocking=True)
+                    pos.view(copies, N, 3).copy_(host.to(dev, non_blocking=True))
 
             def run():
                 return m.predict(batch)
@@ -236,28 +246,35 @@ def main():
                     run = replay
                 upload(p_ref)
                 out = run()
-                e = float(out[m.energy_name].double().sum())
-                f = out[m.grad_forces_name].float().cpu().numpy()
+                e = float(out[m.energy_name].double().reshape(-1)[0])
+                f = out[m.grad_forces_name][:N].float().cpu().numpy()
                 par = parity(e, f)
-                show(v, par)
+                show(v if copies == 1 else f"{v} x{copies}", par)
 
                 def step():
                     upload(pos0 + rng.normal(0.0, args.jitter, pos0.shape))
                     run()
-                r = time_steps(step, args.warmup, args.steps)
-                r["parity"] = par
-                rec["variants"][v] = r
+                r = time_steps(step, *((args.warmup, args.steps) if copies == 1 else (5, 30)))
+                return {**r, "atoms_per_s": copies * N * r["steps_per_s"], "parity": par}
             except Exception as exc:  # noqa: BLE001 -- a variant that cannot run is a recorded result
                 import traceback  # the failing package line, so a capture break is fixable from the log
                 where = [f"{f.filename.split('site-packages/')[-1]}:{f.lineno} {f.line}"
                          for f in traceback.extract_tb(exc.__traceback__)[-4:]]
-                rec["variants"][v] = {"error": f"{type(exc).__name__}: {str(exc)[:160]}", "where": where}
                 print("    " + "\n    ".join(where), flush=True)
-        for v, r in rec["variants"].items():
+                torch.cuda.empty_cache()
+                return {"error": f"{type(exc).__name__}: {str(exc)[:160]}", "where": where}
+
+        for v in [v for v in variants if v in FROZEN]:
+            rec["variants"][v] = frozen(v)
+        for v in [v for v in args.pack.split(",") if v]:
+            rec["packed"][v] = pack_sweep(lambda b: frozen(v, b), N, args.pack_max_atoms)  # noqa: B023
+        for v, r in [*rec["variants"].items(),
+                     *((f"{v} x{b}", r) for v, rs in rec["packed"].items() for b, r in rs.items())]:
             if "step_ms_median" in r:
-                print(f"  {v:17s} {r['step_ms_median']:8.3f} ms  sm={r['sm_clock_mhz_during']} MHz", flush=True)
+                print(f"  {v:30s} {r['step_ms_median']:8.3f} ms  {r.get('atoms_per_s', 0):8.0f} atoms/s  "
+                      f"sm={r['sm_clock_mhz_during']} MHz", flush=True)
             else:
-                print(f"  {v:17s} {r['error']}", flush=True)
+                print(f"  {v:30s} {r['error']}", flush=True)
         records.append(rec)
         dump(args.out, meta, records, __doc__, args.warmup, args.steps)
 

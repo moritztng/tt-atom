@@ -3,7 +3,8 @@
 Merges the per-GPU, per-precision files written by `mace_gpu_bench_fair.py` into one JSON. For each
 GPU, precision and cell size it keeps every variant, names the fastest single-cell variant and the
 best packed one, and states the bar: the atoms/s one TT chip needs for the same throughput per
-dollar, GPU atoms/s x (TT chip price / price of one GPU in its 8-GPU system).
+dollar, GPU atoms/s x (TT chip price / price of one GPU in its 8-GPU system). A GPU given without
+a price (a dev card: `--gpu RTX3090=:glob`) gets its rates and no bar.
 
     python benchmarks/mace_gpu_bar.py --gpu H200=51250:h200_*.json --gpu B200=68750:b200_*.json \
         --tt-price 1399 --out benchmarks/mace_perf_dollar_gpu.json
@@ -30,8 +31,8 @@ def main():
     for spec in args.gpu:
         name, rest = spec.split("=", 1)
         price, pattern = rest.split(":", 1)
-        share = args.tt_price / float(price)
-        g = out["gpus"][name] = {"price_usd": float(price), "runs": [], "sizes": {}}
+        share = args.tt_price / float(price) if price else None
+        g = out["gpus"][name] = {"price_usd": float(price) if price else None, "runs": [], "sizes": {}}
         for path in sorted(glob.glob(pattern)):
             d = json.load(open(path))
             g["runs"].append({k: d[k] for k in d if k not in ("records", "protocol")})
@@ -51,11 +52,13 @@ def main():
                     row["fastest_single"] = {"variant": fast[0], "step_ms": fast[1]["step_ms_median"],
                                              "atoms_per_s": fast[1]["atoms_per_s"]}
                     row["best_throughput"] = {"variant": best[0], "atoms_per_s": best[1]["atoms_per_s"]}
-                    row["tt_chip_bar_atoms_per_s_for_1x_per_dollar"] = best[1]["atoms_per_s"] * share
-                    row["tt_chip_bar_step_ms_for_1x_per_dollar"] = 1e3 * rec["N"] / (best[1]["atoms_per_s"] * share)
+                    bar = ""
+                    if share:
+                        row["tt_chip_bar_atoms_per_s_for_1x_per_dollar"] = best[1]["atoms_per_s"] * share
+                        row["tt_chip_bar_step_ms_for_1x_per_dollar"] = 1e3 * rec["N"] / (best[1]["atoms_per_s"] * share)
+                        bar = f"  TT 1x/$ bar {row['tt_chip_bar_step_ms_for_1x_per_dollar']:8.1f} ms/step"
                     print(f"{name} {d['precision']:15s} N={rec['N']:5d}  single {fast[1]['step_ms_median']:8.3f} ms "
-                          f"({fast[0]})  best {best[1]['atoms_per_s']:9.0f} atoms/s ({best[0]})  "
-                          f"TT 1x/$ bar {row['tt_chip_bar_step_ms_for_1x_per_dollar']:8.1f} ms/step", flush=True)
+                          f"({fast[0]})  best {best[1]['atoms_per_s']:9.0f} atoms/s ({best[0]}){bar}", flush=True)
                 g["sizes"].setdefault(rec["tag"], {})[d["precision"]] = row
     json.dump(out, open(args.out, "w"), indent=1)
 
