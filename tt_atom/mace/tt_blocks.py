@@ -105,8 +105,9 @@ def symmetric_contraction_setup(dev, tables, dtype):
 
 
 def symmetric_contraction(x, plan, ranges, n, c, tape=None):
-    """x: device [n * c, ell] (rows = (node, channel)), ``ranges`` = graph_setup's species row ranges
-    -> device [c, n, sum(2L+1)]."""
+    """x: device [c * n, ell] (rows = (channel, node)), ``ranges`` = graph_setup's species row ranges
+    -> device [c, n, sum(2L+1)]. Channel-major rows: the monomials [c * n, F] are the widest tensor of the
+    block and reach the channel-batched table matmul by a reshape, never a permute."""
     import ttnn
 
     cfg, feats, prev, steps = plan["cfg"], [], None, []
@@ -118,8 +119,8 @@ def symmetric_contraction(x, plan, ranges, n, c, tape=None):
         steps.append((up, xl))
     if tape is not None:
         tape["steps"] = steps
-    P = ttnn.concat(feats, dim=1)  # [n * c, F]
-    P = perm(ttnn.reshape(P, (n, c, P.shape[-1])), (1, 0, 2))  # [c, n, F]
+    P = ttnn.concat(feats, dim=1)  # [c * n, F]
+    P = ttnn.reshape(P, (c, n, P.shape[-1]))
     outs = []
     for (lo, hi), T in zip(ranges, plan["T"]):
         if hi > lo:
@@ -128,7 +129,7 @@ def symmetric_contraction(x, plan, ranges, n, c, tape=None):
 
 
 def symmetric_contraction_bwd(g, plan, ranges, n, c, tape):
-    """g [c, n, sum(2L+1)] -> dE/dx [n * c, ell]. Degree nu = (degree nu-1 @ Sp) * (x @ Sl), walked from the top
+    """g [c, n, sum(2L+1)] -> dE/dx [c * n, ell]. Degree nu = (degree nu-1 @ Sp) * (x @ Sl), walked from the top
     degree down: each degree's gradient is its table column block plus what the degree above passed down."""
     import ttnn
 
@@ -136,7 +137,7 @@ def symmetric_contraction_bwd(g, plan, ranges, n, c, tape):
     outs = [mm(g[:, lo:hi, :], T, cfg) for (lo, hi), T in zip(ranges, t["T"]) if hi > lo]  # [c, n_e, F]
     g_P = outs[0] if len(outs) == 1 else ttnn.concat(outs, dim=1)
     hi = g_P.shape[-1]
-    g_P = ttnn.reshape(perm(g_P, (1, 0, 2)), (n * c, hi))
+    g_P = ttnn.reshape(g_P, (c * n, hi))
     g_x = down = None
     for (Sp, Sl), (up, xl) in zip(reversed(t["sels"]), reversed(tape["steps"])):
         lo = hi - xl.shape[-1]
@@ -379,7 +380,7 @@ def product(x, sc, plan, graph, tape=None):
     import ttnn
 
     cfg, n = plan["cfg"], graph["n"]
-    xr = ttnn.reshape(perm(ttnn.reshape(x, (n, 16, 128)), (0, 2, 1)), (n * 128, 16))
+    xr = ttnn.reshape(perm(ttnn.reshape(x, (n, 16, 128)), (2, 0, 1)), (128 * n, 16))
     y = symmetric_contraction(xr, plan["sc"], graph["ranges"], n, 128, tape)  # [128, n, a]
     y = ttnn.reshape(perm(y, (1, 2, 0)), (n, plan["a"] * 128))
     y = mm(y, plan["lin"], cfg)
@@ -405,5 +406,5 @@ def product_bwd(g_y, plan, graph, tape):
         g_ro = mm(ttnn.multiply(silu_grad(tape["h"], plan["silu"]), g_ro), t["readout"][0], cfg)
     g_y = g_ro if g_y is None else ttnn.add(g_y, g_ro)
     g_s = perm(ttnn.reshape(mm(g_y, t["lin"], cfg), (n, a, 128)), (2, 0, 1))  # [128, n, a]
-    g_x = symmetric_contraction_bwd(g_s, plan["sc"], graph["ranges"], n, 128, tape)  # [n * 128, 16]
-    return ttnn.reshape(perm(ttnn.reshape(g_x, (n, 128, 16)), (0, 2, 1)), (n, 16 * 128)), g_y
+    g_x = symmetric_contraction_bwd(g_s, plan["sc"], graph["ranges"], n, 128, tape)  # [128 * n, 16]
+    return ttnn.reshape(perm(ttnn.reshape(g_x, (128, n, 16)), (1, 2, 0)), (n, 16 * 128)), g_y

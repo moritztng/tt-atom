@@ -43,7 +43,7 @@ def test_symmetric_contraction_device(g, device, layer, n_out, dt):  # noqa: F81
     ranges = tt_blocks.species_ranges(local[order], len(present))
     x = t[f"a@interactions.{layer}.out0"].double()[order]  # [n, c, ell]
     n, c, ell = x.shape
-    out = tt_blocks.symmetric_contraction(ttnn.from_torch(x.reshape(n * c, ell), dtype=_dtype(dt),
+    out = tt_blocks.symmetric_contraction(ttnn.from_torch(x.permute(1, 0, 2).reshape(c * n, ell), dtype=_dtype(dt),
                                                           layout=ttnn.TILE_LAYOUT, device=device), plan, ranges, n, c)
     got = tt_blocks.symmetric_contraction_to_ref(ttnn.to_torch(out), plan["widths"])
     want = t[f"a@products.{layer}.symmetric_contractions.out0"].double()[order]
