@@ -82,7 +82,7 @@ def _worker(device_id, weights_path, fast, bucketing, in_q, out_q):
     else:                                                      # Orb MPNN bundle
         from .orb_weights import OrbWeights
 
-        _run_orb(OrbWeights(npz), cfg, fast, device_id, in_q, out_q, bucketing=bucketing)
+        _run_orb(OrbWeights(npz), cfg, device_id, in_q, out_q, bucketing=bucketing)
 
 
 def _run_uma(b, cfg, fast, device_id, in_q, out_q):
@@ -122,7 +122,7 @@ def _run_uma(b, cfg, fast, device_id, in_q, out_q):
     ttnn.close_device(dev)
 
 
-def _run_orb(b, cfg, fast, device_id, in_q, out_q, bucketing=False):
+def _run_orb(b, cfg, device_id, in_q, out_q, bucketing=False):
     """Energy-only Orb forward, mirroring ``OrbCalculator.calculate``'s direct/conservative
     forward path (the two share the same encoder/layers/``EnergyHead``; only forces differ, and
     ``MultiCard`` returns energies). The systems come in as ``(pos, Z)`` tuples with no
@@ -156,10 +156,9 @@ def _run_orb(b, cfg, fast, device_id, in_q, out_q, bucketing=False):
     zbl_aggregation = "sum" if "forces_head.mlp.NN-0.weight" in w else "mean"
     dev = open_device(0)
     encoder = Encoder(w, dev, node_in=cfg["node_embed_size"], edge_in=cfg["edge_embed_size"],
-                      latent_dim=latent_dim, fast=fast)
-    layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", dev, latent_dim=latent_dim,
-                                        fast=fast) for i in range(L)]
-    ehead = EnergyHead(w, dev, latent_dim=latent_dim, fast=fast)
+                      latent_dim=latent_dim)
+    layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", dev, latent_dim=latent_dim) for i in range(L)]
+    ehead = EnergyHead(w, dev, latent_dim=latent_dim)
     out_q.put(("ready", device_id))
 
     while True:
