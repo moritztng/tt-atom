@@ -104,12 +104,15 @@ def weights(layer, dtype=torch.float64):
             "node_t": [wt.T.contiguous() for wt in node]}
 
 
-def slots(edge_index, n, min_width=0, receiver=0):
-    """Edge list -> (edge [S] edge id of each receiver slot, E in pad slots; send [S] sender node, 0 in pad
-    slots; table [N D'] slot ids grouped by sender, S = none; D). `receiver` is the row of edge_index a message
-    lands on: 0 for weights trained with matgl >= 3 (2025.2), 1 for the older ones (v2025.1). The loader sets it."""
+def slots(edge_index, n, min_width=0, own=False):
+    """Edge list (receiver row 0, sender row 1) -> (edge [S] edge id of each receiver slot, E in pad slots;
+    send [S] sender node, 0 in pad slots; table [N D'] slot ids grouped by sender, S = none; D).
+    own=True is the message of weights trained before matgl 3 (v2025.1): row 1 receives, and the features an
+    edge carries are the receiver's own. The loader sets it."""
     edge_index, e = edge_index.long(), edge_index.shape[1]
-    recv, sender = edge_index[receiver], edge_index[1 - receiver]
+    recv = sender = edge_index[1]
+    if not own:
+        recv, sender = edge_index
     edge, d = build_gather(recv, n, e, min_width=min_width)
     edge = torch.from_numpy(edge.astype(np.int64))
     real = (edge < e).nonzero()[:, 0]
