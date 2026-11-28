@@ -139,53 +139,6 @@ def symmetric_contraction_to_ref(out, widths):
     return torch.cat(blocks, dim=1)
 
 
-def conv_tp_setup(dev, C, ins_of_k, dtype):
-    """C [A, B, K] -> device [B, A * K]; G [n_ins, K] 0/1 maps each instruction's weight to its columns."""
-    A, B, K = C.shape
-    G = torch.zeros(int(ins_of_k.max()) + 1, K, dtype=torch.float64)
-    G[ins_of_k, torch.arange(K)] = 1.0
-    Cf = C.permute(1, 0, 2).reshape(B, A * K)
-    return {"C": D.to_dev(Cf, dev, dtype), "G": D.to_dev(G, dev, dtype),
-            "t": {"C": D.to_dev(Cf.T.contiguous(), dev, dtype), "G": D.to_dev(G.T.contiguous(), dev, dtype)},
-            "A": A, "K": K, "cfg": D.compute_kernel_config()}
-
-
-def conv_tp(x1, sh, w, plan, tape=None):
-    """x1 device [E, mul, A], sh [E, B], w [E, n_ins, mul] -> device [E, mul, K] (dense.conv_tp before its
-    block reorder)."""
-    import ttnn
-
-    cfg, E = plan["cfg"], x1.shape[0]
-    M = ttnn.reshape(mm(sh, plan["C"], cfg), (E, plan["A"], plan["K"]))
-    wk = mm(perm(w, (0, 2, 1)), plan["G"], cfg)  # [E, mul, K]
-    Z = mm(x1, M, cfg)
-    if tape is not None:
-        tape.update(M=M, wk=wk, Z=Z)
-    return ttnn.multiply(Z, wk)
-
-
-def conv_tp_bwd(g, x1t, plan, tape):
-    """g [E, mul, K], x1t [E, A, mul] (the forward's x1, transposed) -> (g_x1 [E, mul, A], g_sh [E, B],
-    g_w [E, n_ins * mul])."""
-    import ttnn
-
-    cfg, E, t = plan["cfg"], g.shape[0], plan["t"]
-    g_Z = ttnn.multiply(g, tape["wk"])
-    g_w = perm(mm(ttnn.multiply(g, tape["Z"]), t["G"], cfg), (0, 2, 1))  # [E, n_ins, mul]
-    g_sh = mm(ttnn.reshape(mm(x1t, g_Z, cfg), (E, plan["A"] * plan["K"])), t["C"], cfg)
-    return mm(g_Z, perm(tape["M"], (0, 2, 1)), cfg), g_sh, ttnn.reshape(g_w, (E, g_w.shape[1] * g_w.shape[2]))
-
-
-def conv_tp_to_ref(out, ins_of_k):
-    """[E, mul, K] torch -> reference layout (instruction blocks, each [E, mul * (2l+1)])."""
-    blocks, k = [], 0
-    for n in range(int(ins_of_k.max()) + 1):
-        d = int((ins_of_k == n).sum())
-        blocks.append(out[:, :, k:k + d].reshape(out.shape[0], -1))
-        k += d
-    return torch.cat(blocks, dim=1)
-
-
 def fc_net(x, Ws, act_scale, pre=None):
     """e3nn FullyConnectedNet on device; ``Ws`` already divided by sqrt(fan-in). ``pre`` (a list) collects the
     pre-activations for fc_net_bwd."""
@@ -219,24 +172,40 @@ def species_ranges(element, n_present):
 
 
 def graph_setup(dev, element, n_present, edge_index):
-    """Per-structure device tables, shared by every layer: species row ranges and the edge gather/scatter
-    tables. Built once per neighbour list; the weights (interaction_setup, product_setup) never see the graph,
-    so an MD rebuild or a new structure in a screen re-uploads only these. ``element`` [n] indexes the present
-    species and must be sorted (atoms ordered by species at setup)."""
+    """Per-structure tables, shared by every layer: species row ranges and the edge layout. Built once per
+    neighbour list; the weights (interaction_setup, product_setup) never see the graph, so an MD rebuild or a new
+    structure in a screen re-uploads only these. ``element`` [n] indexes the present species and must be sorted
+    (atoms ordered by species at setup).
+
+    Edges live on the card in the padded receiver layout: slot (i, d) of [n, D, ...] is the d-th edge into atom
+    i, D the largest degree. A pad slot carries zero sh and radial features (``pad_edges``) and reads sender 0, so
+    it adds exactly zero forward and reverse, and summing a node's edges is a matmul over the D axis."""
     import ttnn
 
     from tt_atom import scatter
 
     assert bool((element[1:] >= element[:-1]).all()), "sort atoms by species at setup"
     n, E = len(element), edge_index.shape[1]
-    g_recv, dmax = scatter.build_gather(edge_index[1], n, E)
-    g_send, dmax_send = scatter.build_gather(edge_index[0], n, E)
-    rdev = lambda a: D.to_dev(a, dev, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)  # noqa: E731
-    return {"n": n, "E": E, "dmax": dmax, "dmax_send": dmax_send,
-            "ranges": species_ranges(element, n_present),
-            "sender": rdev(edge_index[0].to(torch.int32)), "recv": rdev(torch.from_numpy(g_recv)),
-            # the reverse pass gathers by receiver and scatters to senders
-            "receiver": rdev(edge_index[1].to(torch.int32)), "send": rdev(torch.from_numpy(g_send))}
+    slot_edge, dmax = scatter.build_gather(edge_index[1], n, E)
+    slot_edge = torch.from_numpy(slot_edge).long()  # [n * D] edge of each slot, E = pad
+    real = slot_edge < E
+    slot_of_edge = torch.empty(E, dtype=torch.long)
+    slot_of_edge[slot_edge[real]] = torch.arange(n * dmax)[real]
+    slot_sender = torch.zeros(n * dmax, dtype=torch.int32)
+    slot_sender[real] = edge_index[0][slot_edge[real]].to(torch.int32)
+    # the reverse pass scatters slots back to their senders
+    send, dmax_send = scatter.build_gather(edge_index[0], n, E, sentinel=n * dmax)
+    send = torch.from_numpy(send).long()
+    send[send < n * dmax] = slot_of_edge[send[send < n * dmax]]
+    rdev = lambda a: D.to_dev(a.to(torch.int32), dev, ttnn.uint32, ttnn.ROW_MAJOR_LAYOUT)  # noqa: E731
+    return {"n": n, "E": E, "D": dmax, "dmax_send": dmax_send, "ranges": species_ranges(element, n_present),
+            "slot_edge": slot_edge, "slot_of_edge": slot_of_edge,
+            "slot_sender": rdev(slot_sender), "send": rdev(send)}
+
+
+def pad_edges(graph, x):
+    """Per-edge host tensor [E, w] -> the padded receiver layout [n * D, w], pad slots zero."""
+    return torch.cat([x, x.new_zeros(1, x.shape[1])])[graph["slot_edge"]]
 
 
 def interaction_setup(dev, w, layer, elements, irreps_in, residual, dtype, sh_ls=(0, 1, 2, 3)):
@@ -259,17 +228,25 @@ def interaction_setup(dev, w, layer, elements, irreps_in, residual, dtype, sh_ls
     # tensor through to_layout/typecast hung two Galaxy chips (11-27), so nothing here is narrower than a tile.
     dens = ref._layers(w, p + "density_fn")
     dens[-1] = torch.nn.functional.pad(dens[-1], (0, 31))
-    (dens, dens_t), (tp_w, tp_w_t) = fcw(dens), fcw(ref._layers(w, p + "conv_tp_weights"))
-    up, up_t = both(dense.plan_matrix(dense.linear_plan(irreps_in, irreps_in, w[p + "linear_up.weight"]), a_in, a_in))
+    # conv_tp with the edge sum ahead of the Clebsch-Gordan contraction (dense.conv_tp_node_plan): the 0/1
+    # selections onto its R rows fold into linear_up and into the radial MLP's last weight.
+    a_of_r, ins_of_r, Cn = dense.conv_tp_node_plan(C, ins_of_k)
+    R = len(a_of_r)
+    tp_w = ref._layers(w, p + "conv_tp_weights")
+    tp_w[-1] = tp_w[-1].reshape(tp_w[-1].shape[0], -1, 128)[:, ins_of_r, :].reshape(-1, R * 128)
+    (dens, dens_t), (tp_w, tp_w_t) = fcw(dens), fcw(tp_w)
+    up = dense.plan_matrix(dense.linear_plan(irreps_in, irreps_in, w[p + "linear_up.weight"]), a_in, a_in)
+    up, up_t = both(up.reshape(-1, a_in, 128)[:, a_of_r, :].reshape(-1, R * 128))
+    cn, cn_t = both(Cn)
     lin, lin_t = both(dense.plan_matrix(dense.linear_plan(mid, hidden, w[p + "linear.weight"]), K, 16))
     skip, skip_t = zip(*(both(dense.plan_matrix(s, *a_sk)) for s in sk))
     ones = torch.zeros(16 * 128, 32, dtype=torch.float64)  # row sum as a GEMM, into column 0 of a tile
     ones[:, 0] = 1.0
     return {
-        "a_in": a_in, "K": K, "residual": residual,
-        "up": up, "lin": lin, "skip": skip, "tp_w": tp_w, "dens": dens, "silu": ref._silu_2mom(),
-        "t": {"up": up_t, "lin": lin_t, "skip": skip_t, "tp_w": tp_w_t, "dens": dens_t, "ones": tdev(ones)},
-        "tp": conv_tp_setup(dev, C, ins_of_k, dtype),
+        "R": R, "K": K, "residual": residual,
+        "up": up, "lin": lin, "skip": skip, "tp_w": tp_w, "dens": dens, "cn": cn, "silu": ref._silu_2mom(),
+        "t": {"up": up_t, "lin": lin_t, "skip": skip_t, "tp_w": tp_w_t, "dens": dens_t, "cn": cn_t,
+              "ones": tdev(ones)},
         "cfg": D.compute_kernel_config(),
     }
 
@@ -283,26 +260,28 @@ def _per_element(x, ranges, mats, cfg):
 
 
 def interaction(feats, sh, ef, plan, graph, tape=None):
-    """feats [n, A * 128], sh [E, 16], ef [E, n_radial] (device, tile) -> (x [n, 16 * 128] cm, skip [n, 128] or None)."""
+    """feats [n, A * 128], sh [n * D, 16], ef [n * D, n_radial] (device, tile, padded receiver layout)
+    -> (x [n, 16 * 128] cm, skip [n, 128] or None)."""
     import ttnn
 
     from tt_atom import scatter
 
-    cfg, n, E, A, K = plan["cfg"], graph["n"], graph["E"], plan["a_in"], plan["K"]
-    t = {"tw_pre": [], "u_pre": []} if tape is None else tape
+    cfg, n, Dn, R, K = plan["cfg"], graph["n"], graph["D"], plan["R"], plan["K"]
+    t = {} if tape is None else tape
     t.update(tw_pre=[], u_pre=[])
     sc = _per_element(feats, graph["ranges"], plan["skip"], cfg) if plan["residual"] else None
-    up = mm(feats, plan["up"], cfg)  # [n, A * 128]
-    x1t = rows(graph["sender"], up, (E, A, 128))
-    tw = ttnn.reshape(fc_net(ef, plan["tp_w"], plan["silu"], t["tw_pre"]), (E, -1, 128))  # [E, n_ins, 128]
-    m = conv_tp(perm(x1t, (0, 2, 1)), sh, tw, plan["tp"], t)  # [E, 128, K]
-    m = ttnn.reshape(perm(m, (0, 2, 1)), (E, K * 128))
-    msg = scatter.segment_sum(ttnn, m, graph["recv"], graph["dmax"], n, K * 128)
+    x1 = rows(graph["slot_sender"], mm(feats, plan["up"], cfg), (n * Dn, R * 128))
+    tw = fc_net(ef, plan["tp_w"], plan["silu"], t["tw_pre"])  # [n * D, R * 128]
+    Q = ttnn.reshape(ttnn.multiply(x1, tw), (n, Dn, R * 128))
+    sh = ttnn.reshape(sh, (n, Dn, 16))
+    B = mm(perm(sh, (0, 2, 1)), Q, cfg)  # [n, 16, R * 128]: the sum over each node's edges
+    msg = mm(perm(ttnn.reshape(B, (n, 16 * R, 128)), (0, 2, 1)), plan["cn"], cfg)  # [n, 128, K]
+    msg = ttnn.reshape(perm(msg, (0, 2, 1)), (n, K * 128))
     u = fc_net(ef, plan["dens"], plan["silu"], t["u_pre"])
-    dens = ttnn.tanh(ttnn.multiply(u, u))  # [E, 32], columns 1.. are zero
-    density = scatter.segment_sum(ttnn, dens, graph["recv"], graph["dmax"], n, 32)[:, :1]
+    dens = ttnn.tanh(ttnn.multiply(u, u))  # [n * D, 32], columns 1.. are zero
+    density = scatter.linear32(ttnn, lambda p: ttnn.sum(ttnn.reshape(p, (n, Dn, 32)), dim=1), dens)[:, :1]
     lin, inv = mm(msg, plan["lin"], cfg), ttnn.reciprocal(ttnn.add(density, 1.0))
-    t.update(x1t=x1t, u=u, dens=dens, lin=lin, inv=inv)
+    t.update(x1=x1, tw=tw, Q=Q, sh=sh, u=u, dens=dens, lin=lin, inv=inv)
     msg = ttnn.multiply(lin, inv)
     if not plan["residual"]:
         msg = _per_element(msg, graph["ranges"], plan["skip"], cfg)
@@ -310,27 +289,29 @@ def interaction(feats, sh, ef, plan, graph, tape=None):
 
 
 def interaction_bwd(g_out, g_sc, plan, graph, tape):
-    """dE/d(x) [n, 16 * 128] and dE/d(skip) [n, 128] or None -> (dE/d feats [n, A * 128], dE/d sh [E, 16],
-    dE/d ef [E, n_radial])."""
+    """dE/d(x) [n, 16 * 128] and dE/d(skip) [n, 128] or None -> (dE/d feats [n, A * 128], dE/d sh [n * D, 16],
+    dE/d ef [n * D, n_radial])."""
     import ttnn
 
     from tt_atom import scatter
 
-    cfg, n, E, A, K = plan["cfg"], graph["n"], graph["E"], plan["a_in"], plan["K"]
+    cfg, n, Dn, R, K = plan["cfg"], graph["n"], graph["D"], plan["R"], plan["K"]
     t, w, ranges = tape, plan["t"], graph["ranges"]
     g_msg = g_out if plan["residual"] else _per_element(g_out, ranges, w["skip"], cfg)
     # msg = lin / (density + 1): the density gradient lands in column 0 of a [n, 32] tile, like the forward's
     g_density = ttnn.neg(ttnn.multiply(mm(ttnn.multiply(g_msg, t["lin"]), w["ones"], cfg),
                                        ttnn.multiply(t["inv"], t["inv"])))
     g_raw = mm(ttnn.multiply(g_msg, t["inv"]), w["lin"], cfg)  # [n, K * 128]
-    g_m = perm(rows(graph["receiver"], g_raw, (E, K, 128)), (0, 2, 1))  # [E, 128, K]
-    g_x1, g_sh, g_tw = conv_tp_bwd(g_m, t["x1t"], plan["tp"], t)
-    g_u = ttnn.multiply(rows(graph["receiver"], g_density, (E, 32)),
-                        ttnn.multiply(ttnn.multiply(t["u"], 2.0), ttnn.add(ttnn.neg(ttnn.multiply(t["dens"], t["dens"])), 1.0)))
-    g_ef = ttnn.add(fc_net_bwd(g_tw, w["tp_w"], t["tw_pre"], plan["silu"]),
-                    fc_net_bwd(g_u, w["dens"], t["u_pre"], plan["silu"]))
-    g_up = scatter.segment_sum(ttnn, ttnn.reshape(perm(g_x1, (0, 2, 1)), (E, A * 128)), graph["send"],
-                               graph["dmax_send"], n, A * 128)
+    g_B = mm(perm(ttnn.reshape(g_raw, (n, K, 128)), (0, 2, 1)), w["cn"], cfg)  # [n, 128, 16 * R]
+    g_B = ttnn.reshape(perm(g_B, (0, 2, 1)), (n, 16, R * 128))
+    g_sh = ttnn.reshape(mm(t["Q"], perm(g_B, (0, 2, 1)), cfg), (n * Dn, 16))
+    g_Q = ttnn.reshape(mm(t["sh"], g_B, cfg), (n * Dn, R * 128))
+    g_u = ttnn.multiply(ttnn.reshape(g_density, (n, 1, 32)), ttnn.reshape(
+        ttnn.multiply(ttnn.multiply(t["u"], 2.0), ttnn.add(ttnn.neg(ttnn.multiply(t["dens"], t["dens"])), 1.0)),
+        (n, Dn, 32)))
+    g_ef = ttnn.add(fc_net_bwd(ttnn.multiply(g_Q, t["x1"]), w["tp_w"], t["tw_pre"], plan["silu"]),
+                    fc_net_bwd(ttnn.reshape(g_u, (n * Dn, 32)), w["dens"], t["u_pre"], plan["silu"]))
+    g_up = scatter.segment_sum(ttnn, ttnn.multiply(g_Q, t["tw"]), graph["send"], graph["dmax_send"], n, R * 128)
     g_feats = mm(g_up, w["up"], cfg)
     if g_sc is not None:
         g_feats = ttnn.add(g_feats, _per_element(g_sc, ranges, w["skip"], cfg))

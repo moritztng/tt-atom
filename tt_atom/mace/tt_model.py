@@ -82,7 +82,7 @@ class Mace:
     def energy(self, atomic_numbers, edge_index, sh, ef, zbl_node):
         """sh [E, 16], ef [E, 8] (torch, edge order of the caller), zbl_node [n] -> total energy (float)."""
         g = self.graph(atomic_numbers, edge_index)
-        dev = lambda a: D.to_dev(a, self.dev, self.dtype)  # noqa: E731
+        dev = lambda a: D.to_dev(tt_blocks.pad_edges(g["dev"], a), self.dev, self.dtype)  # noqa: E731
         return self._total(g, self._forward(g, dev(sh), dev(ef)), zbl_node)
 
     def energy_forces(self, atomic_numbers, pos, edge_index, shifts):
@@ -91,7 +91,7 @@ class Mace:
 
         w, g = self.w, self.graph(atomic_numbers, edge_index)
         vec, r = ref.edge_vectors(pos, edge_index, shifts)
-        dev = lambda a: D.to_dev(a, self.dev, self.dtype)  # noqa: E731
+        dev = lambda a: D.to_dev(tt_blocks.pad_edges(g["dev"], a), self.dev, self.dtype)  # noqa: E731
         sh, ef = ref.spherical_harmonics(vec), ref.radial_embedding(r, atomic_numbers, edge_index, w)
         widths, (sh, ef) = (sh.shape[1], ef.shape[1]), (dev(sh), dev(ef))
         tapes = []
@@ -103,5 +103,5 @@ class Mace:
             g_feats, gs, ge = tt_blocks.interaction_bwd(cast(g_x, self.dtype), cast(g_y, self.dtype) if inter["residual"]
                                                         else None, inter, g["dev"], ti)
             g_sh, g_ef = (gs, ge) if g_sh is None else (ttnn.add(g_sh, gs), ttnn.add(g_ef, ge))
-        g_sh, g_ef = (ttnn.to_torch(a).double()[:, :k] for a, k in zip((g_sh, g_ef), widths))
+        g_sh, g_ef = (ttnn.to_torch(a).double()[g["dev"]["slot_of_edge"], :k] for a, k in zip((g_sh, g_ef), widths))
         return energy, -backward.geometry_vjp(w, atomic_numbers, pos, edge_index, shifts, g_sh, g_ef, self.scale)

@@ -53,29 +53,6 @@ def test_symmetric_contraction_device(g, device, layer, n_out, dt):  # noqa: F81
 
 
 @pytest.mark.parametrize("dt", ["float32", "bfloat16"])
-@pytest.mark.parametrize("layer,irreps", [(0, [(128, 0)]), (1, [(128, 0), (128, 1)])])
-def test_conv_tp_device(g, device, layer, irreps, dt):  # noqa: F811
-    import ttnn
-
-    t, ls = g["t"], [0, 1, 2, 3]
-    C, ins_of_k, _ = dense.conv_tp_plan(irreps, ls, ls)
-    plan = tt_blocks.conv_tp_setup(device, C, ins_of_k, _dtype(dt))
-    p = f"a@interactions.{layer}."
-    x1 = ref.reshape_irreps(t[p + "linear_up.out0"].double()[g["ei"][0]], irreps)  # [E, mul, A]
-    sh = t["a@spherical_harmonics.out0"].double()
-    w = t[p + "conv_tp_weights.out0"].double()
-    E, mul = x1.shape[:2]
-
-    def dev(a):
-        return ttnn.from_torch(a, dtype=_dtype(dt), layout=ttnn.TILE_LAYOUT, device=device)
-    out = tt_blocks.conv_tp(dev(x1), dev(sh), dev(w.reshape(E, -1, mul)), plan)
-    got = tt_blocks.conv_tp_to_ref(ttnn.to_torch(out), ins_of_k)
-    err = rel(got, t[p + "conv_tp.out0"])
-    print(f"conv_tp layer {layer} {dt}: rel err {err:.2e}")
-    assert err < BAR[dt], err
-
-
-@pytest.mark.parametrize("dt", ["float32", "bfloat16"])
 @pytest.mark.parametrize("layer", [0, 1])
 def test_interaction_device(g, device, layer, dt):  # noqa: F811
     """The whole interaction block on the card (gather, radial MLPs, conv_tp, scatter, density norm, linears,
@@ -97,8 +74,11 @@ def test_interaction_device(g, device, layer, dt):  # noqa: F811
 
     def dev(a):
         return ttnn.from_torch(a, dtype=_dtype(dt), layout=ttnn.TILE_LAYOUT, device=device)
-    x, sc = tt_blocks.interaction(dev(feats.reshape(len(order), -1)), dev(t["a@spherical_harmonics.out0"].double()),
-                                  dev(t["a@radial_embedding.out0"].double()), plan, graph)
+
+    def edges(a):
+        return dev(tt_blocks.pad_edges(graph, a.double()))
+    x, sc = tt_blocks.interaction(dev(feats.reshape(len(order), -1)), edges(t["a@spherical_harmonics.out0"]),
+                                  edges(t["a@radial_embedding.out0"]), plan, graph)
     got = ttnn.to_torch(x).double().reshape(len(order), 16, 128).transpose(1, 2)
     err = rel(got, t[f"a@interactions.{layer}.out0"].double()[order])
     print(f"interaction layer {layer} {dt}: rel err {err:.2e}")
