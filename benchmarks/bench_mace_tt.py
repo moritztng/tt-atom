@@ -63,6 +63,28 @@ def profile(dev):
     return acc
 
 
+def census():
+    """Count the GEMMs a step issues: {(left shape, right shape): calls}. Run with --eager (a replay issues none)."""
+    import ttnn
+
+    seen = {}
+    for name in ("matmul", "linear"):
+        fn = getattr(ttnn, name)
+
+        def counted(a, b, *args, _fn=fn, **kw):
+            key = (tuple(a.shape), tuple(b.shape))
+            seen[key] = seen.get(key, 0) + 1
+            return _fn(a, b, *args, **kw)
+        setattr(ttnn, name, counted)
+    return seen
+
+
+def gemm_flops(seen, steps):
+    """-> (flops per step, rows of (flops, calls, left, right)), 2 flops per multiply-add."""
+    rows = sorted(((2 * int(np.prod(a)) * b[-1] * n // steps, n // steps, a, b) for (a, b), n in seen.items()), reverse=True)
+    return sum(r[0] for r in rows), rows
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--weights", required=True, help="MACE golden npz (tests/gen_golden_mace.py), carries the weights")
@@ -80,6 +102,7 @@ def main():
                     help="precision of the interaction blocks (the edge side); products and readouts stay float32")
     ap.add_argument("--eager", action="store_true", help="no trace replay: every op dispatched from the host")
     ap.add_argument("--trace-region", type=int, default=400_000_000)
+    ap.add_argument("--census", action="store_true", help="with --eager: GEMM shapes and flops per step")
     ap.add_argument("--profile", action="store_true",
                     help="device-synced inclusive time per block function (slows the step; not a timing run)")
     args = ap.parse_args()
@@ -120,6 +143,7 @@ def main():
             card.append((time.perf_counter() - t0) * 1e3)
         ttnn.execute_trace = timed_replay
         prof = profile(dev) if args.profile else None
+        seen = census() if args.census else None
         # the /dev node this process opened: the AICLK that counts (node number != TT_VISIBLE_DEVICES index)
         fds = (os.path.realpath(f"/proc/self/fd/{fd}") for fd in os.listdir("/proc/self/fd"))
         nodes = sorted({p.rsplit("/", 1)[1] for p in fds if p.startswith("/dev/tenstorrent/")})
@@ -149,6 +173,8 @@ def main():
             card.clear()
             if prof is not None:
                 prof.clear()
+            if seen is not None:
+                seen.clear()
             with AiclkSampler() as clk:
                 for _ in range(args.steps):
                     p = torch.from_numpy(pos0 + rng.normal(0.0, args.jitter, pos0.shape))
@@ -159,7 +185,13 @@ def main():
                 print(f"{tag} inclusive ms/step: " + ", ".join(
                     f"{k} {v[0] * 1e3 / args.steps:.1f} ({v[1] // args.steps}x)" for k, v in
                     sorted(prof.items(), key=lambda kv: -kv[1][0])), flush=True)
-            records.append({"size": tag, "atoms": len(atoms), "edges": int(ei.shape[1]), "first_call_s": first,
+            flops = None
+            if seen is not None:
+                flops, rows = gemm_flops(seen, args.steps)
+                print(f"{tag} GEMM flops/step {flops:.3e} in {sum(r[1] for r in rows)} calls", flush=True)
+                for fl, n, a, b in rows[:25]:
+                    print(f"  {fl:.3e} {n}x {a} @ {b}", flush=True)
+            records.append({"size": tag, "gemm_flops_per_step": flops, "atoms": len(atoms), "edges": int(ei.shape[1]), "first_call_s": first,
                             "ms_per_step_median": float(np.median(ms)), "ms_per_step_min": min(ms), "ms_raw": ms,
                             "card_ms_per_step_median": float(np.median(card)) if card else None,
                             "reference": ref_src, **acc, "opened_nodes": nodes,
