@@ -97,8 +97,9 @@ def mm(a, b, cfg, ttnn=None):
 
     The matrix engine reads float32 operands through 19-bit source registers, i.e. truncated to a 10-bit
     mantissa, and truncation is biased: MACE's per-atom energies came out ~9 meV/atom high from that alone.
-    So a float32 operand is split into bfloat16 hi + lo parts and the significant products are summed (a
-    bfloat16 x bfloat16 product is exact in the float32 accumulator), leaving ~2^-16 relative. A constant from
+    So a float32 operand is split into bfloat16 hi + lo parts and the significant products are summed removing
+    the bias. What is left is the matmul's own error: a bfloat16 x bfloat16 matmul with a float32 result measures
+    1e-4 to 3e-4 relative on the card (benchmarks/probe_mm_exact.py), so more parts do not help. A constant from
     ``const`` arrives already split. A bfloat16 operand is taken as exact (0/1 selectors are uploaded that way)
     and is not split: two matmuls instead of three. Two bfloat16 operands take the plain matmul.
     """
