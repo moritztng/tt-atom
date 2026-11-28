@@ -114,7 +114,8 @@ def main():
     def versions():
         from importlib.metadata import PackageNotFoundError, version
         out = {}
-        for pkg in ("mace-torch", "e3nn", "cuequivariance-torch", "cuequivariance-ops-torch-cu12", "openequivariance"):
+        for pkg in ("mace-torch", "e3nn", "cuequivariance-torch", "cuequivariance-ops-torch-cu12",
+                    "cuequivariance-ops-torch-cu13", "openequivariance"):
             try:
                 out[pkg] = version(pkg)
             except PackageNotFoundError:
