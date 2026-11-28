@@ -47,7 +47,7 @@ def pcc_strict(a, b):
     return float(np.corrcoef(a, b)[0, 1])
 
 
-def orb_backbone(gw, device, *, fast=False):
+def orb_backbone(gw, device):
     """The encoder, message-passing layers and energy head a golden bundle's own config describes.
 
     Six parity and benchmark sites spelled this construction out identically, down to re-reading
@@ -60,11 +60,11 @@ def orb_backbone(gw, device, *, fast=False):
     cfg, w = gw.config, gw.weights
     latent_dim = cfg["latent_dim"]
     encoder = Encoder(w, device, node_in=cfg["node_embed_size"],
-                      edge_in=cfg["edge_embed_size"], latent_dim=latent_dim, fast=fast)
+                      edge_in=cfg["edge_embed_size"], latent_dim=latent_dim)
     layers = [AttentionInteractionLayer(w, f"gnn_stacks.{i}", device,
-                                        latent_dim=latent_dim, fast=fast)
+                                        latent_dim=latent_dim)
               for i in range(cfg["num_message_passing_steps"])]
-    return encoder, layers, EnergyHead(w, device, latent_dim=latent_dim, fast=fast)
+    return encoder, layers, EnergyHead(w, device, latent_dim=latent_dim)
 
 
 def have_orb_fixture(checkpoint, golden):

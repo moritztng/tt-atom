@@ -11,6 +11,10 @@ Behaviour changes are all in the knobs and the caches, not in the models: every 
 byte-identical to 0.3.0.
 
 ### Changed
+- Orb's `--fast` (bf8 hidden activations) is removed. It was 4.5% faster at 1000 atoms for about
+  three times the force error, no faster at 216 and 512, and it crashed at 2016. The flag and the
+  `fast=` argument of `OrbCalculator` are still accepted and do nothing, so no caller breaks. UMA's
+  `--fast` is unchanged.
 - The Orb GPU comparison in `docs/orb-port.md` is redone as one protocol on both sides. The GPU now
   runs at its fastest setting (TF32, whole step in one CUDA graph, frozen neighbour list) instead
   of the stock calculator, B200 is added, and every leg is graded against the same float64 forces.

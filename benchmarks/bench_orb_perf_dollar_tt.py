@@ -102,8 +102,6 @@ def main():
     ap.add_argument("--warmup", type=int, default=12)
     ap.add_argument("--steps", type=int, default=80)
     ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--fast", action="store_true",
-                    help="use bf8 weights and hidden MLP activations (release-gated)")
     ap.add_argument("--out", default="benchmarks/orb_perf_dollar_tt.json")
     ap.add_argument("--platform", default="Tenstorrent Blackhole p150 (one card, device 0)",
                     help="the card that ran, recorded verbatim (e.g. one chip of a p300c)")
@@ -149,7 +147,7 @@ def main():
             atoms0 = bulk(args.element, "diamond", a=args.a, cubic=True) * (nx, ny, nz)
             N = len(atoms0)
             # device_id 0: TT_VISIBLE_DEVICES re-indexes the visible set from zero.
-            calc = OrbDeviceCalculator(args.weights, device_id=0, fast=args.fast)
+            calc = OrbDeviceCalculator(args.weights, device_id=0)
             atoms = atoms0.copy()
             atoms.calc = calc
 
@@ -206,9 +204,7 @@ def main():
                 "accuracy_vs_float64": acc,
                 "energy_sample_eV": e0,
                 "energy_sample_eV_per_atom": (e0 / N) if e0 is not None else None,
-                "precision": ("bf8 weights/hidden MLP activations, bf16 residual stream, "
-                              "fp32-accumulate matmul" if args.fast else
-                              "bf16 weights/activations, fp32-accumulate matmul"),
+                "precision": "bf16 weights/activations, fp32-accumulate matmul",
                 "path": "OrbTracedEngine trace/replay with exact graph checks, "
                         "energy+conservative forces (no stress)",
             }

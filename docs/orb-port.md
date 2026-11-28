@@ -82,9 +82,10 @@ recorded; the clocked p300c numbers are under [GPU comparison](#gpu-comparison))
 These values use the source-ttnn edge-MLP path. Stock `ttnn` keeps the same numerics and uses the
 ordinary matmul and activation path.
 
-`examples/orb_md.py --fast` stores hidden edge activations in bf8 while keeping the residual
-stream in bf16 and accumulation in fp32. It is opt-in because the measured conservative-force MAE
-is 0.0490 eV/Å versus 0.0089 eV/Å for bf16.
+Orb has one precision path: bf16 weights and activations with fp32 accumulation. `--fast` is still
+accepted and does nothing. The bf8 mode it used to select was removed: at 1000 atoms it was 4.5%
+faster (203.2 against 212.8 ms per step at 1350 MHz) for about three times the force error, it
+gained nothing at 216 and 512 atoms, and it crashed at 2016.
 
 `bucketing=True` on `OrbCalculator` (and `MultiCard`) pads a system graph to the next edge count
 in a fixed ladder (256 to 22016, about 1.55x rung spacing) so differently-sized systems share
