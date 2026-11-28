@@ -141,9 +141,10 @@ On that basis one GPU does 8 to 11 times the work of one TT chip, and the TT chi
 to 5.3 times that of a B200, priced at $1,399 per chip against one eighth of an 8-GPU system
 ($51,250 for H200, $68,750 for B200). Batching several structures into one GPU step
 has only been measured on an RTX 3090, where it raised the best rate by 10% (9,470 atoms/s for 16
-cells of 216 atoms against 8,640 for one 2016-atom cell, same TF32 CUDA-graph setting). The same
-gain on the larger GPUs would bring the ranges to 3.7 to 4.3 times for H200 and 4.2 to 4.8 times
-for B200. That arm has not been run on those GPUs.
+cells of 216 atoms against 8,640 for one 2016-atom cell, same TF32 CUDA-graph setting). The rate
+was still rising at 16 cells, where the sweep stopped, so 10% is a lower bound. The same gain on
+the larger GPUs would bring the ranges to 3.7 to 4.3 times for H200 and 4.2 to 4.9 times for
+B200. That arm has not been run on those GPUs.
 
 Every leg is graded against the same float64 forces. TT bf16 has a force MAE of 6.0 to 6.7 meV/Å.
 B200 in TF32 sits at 0.4 meV/Å, so the GPU numbers above are also the more accurate ones. H200 in
