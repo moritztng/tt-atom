@@ -5,6 +5,7 @@ import torch
 
 matgl = pytest.importorskip("matgl")
 from tt_atom.tensornet import layer as L  # noqa: E402
+from tt_atom.tensornet.tt_ops import TtOps, to_device  # noqa: E402
 
 MODEL = "materialyze/TensorNet-PES-MatPES-PBE-2025.2"
 
@@ -34,8 +35,22 @@ def layer_args(args, kw):
     return [a[k].detach() for k in names]
 
 
+class FakeTtnn:
+    """The ttnn calls TtOps makes, on torch float64: checks the slicing and concat bookkeeping without a card."""
+    __name__ = "fake"
+    bfloat16, float32, uint32, TILE_LAYOUT, ROW_MAJOR_LAYOUT = torch.float64, torch.float32, None, None, None
+    add, subtract, multiply, matmul = torch.add, torch.sub, torch.mul, lambda a, b, **k: a @ b
+    silu, sigmoid, reciprocal, neg, reshape = torch.nn.functional.silu, torch.sigmoid, torch.reciprocal, torch.neg, torch.reshape
+    concat, sum = (lambda xs, dim: torch.cat(xs, dim)), (lambda x, dim: x.sum(dim))
+    to_layout = staticmethod(lambda x, layout: x)
+    embedding = staticmethod(lambda idx, table, **k: table[idx])
+    from_torch = staticmethod(lambda t, **k: t.long() if not t.is_floating_point() else t.double())
+    slice = staticmethod(lambda x, b, e: x[tuple(slice(i, j) for i, j in zip(b, e))])
+
+
+@pytest.mark.parametrize("backend", ["torch", "tt"])
 @pytest.mark.parametrize("which", [0, 1])
-def test_layer_matches_matgl(which):
+def test_layer_matches_matgl(which, backend):
     mod, args, kw = captured()[which]
     ei, r, rbf, x = layer_args(args, kw)
     x = x.clone().requires_grad_(True)
@@ -45,12 +60,13 @@ def test_layer_matches_matgl(which):
     g_out = torch.randn(want.shape, dtype=torch.float64, generator=torch.Generator().manual_seed(1))
     wx, wrbf, wr = torch.autograd.grad((want * g_out).sum(), (x, rbf, r))
 
-    n, o = x.shape[0], L.TorchOps
+    n = x.shape[0]
     edge, send, table, d = L.slots(ei, n, min_width=32)
+    o = L.TorchOps if backend == "torch" else TtOps(None, n, d, mod.units, ttnn=FakeTtnn)
     pad = lambda t: torch.cat([t, torch.zeros_like(t[:1])])[edge]
     cut = torch.where(r <= mod.cutoff, 0.5 * (torch.cos(torch.pi * r / mod.cutoff) + 1), 0.0)
-    eye, one = torch.eye(3, dtype=torch.float64).reshape(3, 3, 1, 1), 1.0
-    w = L.weights(mod)
+    eye, one = torch.eye(3, dtype=torch.float64).reshape(3, 3, 1, 1).expand(3, 3, n, x.shape[1]), 1.0
+    w = L.weights(mod) if backend == "torch" else to_device(o, L.weights(mod))
     to_c = lambda t: t.detach().permute(2, 3, 0, 1)                     # [N, U, 3, 3] -> [3, 3, N, U]
     got, tape = L.forward(o, w, to_c(x), pad(rbf.detach()), pad(cut.detach()[:, None]), send, n, eye, one)
     assert torch.allclose(got.permute(2, 3, 0, 1), want, rtol=1e-10, atol=1e-12)

@@ -60,19 +60,23 @@ class TorchOps:
         return r[idx]
 
     @staticmethod
-    def weigh(g, f):                               # [S, 27 U] x [S, 3 U] -> [S, 9 U], sum over the three parts
-        s = g.shape[0]
-        return (g.reshape(s, 3, 9, -1) * f.reshape(s, 3, 1, -1)).sum(1).reshape(s, -1)
-
-    @staticmethod
-    def weigh_t(g, m):                             # [S, 27 U] x [S, 9 U] -> [S, 3 U], sum over the nine components
-        s = g.shape[0]
-        return (g.reshape(s, 3, 9, -1) * m.reshape(s, 1, 9, -1)).sum(2).reshape(s, -1)
-
-    @staticmethod
-    def outer(f, m):                               # [S, 3 U] x [S, 9 U] -> [S, 27 U]
+    def expand(f):                                 # [S, 3 U] -> [S, 27 U], each part's U block under its 9 components
         s = f.shape[0]
-        return (f.reshape(s, 3, 1, -1) * m.reshape(s, 1, 9, -1)).reshape(s, -1)
+        return f.reshape(s, 3, 1, -1).expand(s, 3, 9, f.shape[1] // 3).reshape(s, -1)
+
+    @staticmethod
+    def fold9(x):                                  # [S, 27 U] -> [S, 3 U], sum over the 9 components (expand reversed)
+        s = x.shape[0]
+        return x.reshape(s, 3, 9, -1).sum(2).reshape(s, -1)
+
+    @staticmethod
+    def tile3(m):                                  # [S, 9 U] -> [S, 27 U], one copy per part
+        return torch.cat([m, m, m], -1)
+
+    @staticmethod
+    def fold3(x):                                  # [S, 27 U] -> [S, 9 U], sum over the three parts (tile3 reversed)
+        s = x.shape[0]
+        return x.reshape(s, 3, -1).sum(1)
 
     @staticmethod
     def slot_sum(x, n):                            # [N D, W] -> [N, W]
@@ -136,14 +140,14 @@ def forward(o, w, x, rbf, cut, send, n, eye, one):
         t["pre"].append(o.linear(h, wt, b))
         h = o.silu(t["pre"][-1])
     t["h"], t["cut"] = h, cut
-    f = o.mul(h, cut)                                                    # [S, 3 U]
+    f = o.expand(o.mul(h, cut))                                          # [S, 27 U]
 
     t["x"], t["rn"] = x, o.recip(o.add(o.csum(o.mul(x, x)), one))
     xn = o.mul(x, t["rn"])
     parts = [o.linear(p, wt) for p, wt in zip(decompose(o, xn, eye), w["node"][:3])]
     y = o.add(o.add(parts[0], parts[1]), parts[2])
     g = o.gather(send, o.rows(parts))                                    # [S, 27 U]
-    msg = o.unrows(o.slot_sum(o.weigh(g, f), n), 1)[0]
+    msg = o.unrows(o.slot_sum(o.fold3(o.mul(g, f)), n), 1)[0]
     c = o.add(o.mat(msg, y), o.mat(y, msg))
     rc = o.recip(o.add(o.csum(o.mul(c, c)), one))
     cn = o.mul(c, rc)
@@ -167,9 +171,9 @@ def backward(o, w, t, g_out, send_table, n, d, eye):
     g_msg = o.add(o.mat(g_c, o.t(y)), o.mat(o.t(y), g_c))
     g_y = o.add(o.mat(o.t(msg), g_c), o.mat(g_c, o.t(msg)))
 
-    g_m = o.slot_spread(o.rows([g_msg]), d)                              # [S, 9 U]
-    g_f = o.weigh_t(t["g"], g_m)
-    g_parts = o.unrows(o.scatter(o.outer(t["f"], g_m), send_table, n), 3)
+    g_m = o.tile3(o.slot_spread(o.rows([g_msg]), d))                     # [S, 27 U]
+    g_f = o.fold9(o.mul(t["g"], g_m))
+    g_parts = o.unrows(o.scatter(o.mul(t["f"], g_m), send_table, n), 3)
     g_xn = decompose_t(o, *[o.linear(o.add(gp, g_y), wt_t) for gp, wt_t in zip(g_parts, w["node_t"][:3])], eye)
     g_x = _unnorm(o, o.add(g_xn, g_out), t["x"], t["xn"], t["rn"])
 
