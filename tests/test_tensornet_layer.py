@@ -218,3 +218,16 @@ def test_model_matches_matgl():
     gr, gvec = torch.autograd.grad((cut * unpad(gcut)).sum() + (geo * unpad(ggeo)).sum(), (r, vec))
     assert torch.allclose(gr, wr, rtol=1e-8, atol=1e-11)
     assert torch.allclose(gvec, wvec, rtol=1e-8, atol=1e-10)
+
+
+@pytest.mark.skipif(OLD, reason="needs matgl >= 3")
+def test_radial_basis_matches_matgl():
+    from tt_atom.tensornet import embed as E
+
+    m = matgl.load_model(MODEL).double().model
+    r = torch.linspace(0.8, 5.0, 400, dtype=torch.float64).requires_grad_(True)
+    want, got = m.bond_expansion(r), E.radial(r, m.cutoff, m.bond_expansion.max_n)
+    assert got.shape == want.shape and torch.allclose(got, want, rtol=1e-11, atol=1e-13)
+    for k in range(got.shape[1]):
+        gw, gg = torch.autograd.grad(want[:, k].sum(), r, retain_graph=True)[0], torch.autograd.grad(got[:, k].sum(), r, retain_graph=True)[0]
+        assert torch.allclose(gg, gw, rtol=1e-9, atol=1e-11)

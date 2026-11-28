@@ -30,6 +30,24 @@ def pair(emb, z, edge_index, dtype=torch.float64):
     return torch.cat([x[edge_index[0]], x[edge_index[1]]], -1) @ emb.emb2.weight.detach().to(dtype).T + emb.emb2.bias.detach().to(dtype)
 
 
+def radial(r, cutoff, max_n):
+    """Distances [E] -> [E, max_n]: matgl's smooth spherical Bessel basis (Kocer's orthogonalised sinc pairs)."""
+    k = torch.arange(max_n, dtype=r.dtype)
+    sinc = lambda m: torch.sin(r[:, None] * m * torch.pi / cutoff) / (r[:, None] * m * torch.pi / cutoff)
+    f = ((-1) ** k * 2 ** 0.5 * torch.pi / cutoff ** 1.5 * (k + 1) * (k + 2) / torch.sqrt((k + 1) ** 2 + (k + 2) ** 2)
+         * (sinc(k + 1) + sinc(k + 2)))
+    e = k ** 2 * (k + 2) ** 2 / (4 * (k + 1) ** 4 + 1)
+    d, g = [1.0], [f[:, 0]]
+    for i in range(1, max_n):
+        d.append(1 - float(e[i]) / d[-1])
+        g.append((f[:, i] + (float(e[i]) / d[i - 1]) ** 0.5 * g[-1]) / d[i] ** 0.5)
+    return torch.stack(g, 1)
+
+
+def cosine_cutoff(r, cutoff):
+    return torch.where(r <= cutoff, 0.5 * (torch.cos(torch.pi * r / cutoff) + 1), 0.0)[:, None]
+
+
 def geometry(vec):
     """Edge vectors [E, 3] -> [E, 27]: identity, skew and traceless components of the unit vector, row-major."""
     v = vec / vec.norm(dim=1, keepdim=True).clamp(min=1e-6)
