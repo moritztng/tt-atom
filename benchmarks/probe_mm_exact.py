@@ -1,5 +1,6 @@
-"""Is a bfloat16 x bfloat16 matmul with a float32 result exact on the card, and is a broadcast float32 add? Operands are
-bfloat16-exact, positive (no cancellation) and signed; reference in float64."""
+"""Is a bfloat16 x bfloat16 matmul with a float32 result exact on the card? Operands are bfloat16-exact; reference in
+float64. K = 1 is a single product per output (no accumulation). Reports relative rms and the mean signed relative
+error (a bias) per kernel config, plus broadcast float32 add and mul."""
 import json
 
 import torch
@@ -10,20 +11,32 @@ from tt_atom import device as D
 def main():
     import ttnn
 
-    g, out, cfg = torch.Generator().manual_seed(0), {}, D.compute_kernel_config()
+    g, out = torch.Generator().manual_seed(0), {}
     bf = lambda t: t.to(torch.bfloat16).double()
+    F = ttnn.MathFidelity
+    cfgs = {"policy": D.compute_kernel_config(),
+            "hifi4_noacc": ttnn.WormholeComputeKernelConfig(math_fidelity=F.HiFi4, math_approx_mode=False, fp32_dest_acc_en=False, packer_l1_acc=False),
+            "hifi4_acc_nol1": ttnn.WormholeComputeKernelConfig(math_fidelity=F.HiFi4, math_approx_mode=False, fp32_dest_acc_en=True, packer_l1_acc=False),
+            "hifi3_acc": ttnn.WormholeComputeKernelConfig(math_fidelity=F.HiFi3, math_approx_mode=False, fp32_dest_acc_en=True, packer_l1_acc=True),
+            "hifi2_acc": ttnn.WormholeComputeKernelConfig(math_fidelity=F.HiFi2, math_approx_mode=False, fp32_dest_acc_en=True, packer_l1_acc=True)}
     with D.device(0) as dev:
         up = lambda t, dt: ttnn.from_torch(t.float(), dtype=dt, layout=ttnn.TILE_LAYOUT, device=dev)
-        rel = lambda got, want: float((ttnn.to_torch(got).double() - want).norm() / want.norm())
-        for k in (3, 32, 128):
-            for sign in ("pos", "signed"):
-                x, w = torch.rand(6912, k, generator=g), torch.rand(k, 128, generator=g)
-                x, w = (bf(x), bf(w)) if sign == "pos" else (bf(x - 0.5), bf(w - 0.5))
-                y = ttnn.matmul(up(x, ttnn.bfloat16), up(w, ttnn.bfloat16), compute_kernel_config=cfg, dtype=ttnn.float32)
-                out[f"mm_k{k}_{sign}"] = rel(y, x @ w)
-        a, b = torch.randn(6912, 128, generator=g).float().double(), torch.randn(1, 128, generator=g).float().double()
-        out["add_broadcast_f32"] = rel(ttnn.add(up(a, ttnn.float32), up(b, ttnn.float32)), a + b)
-        out["mul_broadcast_f32"] = rel(ttnn.multiply(up(a, ttnn.float32), up(a[:, :1], ttnn.float32)), a * a[:, :1])
+
+        def grade(got, want):
+            err = ttnn.to_torch(got).double() - want
+            return {"rel_rms": float(err.norm() / want.norm()), "bias": float((err / want.abs().clamp_min(1e-30)).mean())}
+
+        for k in (1, 3, 128):
+            x, w = bf(torch.rand(6912, k, generator=g) + 0.5), bf(torch.rand(k, 128, generator=g) + 0.5)
+            for name, cfg in cfgs.items():
+                for dt in ("bfloat16", "float32"):   # operand dtype on the card; values are bfloat16-exact either way
+                    try:
+                        y = ttnn.matmul(up(x, getattr(ttnn, dt)), up(w, getattr(ttnn, dt)), compute_kernel_config=cfg, dtype=ttnn.float32)
+                        out[f"mm_k{k}_{name}_{dt}"] = grade(y, x @ w)
+                    except Exception as e:
+                        out[f"mm_k{k}_{name}_{dt}"] = str(e)[:80]
+        x, w = bf(torch.rand(6912, 128, generator=g) + 0.5), bf(torch.rand(1, 128, generator=g) + 0.5)
+        out["mul_bf16_values_f32"] = grade(ttnn.multiply(up(x, ttnn.float32), up(w, ttnn.float32)), x * w)
     print(json.dumps(out, indent=1))
 
 

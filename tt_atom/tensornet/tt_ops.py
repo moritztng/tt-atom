@@ -26,14 +26,18 @@ class TtOps:
         return self.tt.from_torch(t.float().contiguous(), dtype=self.dtype, layout=self.tt.TILE_LAYOUT, device=self.dev)
 
     def weight(self, t):
-        """A matmul operand. At float32 a wide one is pre-split for scatter.mm; one with a few input rows (the radial
-        basis projections) goes up row by row and `linear` sums row products instead: float32 multiplies and adds are
-        exact on the card, a matmul is good to 1e-4, and these feed neighbour sums that cancel ~100x on a lattice."""
+        """A matmul operand. At float32 it goes up in pieces that `linear` multiplies one by one and adds, because only
+        the card's float32 multiplies and adds are exact: a matmul's accumulation over more than one tile of the inner
+        dimension truncates (1e-4, one sign, an energy offset), see benchmarks/probe_mm_bits.py. A matrix with a few
+        input rows (the radial projections, which feed neighbour sums that cancel ~100x on a lattice) goes up row by
+        row; a wide one in 32-row blocks, each pre-split for scatter.mm."""
         if not self.cfg or self.dtype != self.tt.float32:
             return self.up(t)
-        if t.shape[-2] <= 8 and t.dim() == 2:
+        k = t.shape[-2]
+        if k <= 8 and t.dim() == 2:
             return [self.up(row[None]) for row in t]
-        return SC.const(t.float(), self.dev, self.dtype)
+        step = 32 if k % 32 == 0 else k
+        return [SC.const(t[..., i:i + step, :].float(), self.dev, self.dtype) for i in range(0, k, step)]
 
     def cast(self, x):
         return x if x.dtype == self.dtype else self.tt.typecast(x, self.dtype)
@@ -57,7 +61,8 @@ class TtOps:
 
     def linear(self, x, w, b=None):
         if isinstance(w, list):
-            y = self._sum([self.tt.multiply(c, row) for c, row in zip(self.split(x, len(w)), w)])
+            y = self._sum([SC.mm(c, p, self.cfg, self.tt) if isinstance(p, tuple) else self.tt.multiply(c, p)
+                           for c, p in zip(self.split(x, len(w)), w)])
         else:
             y = SC.mm(x, w, self.cfg, self.tt)
         return y if b is None else self.tt.add(y, b)
